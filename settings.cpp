@@ -210,6 +210,15 @@ double micOpenThreshold()
     return 0.050 - 0.040 * (micSensitivity() / 100.0);
 }
 
+double vadThreshold()
+{
+    // 0 -> 0.85 (only unmistakable speech), 100 -> 0.35 (anything that is
+    // probably a voice). Silero's own default of 0.5 sits at 70. Noise is not
+    // what this has to fight any more - the network barely scores a keyboard
+    // or a door at all - so the slider can sit high, as it does by default.
+    return 0.85 - 0.50 * (micSensitivity() / 100.0);
+}
+
 bool hasOrbPosition()
 {
     // Asked separately, because 0,0 is a perfectly good place to leave the orb

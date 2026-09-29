@@ -1,10 +1,12 @@
 #include "mainwindow.h"
 #include "orbwidget.h"
+#include "sttengine.h"
 #include "sttpaths.h"
 
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QStringList>
 
 int main(int argc, char *argv[])
@@ -23,6 +25,20 @@ int main(int argc, char *argv[])
     const int exportAt = args.indexOf(QStringLiteral("--export-icon"));
     if (exportAt >= 0 && exportAt + 1 < args.size())
         return OrbWidget::writeIco(args.at(exportAt + 1)) ? 0 : 1;
+
+    // Test helper: the voice detector's verdict on every 32 ms of a WAV,
+    // written to a text file, so it can be checked against the official model.
+    // A failure is written to the same file, since this program has no console.
+    const int probeAt = args.indexOf(QStringLiteral("--vad-probe"));
+    if (probeAt >= 0 && probeAt + 2 < args.size()) {
+        QString error;
+        if (SttEngine::probeFile(args.at(probeAt + 1), args.at(probeAt + 2), &error))
+            return 0;
+        QFile out(args.at(probeAt + 2));
+        if (out.open(QIODevice::WriteOnly | QIODevice::Text))
+            out.write("FAILED: " + error.toUtf8() + '\n');
+        return 1;
+    }
 
     // The speech to text model lives outside the install tree, so make sure
     // its folder is there before anything tries to load out of it. Neither

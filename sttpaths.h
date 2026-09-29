@@ -23,6 +23,14 @@ bool ensureDir(QString *error = nullptr);
 // True when modelPath() names an existing, non empty file.
 bool modelPresent();
 
+// The Silero voice detector's weights, as whisper.cpp publishes them
+// (ggml-silero-v6.2.0.bin, MIT), next to the recogniser's model. Its size and
+// SHA256 are fixed below, so anything else is not treated as present.
+QString vadModelPath();
+bool vadPresent();
+QByteArray vadSha256(); // hex, lower case
+qint64 vadBytes();
+
 } // namespace Stt
 
 namespace Tts {

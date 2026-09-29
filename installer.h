@@ -47,6 +47,8 @@ private:
     QString m_stage;
     QString m_destPath;
     bool m_extractAfter = false;
+    // The SHA256 the file being downloaded must have, hex; empty for none.
+    QByteArray m_expectSha;
     int m_step = 0;
     bool m_cancelled = false;
 };

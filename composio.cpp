@@ -509,14 +509,44 @@ void ComposioClient::refreshConnections()
          });
 }
 
-void ComposioClient::connectApp(const QString &slug)
+void ComposioClient::connectApp(const QString &slug, Answer answer)
 {
-    if (slug.isEmpty())
+    // Three ways this can end. A caller that passed its own answer - a
+    // background task - hears about it there, in words for the model; the
+    // integrations dialog hears through the signals, as it always has.
+    const auto noSignIn = [this, slug, answer]() {
+        if (answer) {
+            answer(true, tr("%1 needs no sign in and can be used right away. "
+                            "Carry on with find_tools and run_tool.").arg(slug));
+        } else {
+            emit noSignInNeeded(slug);
+        }
+    };
+    const auto opened = [this, slug, answer]() {
+        if (answer) {
+            answer(true, tr("The sign in page for %1 is open in the user's web "
+                            "browser now. Finish the task: tell them in one short "
+                            "sentence to sign in there and then ask again.")
+                             .arg(slug));
+        } else {
+            emit linkOpened(slug);
+        }
+    };
+    const auto fail = [this, answer](const QString &reason) {
+        if (answer)
+            answer(false, tr("That could not be done: %1").arg(reason));
+        else
+            emit failed(reason);
+    };
+
+    if (slug.isEmpty()) {
+        fail(tr("No app was named."));
         return;
+    }
 
     // Known without asking: this one is the session itself.
     if (slug == QLatin1String(kBuiltInToolkit)) {
-        emit noSignInNeeded(slug);
+        noSignIn();
         return;
     }
 
@@ -524,18 +554,19 @@ void ComposioClient::connectApp(const QString &slug)
     // or makes the managed auth config and hands back a hosted sign in page.
     callInSession("POST", QStringLiteral("/link"),
                   QJsonObject{{QStringLiteral("toolkit"), slug}},
-                  QStringLiteral("sign in link"), [this, slug](const Reply &r) {
+                  QStringLiteral("sign in link"),
+                  [slug, noSignIn, opened, fail](const Reply &r) {
                       if (!r.ok) {
                           if (r.errorSlug == QLatin1String(kSlugNoAuth)) {
-                              emit noSignInNeeded(slug);
+                              noSignIn();
                           } else if (r.status == 404) {
-                              emit failed(tr("%1 has no ready made sign in on "
+                              fail(tr("%1 has no ready made sign in on "
                                              "Composio. Its credentials have to be "
                                              "set up once in the Composio dashboard, "
                                              "under Auth Configs, and then Connect "
                                              "works here.").arg(slug));
                           } else {
-                              emit failed(r.error);
+                              fail(r.error);
                           }
                           return;
                       }
@@ -543,7 +574,7 @@ void ComposioClient::connectApp(const QString &slug)
                       const QString url =
                           r.root.value(QStringLiteral("redirect_url")).toString();
                       if (url.isEmpty()) {
-                          emit failed(tr("Composio did not give a sign in link for "
+                          fail(tr("Composio did not give a sign in link for "
                                          "%1.").arg(slug));
                           return;
                       }
@@ -555,7 +586,7 @@ void ComposioClient::connectApp(const QString &slug)
                       QDesktopServices::openUrl(QUrl(url));
                       BurnOS::liveLog(QStringLiteral("composio: sign in opened for %1")
                                           .arg(slug));
-                      emit linkOpened(slug);
+                      opened();
                   });
 }
 
@@ -577,11 +608,20 @@ void ComposioClient::disconnectApp(const QString &connectionId)
          });
 }
 
-void ComposioClient::searchTools(const QString &useCase)
+void ComposioClient::searchTools(const QString &useCase, Answer answer)
 {
+    // To the caller that asked, where it passed an answer; to whoever listens
+    // for the signal where it did not.
+    const auto reply = [this, answer](bool ok, const QString &summary) {
+        if (answer)
+            answer(ok, summary);
+        else
+            emit toolsFound(ok, summary);
+    };
+
     const QString query = useCase.trimmed().left(1000);
     if (query.isEmpty()) {
-        emit toolsFound(false, tr("The search needs a sentence saying what to do."));
+        reply(false, tr("The search needs a sentence saying what to do."));
         return;
     }
 
@@ -591,9 +631,9 @@ void ComposioClient::searchTools(const QString &useCase)
     };
 
     callInSession("POST", QStringLiteral("/search"), body,
-                  QStringLiteral("tool search"), [this](const Reply &r) {
+                  QStringLiteral("tool search"), [reply](const Reply &r) {
                       if (!r.ok) {
-                          emit toolsFound(false, tr("The tool search failed: %1")
+                          reply(false, tr("The tool search failed: %1")
                                                      .arg(r.error));
                           return;
                       }
@@ -601,7 +641,7 @@ void ComposioClient::searchTools(const QString &useCase)
                       const QString summary = summariseSearch(r.root);
                       const QString error = r.root.value(QStringLiteral("error")).toString();
                       if (summary.isEmpty() && !error.isEmpty()) {
-                          emit toolsFound(false, tr("The tool search failed: %1")
+                          reply(false, tr("The tool search failed: %1")
                                                      .arg(error));
                           return;
                       }
@@ -609,14 +649,22 @@ void ComposioClient::searchTools(const QString &useCase)
                       BurnOS::liveLog(QStringLiteral("composio: search answered, "
                                                      "%1 chars for the model")
                                           .arg(summary.size()));
-                      emit toolsFound(true, summary);
+                      reply(true, summary);
                   });
 }
 
-void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &arguments)
+void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &arguments,
+                             Answer answer)
 {
+    const auto finish = [this, answer](bool ok, const QString &summary) {
+        if (answer)
+            answer(ok, summary);
+        else
+            emit toolFinished(ok, summary);
+    };
+
     if (toolSlug.isEmpty()) {
-        emit toolFinished(false, tr("No tool was named."));
+        finish(false, tr("No tool was named."));
         return;
     }
 
@@ -627,13 +675,13 @@ void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &argumen
 
     callInSession(
         "POST", QStringLiteral("/execute"), body, QStringLiteral("run ") + toolSlug,
-        [this, toolSlug](const Reply &r) {
+        [finish, toolSlug](const Reply &r) {
             // A tool that ran and was refused by the far end is NOT a transport
             // error, and either way the model is told the same way: what
             // happened, in words it can say out loud.
             if (!r.ok) {
                 if (r.errorSlug == QLatin1String(kSlugNotConnected)) {
-                    emit toolFinished(false,
+                    finish(false,
                                       tr("%1 cannot run yet: %2 Call app_action with "
                                          "action connect_app for that app - it opens "
                                          "the sign in page in the user's browser - "
@@ -641,7 +689,7 @@ void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &argumen
                                          "there, then ask again.")
                                           .arg(toolSlug, r.error));
                 } else {
-                    emit toolFinished(false, tr("%1 did not work: %2")
+                    finish(false, tr("%1 did not work: %2")
                                                  .arg(toolSlug,
                                                       r.error.left(kMaxResultChars)));
                 }
@@ -653,7 +701,7 @@ void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &argumen
             if (!error.isEmpty()) {
                 BurnOS::liveLog(QStringLiteral("composio run %1 FAILED, log %2: %3")
                                     .arg(toolSlug, logId, error));
-                emit toolFinished(false, tr("%1 did not work: %2")
+                finish(false, tr("%1 did not work: %2")
                                              .arg(toolSlug, error.left(kMaxResultChars)));
                 return;
             }
@@ -679,7 +727,7 @@ void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &argumen
             BurnOS::liveLog(QStringLiteral("composio run %1 succeeded, log %2, "
                                            "%3 chars back")
                                 .arg(toolSlug, logId, QString::number(data.size())));
-            emit toolFinished(true, data.isEmpty()
+            finish(true, data.isEmpty()
                                         ? tr("%1 ran and reported success.").arg(toolSlug)
                                         : tr("%1 ran. It returned: %2").arg(toolSlug, data));
         });

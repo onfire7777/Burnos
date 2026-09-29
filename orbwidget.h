@@ -94,6 +94,11 @@ public slots:
     // needs a word of its own, or it looks identical to thinking.
     void setPreparing(bool on);
 
+    // True while any background task is running. Two short arcs chase each
+    // other round the rim; no word, and nothing else about the orb changes,
+    // because it is still listening and talking as usual the whole time.
+    void setWorking(bool on);
+
     // First run setup: a ring and a caption over the orb. While this is on,
     // clicking does nothing, because there is nothing to talk to yet.
     void beginInitializing();
@@ -111,6 +116,7 @@ private:
                   const QColor &colour, qreal strength);
     void drawSetup(QPainter &p, const QPointF &centre, qreal unit);
     void drawHint(QPainter &p);
+    void drawWorking(QPainter &p, const QPointF &centre, qreal unit);
 
     // Works out which hint belongs on the orb right now and starts the fade.
     void updateHint();
@@ -151,6 +157,9 @@ private:
     qreal m_speakTarget = 0.0;
     qreal m_speakLevel = 0.0;
     qreal m_wispSpin = 0.0;
+
+    bool m_working = false;        // background tasks are running
+    qreal m_workMix = 0.0;         // eased 0 to 1, so the arcs fade in and out
 
     bool m_noticeOn = false;       // a failure word is up on the orb
     QTimer *m_notice = nullptr;    // and this takes it away again

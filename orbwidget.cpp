@@ -129,6 +129,13 @@ OrbWidget::OrbWidget(QWidget *parent)
         // they have reached when it stops, so they never jump back.
         m_wispSpin += kPhaseStep * 1.8 * m_speakMix * m_speakLevel;
 
+        // The working arcs fade in and out rather than switching.
+        const qreal wantWork = m_working ? qreal(1.0) : qreal(0.0);
+        if (m_workMix < wantWork)
+            m_workMix = qMin(wantWork, m_workMix + 0.04);
+        else if (m_workMix > wantWork)
+            m_workMix = qMax(wantWork, m_workMix - 0.03);
+
         // The hint never cuts. It fades out before the wording changes and
         // fades back in afterwards, so speech starting simply dissolves it.
         if (m_hintText != m_hintWanted) {
@@ -479,6 +486,8 @@ void OrbWidget::paintEvent(QPaintEvent *)
 
     if (m_initializing)
         drawSetup(p, c, half);
+    else
+        drawWorking(p, c, half);
 
     if (!m_initializing && !m_hintText.isEmpty() && m_hintOpacity > 0.01)
         drawHint(p);
@@ -726,6 +735,44 @@ void OrbWidget::setPreparing(bool on)
     m_preparing = on;
     updateHint();
     update();
+}
+
+void OrbWidget::setWorking(bool on)
+{
+    // WORK GOING ON IN THE BACKGROUND gets a light of its own and no word. The
+    // hint words stay exactly as they were, because while tasks run the orb is
+    // still listening, thinking and speaking as usual.
+    if (m_working == on)
+        return;
+    m_working = on;
+    BurnOS::liveLog(QStringLiteral("orb: background work %1")
+                        .arg(on ? QStringLiteral("started") : QStringLiteral("finished")));
+    update();
+}
+
+void OrbWidget::drawWorking(QPainter &p, const QPointF &c, qreal unit)
+{
+    if (m_workMix <= 0.01)
+        return;
+
+    const QRectF ring(c.x() - unit * 0.86, c.y() - unit * 0.86,
+                      unit * 1.72, unit * 1.72);
+
+    // A faint track, so the arcs read as going round something rather than as
+    // stray marks.
+    QColor track(120, 190, 255);
+    track.setAlphaF(0.10 * m_workMix);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(track, 2.0));
+    p.drawEllipse(ring);
+
+    // About one turn every two and a half seconds - busy, not frantic.
+    const int start = int(-(m_phase * 135.0) * 16.0) % (360 * 16);
+    QColor arc(200, 235, 255);
+    arc.setAlphaF(0.80 * m_workMix);
+    p.setPen(QPen(arc, 2.6, Qt::SolidLine, Qt::RoundCap));
+    p.drawArc(ring, start, -50 * 16);
+    p.drawArc(ring, start + 180 * 16, -50 * 16);
 }
 
 void OrbWidget::setSpeaking(bool on)

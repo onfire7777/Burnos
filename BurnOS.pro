@@ -10,6 +10,7 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 CONFIG += c++17
 
 SOURCES += \
+    agent.cpp \
     composio.cpp \
     computeruse.cpp \
     installer.cpp \
@@ -26,6 +27,7 @@ SOURCES += \
     ttsengine.cpp
 
 HEADERS += \
+    agent.h \
     composio.h \
     computeruse.h \
     installer.h \

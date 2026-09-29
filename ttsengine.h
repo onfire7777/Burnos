@@ -5,6 +5,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 class QAudioOutput;
 class QMediaPlayer;
@@ -28,6 +29,12 @@ public:
     bool speak(const QString &text);
     void stop();
 
+    // Short replies said again and again - "On it.", "Okay." - are made once,
+    // kept on disk and played the instant they are asked for, instead of after
+    // two seconds of Kokoro every time. Kept per voice. Making them happens in
+    // the background and never holds up a real answer.
+    void prepare(const QStringList &phrases);
+
 signals:
     void started();
     // Emitted the moment playback begins, carrying the text being spoken.
@@ -44,6 +51,9 @@ signals:
 private:
     QString cliPath() const;
     void play(const QString &wavPath);
+    // Where the ready made copy of this text lives, for the voice chosen now.
+    QString cachePath(const QString &text) const;
+    void warmNext();
     // Turns the WAV into one loudness per 10 ms, normalised to its own peak.
     void loadEnvelope(const QString &wavPath);
     void stopMeter();
@@ -64,6 +74,11 @@ private:
     // deliberate cancellation, or the caller reports an error for something it
     // asked for itself.
     bool m_cancelled = false;
+
+    // Making the short replies, one at a time, apart from the real voice.
+    QProcess *m_warm = nullptr;
+    QStringList m_toWarm;
+    QString m_warmTarget;
 };
 
 #endif // TTSENGINE_H

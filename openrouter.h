@@ -1,112 +1,85 @@
 #ifndef OPENROUTER_H
 #define OPENROUTER_H
 
-#include <QElapsedTimer>
+#include <QHash>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
-#include <QVariantMap>
+
+#include <functional>
 
 class QNetworkAccessManager;
 class QNetworkReply;
 
-// Chat completions against OpenRouter, carrying the conversation so far AND the
-// ability to operate this machine.
+// THE ONE WAY BURNOS TALKS TO A MODEL: send a conversation, get one message
+// back.
 //
-// THE MODEL DECIDES FOR ITSELF whether a sentence needs a tool. There used to
-// be a separate decisions model in front of it choosing between talk and five
-// fixed actions, and the trouble with that is it had no reasoning: it could
-// only pick from lists written out in advance, so it could not work out that
-// "open my editor" means Qt Creator, or which of forty controls is the one the
-// user meant. Intelligence was the missing piece, so the reasoning model now
-// does the whole job in one conversation.
-//
-// The turn is a small loop: ask -> the model may answer, or ask for the tool ->
-// the caller runs it and hands back what happened -> the model says it out
-// loud. Only the question and the final answer are kept in the history.
+// Since v0.4 this knows nothing about conversations, tools or turns. The talker
+// and every background task keep their own messages and hand them to send();
+// what lives here is everything they share - the key, the model, the reasoning
+// effort, the timeouts, the log line, and a model that turns out not to accept
+// pictures. Several requests can be in flight at once: the talker's, and one
+// for each task.
 class OpenRouterClient : public QObject
 {
     Q_OBJECT
 
 public:
+    struct Request
+    {
+        QJsonArray messages;
+        QJsonArray tools;    // none offered when empty
+        QString who;         // "talk 3", "task 2" - names it in the log
+        int timeoutMs = 30000;
+        int maxTokens = 0;   // 0 is the answer length from Settings
+        // Ask OpenRouter for whichever provider of the model answers FIRST.
+        // The talker wants this: the same model has taken anywhere from two to
+        // twenty eight seconds to answer, depending on who served it.
+        bool fastest = false;
+    };
+
+    struct Reply
+    {
+        bool ok = false;
+        QString error;       // worded for a person, when not ok
+        QJsonObject message; // the first choice's message, when ok
+        int reasoningTokens = 0;
+        qint64 ms = 0;
+    };
+
+    using Done = std::function<void(const Reply &)>;
+
     explicit OpenRouterClient(QObject *parent = nullptr);
 
-    // screenContext describes what is on screen right now. It rides along as a
-    // system message for THIS TURN ONLY - it is never remembered, because a
-    // stale list of controls is worse than none.
-    bool ask(const QString &prompt, const QString &screenContext = QString());
+    // One chat completion. `done` is called exactly once - never from inside
+    // send() itself, and never at all for a request cancelled first. The id is
+    // for cancel().
+    quint64 send(const Request &request, Done done);
+    void cancel(quint64 id);
 
-    // Hand back what the tool actually did. The turn carries on from there and
-    // replied() follows with what to say out loud.
-    //
-    // A PNG may ride along - that is how the model gets EYES. The tool role
-    // cannot carry an image, so the picture follows the tool result as a user
-    // message, which is the shape the API does accept.
-    void finishTool(const QString &result, const QByteArray &png = QByteArray());
-
-    bool isBusy() const { return m_busy; }
-    bool isAwaitingTool() const { return m_awaitingTool; }
-
-    // Abandon the turn in flight. Nothing is emitted and nothing is remembered.
-    void cancel();
-
-    void clearHistory();
-    int turnsRemembered() const { return int(m_history.size() / 2); }
-
-signals:
-    void replied(const QString &text);
-    // The model wants a tool. `function` says which - computer_use for this
-    // machine, app_action for one of the user's connected apps - and `args` is
-    // that call's arguments, parsed. Two tools share one signal because a turn
-    // is the same shape either way: run it, hand back what happened, let the
-    // model say it out loud.
-    void toolRequested(const QString &function, const QVariantMap &args);
-    void failed(const QString &reason);
-
-private:
-    bool post();
-
-    // Whether the model chosen right now can be sent a picture at all.
+    // Whether the model chosen right now may be sent a picture. It stops being
+    // true the first time OpenRouter refuses one for that model.
     bool modelCanSee() const;
 
-    // Take every picture back out of the turn in flight, leaving a line of
-    // words in its place. True if there was one to take out.
-    bool dropImages();
+    // What a model that cannot see is told in place of a screenshot.
+    static QString blindNote();
 
-    void remember(const QString &role, const QString &text);
-    void trimHistory();
-    void endTurn();
+private:
+    void post(quint64 id, Request request, Done done, bool retried);
+    static QJsonArray dropImages(const QJsonArray &messages, bool *dropped);
 
     QNetworkAccessManager *m_net = nullptr;
-    QNetworkReply *m_reply = nullptr;
-    bool m_busy = false;
-    bool m_awaitingTool = false;
-
-    // Alternating user and assistant messages, oldest first. Whole exchanges
-    // are dropped in pairs when it grows too long, so it never begins on an
-    // answer with no question above it.
-    QJsonArray m_history;
-
-    // The messages belonging to the turn in flight: the question, and then the
-    // model's tool call and the result if there was one. Folded into the
-    // history, in its short form, only once an answer comes back.
-    QJsonArray m_turn;
-    QString m_pending;
-    QString m_context;
-    QString m_callId;
-
-    // Started when a question is asked. Every tool result begins another
-    // request, so this is what stops one question from holding the orb on
-    // Thinking for as long as the model keeps reaching for tools.
-    QElapsedTimer m_turnClock;
+    // Every request not yet answered. A null reply is a failure already decided
+    // and waiting one turn of the event loop to be delivered.
+    QHash<quint64, QNetworkReply *> m_live;
+    quint64 m_nextId = 0;
 
     // A MODEL THAT CANNOT SEE MUST NOT KILL THE TURN. OpenRouter refuses the
     // whole request with a 404 - "No endpoints found that support image input"
-    // - when the chosen model has no endpoint that takes a picture, so a turn
-    // that had done everything right, opened the app and taken a screenshot to
-    // check its own work, came back as nothing but Error on the orb. The first
-    // refusal is answered by asking again without the picture; the model's name
-    // is kept here so it is never sent another one.
+    // - when the chosen model has no endpoint that takes a picture. The first
+    // refusal is answered by asking again without the picture, and the model's
+    // name is kept here so it is never sent another one.
     QString m_blindModel;
 };
 

@@ -1,3 +1,4 @@
+#include "agentcursor.h"
 #include "computeruse.h"
 #include "livelog.h"
 
@@ -651,6 +652,12 @@ namespace {
 void clickScreen(int x, int y, const QString &button, int clicks, bool stay);
 bool sendKeys(const QString &keys, QString *error);
 void typeHere(const QString &text);
+// The agent's own mouse and keyboard - window messages, no physical device.
+// Defined with the rest of the background input, below the real-input helpers
+// they fall back to; click and fill need them up here.
+void bgClickAt(HWND top, POINT screen, const QString &button, int clicks, WORD mk);
+void bgType(HWND top, const QString &text);
+bool bgKeys(HWND top, const QString &keys, QString *error);
 
 QList<DesktopWindow> windows()
 {
@@ -944,8 +951,13 @@ QList<DesktopControl> controls(quint64 handle, int limit = 50)
     return out;
 }
 
-bool click(quint64 handle, const DesktopControl &control, QString *error)
+bool click(quint64 handle, const DesktopControl &control, QString *error,
+           bool real = false)
 {
+    // Show the agent's own pointer over the control it is about to press.
+    if (control.w > 0 && control.h > 0)
+        AgentCursor::pointAt(QPoint(control.x + control.w / 2, control.y + control.h / 2), true);
+
     IUIAutomationElement *e = refind(handle, control);
 
     if (e) {
@@ -979,24 +991,35 @@ bool click(quint64 handle, const DesktopControl &control, QString *error)
         }
     }
 
-    // No pattern, or the pattern refused. Fall back to a real click on the
-    // middle of where the control was.
+    // No pattern, or the pattern refused. Aim at the middle of where the
+    // control was.
     if (control.w <= 0 || control.h <= 0) {
         if (error)
             *error = QObject::tr("I could not find that on screen.");
         return false;
     }
+    const POINT centre{ control.x + control.w / 2, control.y + control.h / 2 };
+
+    // The agent's OWN mouse first - a background click that leaves the user's
+    // pointer where it is. The physical mouse is the last resort, only when the
+    // caller forces it.
+    if (!real) {
+        bgClickAt(reinterpret_cast<HWND>(handle), centre, QStringLiteral("left"), 1, 0);
+        liveLog(QStringLiteral("computer use: clicked %1 in the background")
+                    .arg(control.describe()));
+        return true;
+    }
 
     SetForegroundWindow(reinterpret_cast<HWND>(handle));
     QThread::msleep(80);
-    clickScreen(control.x + control.w / 2, control.y + control.h / 2, QStringLiteral("left"), 1, false);
-    liveLog(QStringLiteral("computer use: clicked %1 with the mouse")
+    clickScreen(centre.x, centre.y, QStringLiteral("left"), 1, false);
+    liveLog(QStringLiteral("computer use: clicked %1 with the real mouse")
                 .arg(control.describe()));
     return true;
 }
 
 bool fill(quint64 handle, const DesktopControl &control, const QString &text,
-          QString *error)
+          QString *error, bool real = false)
 {
     if (text.isEmpty()) {
         if (error)
@@ -1011,14 +1034,11 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
         return false;
     }
 
-    // THE WINDOW COMES FIRST, before any of the three ways of writing text.
-    // A background window takes no keystrokes, a packaged one takes nothing at
-    // all, and UI Automation cheerfully reports success either way - which is
-    // precisely what "it will not type into the Store" looked like.
-    if (!bringToFront(top)) {
-        liveLog(QStringLiteral("computer use: that window would not come to the "
-                               "front, typing into it anyway"));
-    }
+    // NO foreground steal here: the value and legacy patterns write without it,
+    // and the agent's own keyboard types without it. Only the real-keyboard
+    // last resort brings the window to the front, and only once it is reached.
+    if (control.w > 0 && control.h > 0)
+        AgentCursor::pointAt(QPoint(control.x + control.w / 2, control.y + control.h / 2), true);
 
     IUIAutomationElement *e = refind(handle, control, true);
 
@@ -1080,11 +1100,40 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
         }
     }
 
-    // 3. Focus it and type for real. THIS IS WHAT ACTUALLY WORKS ON A STORE
-    //    APP: the keystrokes go through the app's own input handling, so a
-    //    search box reacts exactly as it would to a person - which matters,
-    //    because a search box that has its text set behind its back often does
-    //    not search.
+    // 3. THE AGENT'S OWN KEYBOARD. Focus the field - through UI Automation, or
+    //    by a background click that gives a XAML field its caret - then type
+    //    the characters as background messages. The user's pointer never moves
+    //    and their focus is never taken.
+    if (e) {
+        e->SetFocus();
+        QThread::msleep(90);
+    } else if (control.w > 0 && control.h > 0) {
+        bgClickAt(top, POINT{ control.x + control.w / 2, control.y + control.h / 2 },
+                  QStringLiteral("left"), 1, 0);
+        QThread::msleep(120);
+    }
+    if (!real) {
+        if (readable && !before.isEmpty())
+            bgKeys(top, QStringLiteral("ctrl+a delete"), nullptr);
+        bgType(top, text);
+        QThread::msleep(80);
+        if (took()) {
+            liveLog(QStringLiteral("computer use: typed into %1 in the background")
+                        .arg(control.describe()));
+            if (e)
+                e->Release();
+            return true;
+        }
+    }
+
+    // 4. THE REAL KEYBOARD, the last resort: bring the window to the front,
+    //    give the field a real click for its caret and type with SendInput.
+    //    Reached only when the caller forced it, or when the background type
+    //    left a readable field unchanged - which is what a Store search box
+    //    that ignores everything else has needed.
+    if (!bringToFront(top))
+        liveLog(QStringLiteral("computer use: that window would not come to the "
+                               "front, typing into it anyway"));
     bool focused = false;
     if (e) {
         e->SetFocus();
@@ -1094,9 +1143,6 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
         focused = has;
     }
     if (!focused && control.w > 0 && control.h > 0) {
-        // SetFocus refused, or there was no element at all. Click the middle of
-        // where the control was: a real click is what gives a XAML field its
-        // caret, and a focus call that reports success without one is common.
         clickScreen(control.x + control.w / 2, control.y + control.h / 2, QStringLiteral("left"), 1, false);
         QThread::msleep(120);
         focused = true;
@@ -1108,19 +1154,14 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
             e->Release();
         return false;
     }
-
-    // Only clear it when we can see there is something to clear. Firing ctrl+A
-    // and delete blind is how you empty a document that merely looked like a
-    // text box.
-    if (readable && !before.isEmpty()) {
+    if (readable && !before.isEmpty())
         sendKeys(QStringLiteral("ctrl+a delete"), nullptr);
-    }
-
     typeHere(text);
     QThread::msleep(80);
 
     if (took()) {
-        liveLog(QStringLiteral("computer use: typed into %1").arg(control.describe()));
+        liveLog(QStringLiteral("computer use: typed into %1 with the real keyboard")
+                    .arg(control.describe()));
         if (e)
             e->Release();
         return true;
@@ -1132,9 +1173,8 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
         e->Release();
 
     if (stillReadable) {
-        // It can be read, and it does not hold what we sent. That is a real
-        // failure and the model is told so, rather than being left to believe
-        // the field is filled in.
+        // It can be read, and it does not hold what we sent. A real failure, and
+        // the model is told so rather than led to believe the field is filled.
         if (error)
             *error = QObject::tr("I typed it but the field did not take it.");
         liveLog(QStringLiteral("computer use: %1 refused every way of typing into it")
@@ -1143,8 +1183,8 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
     }
 
     // Nothing to read back. The keystrokes were delivered to whatever holds the
-    // keyboard, which is as far as this can go, so call it done but say in the
-    // log that it was not checked.
+    // keyboard, as far as this can go, so call it done but log that it was not
+    // checked.
     liveLog(QStringLiteral("computer use: typed into %1 unverified - it reports no "
                            "value to read")
                 .arg(control.describe()));
@@ -1402,6 +1442,248 @@ void typeHere(const QString &text)
         // Notepad dropped the letter after a space at 8 ms a key - its spell
         // check runs on every word break - so a word break gets longer.
         QThread::msleep(c.isSpace() || c.isPunct() ? 35 : 12);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// THE AGENT'S OWN MOUSE AND KEYBOARD.
+//
+// Everything above drives the ONE physical pointer (SetCursorPos) and the ONE
+// physical keyboard (SendInput): the cursor jumps out from under the user and
+// keystrokes land wherever the real focus is. Everything here instead POSTS
+// WINDOW MESSAGES straight to the window being worked in, so the agent has a
+// mouse and a keyboard of its own - it clicks, types, drags and scrolls in the
+// background while the user carries on with their real mouse and keyboard in
+// another window. Proven against Win32, Chromium and packaged XAML apps. The
+// physical devices are touched only by the real-input fallback above, and only
+// when a window will take nothing else.
+// ---------------------------------------------------------------------------
+
+// The deepest child window under a SCREEN point - the real control, not the
+// top-level frame - so a posted message hit-tests where a real click would
+// land.
+HWND childAtPoint(HWND top, POINT screen)
+{
+    HWND cur = top;
+    for (int depth = 0; depth < 32 && cur; ++depth) {
+        POINT local = screen;
+        ScreenToClient(cur, &local);
+        const HWND child = ChildWindowFromPointEx(
+            cur, local, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT);
+        if (!child || child == cur)
+            break;
+        cur = child;
+    }
+    return cur ? cur : top;
+}
+
+// The window that really holds the keyboard focus inside a top window - a
+// packaged app's CoreWindow, a browser's render widget - so typed keys reach
+// what is actually listening rather than the outer frame.
+HWND focusInside(HWND top)
+{
+    const DWORD tid = GetWindowThreadProcessId(top, nullptr);
+    GUITHREADINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetGUIThreadInfo(tid, &info) && info.hwndFocus)
+        return info.hwndFocus;
+    const HWND host = uiaHost(top);
+    return host ? host : top;
+}
+
+LPARAM localPoint(HWND target, POINT screen)
+{
+    POINT local = screen;
+    ScreenToClient(target, &local);
+    return MAKELPARAM(local.x, local.y);
+}
+
+// Make ctrl / shift / alt LOOK held to one window's thread while `act` runs, by
+// briefly sharing that thread's input state - never the physical keyboard, so
+// the user's own modifiers stay untouched. Without it a posted ctrl+a is read
+// as a bare 'a', because the target checks its own keyboard state for Control.
+void withHeldMods(HWND target, const QList<WORD> &mods,
+                  const std::function<void()> &act)
+{
+    if (mods.isEmpty()) {
+        act();
+        return;
+    }
+    const DWORD theirs = GetWindowThreadProcessId(target, nullptr);
+    const DWORD ours = GetCurrentThreadId();
+    const bool attached = theirs && theirs != ours
+                          && AttachThreadInput(ours, theirs, TRUE);
+
+    BYTE state[256] = {};
+    GetKeyboardState(state);
+    BYTE saved[256];
+    for (int i = 0; i < 256; ++i)
+        saved[i] = state[i];
+    for (const WORD vk : mods) {
+        state[vk] |= 0x80;
+        if (vk == WORD(VK_CONTROL)) state[VK_LCONTROL] |= 0x80;
+        if (vk == WORD(VK_SHIFT))   state[VK_LSHIFT] |= 0x80;
+        if (vk == WORD(VK_MENU))    state[VK_LMENU] |= 0x80;
+    }
+    SetKeyboardState(state);
+    act();
+    SetKeyboardState(saved);
+    if (attached)
+        AttachThreadInput(ours, theirs, FALSE);
+}
+
+// The key-message lParam: repeat 1, the scan code, the extended flag, and for a
+// release the transition and previous-state bits.
+LPARAM keyMessageParam(WORD vk, bool extended, bool up)
+{
+    const UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    DWORD l = 1u | (scan << 16) | (extended ? (1u << 24) : 0u);
+    if (up)
+        l |= (1u << 30) | (1u << 31);
+    return LPARAM(l);
+}
+
+// One background mouse action at a SCREEN point. button left / right / middle;
+// clicks 1 or 2; mk carries any MK_CONTROL / MK_SHIFT already held.
+void bgClickAt(HWND top, POINT screen, const QString &button, int clicks, WORD mk)
+{
+    const HWND target = childAtPoint(top, screen);
+    const LPARAM lp = localPoint(target, screen);
+    UINT down = WM_LBUTTONDOWN, up = WM_LBUTTONUP, dbl = WM_LBUTTONDBLCLK;
+    WORD flag = MK_LBUTTON;
+    if (button == QLatin1String("right")) {
+        down = WM_RBUTTONDOWN; up = WM_RBUTTONUP; dbl = WM_RBUTTONDBLCLK;
+        flag = MK_RBUTTON;
+    } else if (button == QLatin1String("middle")) {
+        down = WM_MBUTTONDOWN; up = WM_MBUTTONUP; dbl = WM_MBUTTONDBLCLK;
+        flag = MK_MBUTTON;
+    }
+    PostMessageW(target, WM_MOUSEMOVE, mk, lp);
+    const int times = qBound(1, clicks, 2);
+    for (int i = 0; i < times; ++i) {
+        PostMessageW(target, (i == 1 ? dbl : down), WPARAM(mk | flag), lp);
+        PostMessageW(target, up, WPARAM(mk), lp);
+    }
+}
+
+void bgMoveTo(HWND top, POINT screen)
+{
+    const HWND target = childAtPoint(top, screen);
+    PostMessageW(target, WM_MOUSEMOVE, 0, localPoint(target, screen));
+}
+
+// A press, a stepped move and a release, so a target that only reacts to
+// movement between the two sees it.
+void bgDragBetween(HWND top, POINT from, POINT to)
+{
+    const HWND target = childAtPoint(top, from);
+    PostMessageW(target, WM_MOUSEMOVE, 0, localPoint(target, from));
+    PostMessageW(target, WM_LBUTTONDOWN, MK_LBUTTON, localPoint(target, from));
+    constexpr int kSteps = 10;
+    for (int i = 1; i <= kSteps; ++i) {
+        const POINT step{ from.x + (to.x - from.x) * i / kSteps,
+                          from.y + (to.y - from.y) * i / kSteps };
+        PostMessageW(target, WM_MOUSEMOVE, MK_LBUTTON, localPoint(target, step));
+        QThread::msleep(15);
+    }
+    PostMessageW(target, WM_LBUTTONUP, 0, localPoint(target, to));
+}
+
+// The wheel. WM_MOUSEWHEEL carries SCREEN coordinates in its lParam, not client
+// ones. Positive notches scroll up, or right.
+void bgWheelAt(HWND top, POINT screen, int notches, bool horizontal)
+{
+    const HWND target = childAtPoint(top, screen);
+    PostMessageW(target, horizontal ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL,
+                 MAKEWPARAM(0, notches * WHEEL_DELTA),
+                 MAKELPARAM(screen.x, screen.y));
+}
+
+// One key chord - "ctrl+shift+s", "alt+f4", "enter" - posted to a window, with
+// its modifiers made to look held for that window's thread.
+bool bgChord(HWND top, const QString &chord, QString *error)
+{
+    const HWND focus = focusInside(top);
+    QList<WORD> mods;
+    WORD mainVk = 0;
+    bool mainExt = false;
+    bool haveMain = false;
+    const QStringList parts = chord.split(QLatin1Char('+'), Qt::SkipEmptyParts);
+    for (const QString &raw : parts) {
+        const QString part = raw.trimmed().toLower();
+        WORD vk = 0;
+        bool ext = false;
+        bool shift = false;
+        if (!resolveKey(part, &vk, &ext, &shift)) {
+            if (error)
+                *error = QObject::tr("I do not know a key called '%1'.").arg(part);
+            return false;
+        }
+        if (vk == WORD(VK_CONTROL) || vk == WORD(VK_SHIFT) || vk == WORD(VK_MENU)
+            || vk == WORD(VK_LWIN)) {
+            if (!mods.contains(vk))
+                mods.append(vk);
+        } else {
+            mainVk = vk;
+            mainExt = ext;
+            haveMain = true;
+            if (shift && !mods.contains(WORD(VK_SHIFT)))
+                mods.append(WORD(VK_SHIFT));
+        }
+    }
+    if (!haveMain) {
+        if (error)
+            *error = QObject::tr("No key was named to press.");
+        return false;
+    }
+    const bool alt = mods.contains(WORD(VK_MENU));
+    const UINT downMsg = alt ? WM_SYSKEYDOWN : WM_KEYDOWN;
+    const UINT upMsg = alt ? WM_SYSKEYUP : WM_KEYUP;
+    withHeldMods(focus, mods, [&]() {
+        for (const WORD m : mods)
+            PostMessageW(focus, WM_KEYDOWN, m, keyMessageParam(m, false, false));
+        PostMessageW(focus, downMsg, mainVk, keyMessageParam(mainVk, mainExt, false));
+        PostMessageW(focus, upMsg, mainVk, keyMessageParam(mainVk, mainExt, true));
+        for (auto it = mods.crbegin(); it != mods.crend(); ++it)
+            PostMessageW(focus, WM_KEYUP, *it, keyMessageParam(*it, false, true));
+    });
+    return true;
+}
+
+// Chords one after another, separated by spaces or commas: "ctrl+a delete".
+bool bgKeys(HWND top, const QString &keys, QString *error)
+{
+    QString spaced = keys;
+    spaced.replace(QLatin1Char(','), QLatin1Char(' '));
+    const QStringList chords = spaced.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (chords.isEmpty()) {
+        if (error)
+            *error = QObject::tr("No keys were named.");
+        return false;
+    }
+    for (const QString &chord : chords) {
+        if (!bgChord(top, chord, error))
+            return false;
+        QThread::msleep(30);
+    }
+    return true;
+}
+
+// Text posted a character at a time to whatever holds the focus, a new line as
+// Enter - exactly the characters a real keyboard would send.
+void bgType(HWND top, const QString &text)
+{
+    const HWND focus = focusInside(top);
+    for (const QChar c : text) {
+        if (c == QLatin1Char('\r'))
+            continue;
+        if (c == QLatin1Char('\n')) {
+            PostMessageW(focus, WM_KEYDOWN, VK_RETURN, keyMessageParam(VK_RETURN, false, false));
+            PostMessageW(focus, WM_KEYUP, VK_RETURN, keyMessageParam(VK_RETURN, false, true));
+            continue;
+        }
+        PostMessageW(focus, WM_CHAR, WPARAM(c.unicode()), 1);
+        QThread::msleep(4);
     }
 }
 
@@ -1751,6 +2033,20 @@ QString carryOut(const QVariantMap &args, DeskState &state,
                                     : QStringLiteral("left");
     const int clicks = args.value(QStringLiteral("double")).toBool() ? 2 : 1;
     const QString wanted = args.value(QStringLiteral("window")).toString().trimmed();
+    // The agent uses its OWN mouse and keyboard by default - background window
+    // messages that leave the user's real devices alone. `real` forces the
+    // physical mouse and keyboard, the last resort for a window that will take
+    // nothing else. `hold` names a modifier to keep down during a click.
+    const bool real = args.value(QStringLiteral("real")).toBool();
+    const auto heldMask = [&]() -> WORD {
+        const QString h = args.value(QStringLiteral("hold")).toString().toLower();
+        WORD mk = 0;
+        if (h.contains(QLatin1String("ctrl")) || h.contains(QLatin1String("control")))
+            mk |= MK_CONTROL;
+        if (h.contains(QLatin1String("shift")))
+            mk |= MK_SHIFT;
+        return mk;
+    };
 
     // The window an action means: the one named, else the one this task is
     // working in, else whatever is in front.
@@ -1844,23 +2140,40 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         QPoint point;
         if (!pointOf("x", "y", &point))
             return QObject::tr("Failed: %1").arg(error);
-        if (state.shotWindow)
-            bringToFront(reinterpret_cast<HWND>(state.shotWindow));
-        clickScreen(point.x(), point.y(), mouseButton, clicks);
+        const HWND onWin = state.shotWindow
+                               ? reinterpret_cast<HWND>(state.shotWindow)
+                               : reinterpret_cast<HWND>(windowMeant().handle);
+        AgentCursor::pointAt(point, true);
+        state.cursorX = point.x();
+        state.cursorY = point.y();
+        if (real || !onWin) {
+            if (onWin)
+                bringToFront(onWin);
+            clickScreen(point.x(), point.y(), mouseButton, clicks);
+        } else {
+            bgClickAt(onWin, POINT{ point.x(), point.y() }, mouseButton, clicks, heldMask());
+        }
         return QObject::tr("%1 at %2, %3 in that screenshot.")
             .arg(howClicked())
             .arg(args.value(QStringLiteral("x")).toInt())
             .arg(args.value(QStringLiteral("y")).toInt());
     }
 
-    // A named control, but not a plain left click: UI Automation has no
-    // pattern for a right or double click, so it is the real mouse, aimed at
-    // the middle of the control.
+    // A named control, but not a plain left click: UI Automation has no pattern
+    // for a right or double click, so it is a click aimed at the middle of the
+    // control - the agent's own pointer by default, the real mouse when forced.
     if (action == QLatin1String("click") && (mouseButton != QLatin1String("left") || clicks > 1)) {
         const DesktopControl c = controlNamed();
         if (!c.key.isEmpty() && c.w > 0 && c.h > 0) {
-            bringToFront(reinterpret_cast<HWND>(state.target.handle));
-            clickScreen(c.x + c.w / 2, c.y + c.h / 2, mouseButton, clicks);
+            const POINT at{ c.x + c.w / 2, c.y + c.h / 2 };
+            AgentCursor::pointAt(QPoint(at.x, at.y), true);
+            if (real) {
+                bringToFront(reinterpret_cast<HWND>(state.target.handle));
+                clickScreen(at.x, at.y, mouseButton, clicks);
+            } else {
+                bgClickAt(reinterpret_cast<HWND>(state.target.handle), at, mouseButton,
+                          clicks, heldMask());
+            }
             return QObject::tr("%1 %2.").arg(howClicked(), c.name.isEmpty() ? c.type : c.name);
         }
     }
@@ -1873,12 +2186,15 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         if (text.isEmpty())
             return QObject::tr("Failed: no text was given.");
         const DesktopWindow into = windowMeant();
-        if (!into.isNull()) {
-            if (!bringToFront(reinterpret_cast<HWND>(into.handle)))
-                liveLog(QStringLiteral("computer use: that window would not come to the front"));
+        if (!into.isNull())
             state.target = into;
+        if (real || into.isNull()) {
+            if (!into.isNull() && !bringToFront(reinterpret_cast<HWND>(into.handle)))
+                liveLog(QStringLiteral("computer use: that window would not come to the front"));
+            typeHere(text);
+        } else {
+            bgType(reinterpret_cast<HWND>(into.handle), text);
         }
-        typeHere(text);
         return QObject::tr("Typed %1 characters into '%2', wherever its cursor was. "
                            "Take a screenshot to check it landed where you meant.")
             .arg(text.size())
@@ -1893,14 +2209,20 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         if (keys.isEmpty())
             return QObject::tr("Failed: no keys were given.");
         // Into the task's own window, so keys meant for it never land in
-        // whatever another task left in front.
+        // whatever another task left in front - and by the agent's own keyboard,
+        // so the user's keystrokes elsewhere are untouched. `real` forces the
+        // physical keyboard.
         const DesktopWindow into = windowMeant();
-        if (!into.isNull()) {
-            bringToFront(reinterpret_cast<HWND>(into.handle));
+        if (!into.isNull())
             state.target = into;
-        }
-        if (!sendKeys(keys, &error))
+        if (real || into.isNull()) {
+            if (!into.isNull())
+                bringToFront(reinterpret_cast<HWND>(into.handle));
+            if (!sendKeys(keys, &error))
+                return QObject::tr("Failed: %1").arg(error);
+        } else if (!bgKeys(reinterpret_cast<HWND>(into.handle), keys, &error)) {
             return QObject::tr("Failed: %1").arg(error);
+        }
         return QObject::tr("Pressed %1.").arg(keys);
     }
 
@@ -1909,9 +2231,17 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         QPoint to;
         if (!pointOf("x", "y", &from) || !pointOf("to_x", "to_y", &to))
             return QObject::tr("Failed: %1").arg(error);
-        if (state.shotWindow)
-            bringToFront(reinterpret_cast<HWND>(state.shotWindow));
-        dragScreen(from, to);
+        const HWND dragWin = state.shotWindow
+                                 ? reinterpret_cast<HWND>(state.shotWindow)
+                                 : reinterpret_cast<HWND>(windowMeant().handle);
+        AgentCursor::pointAt(to, true);
+        if (real || !dragWin) {
+            if (dragWin)
+                bringToFront(dragWin);
+            dragScreen(from, to);
+        } else {
+            bgDragBetween(dragWin, POINT{ from.x(), from.y() }, POINT{ to.x(), to.y() });
+        }
         return QObject::tr("Dragged from %1, %2 to %3, %4 in that screenshot.")
             .arg(args.value(QStringLiteral("x")).toInt())
             .arg(args.value(QStringLiteral("y")).toInt())
@@ -1940,7 +2270,12 @@ QString carryOut(const QVariantMap &args, DeskState &state,
             at = QPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
         }
         const bool back = direction == QLatin1String("down") || direction == QLatin1String("left");
-        wheelAt(at.x(), at.y(), back ? -amount : amount, horizontal);
+        const int notches = back ? -amount : amount;
+        const HWND scrollWin = reinterpret_cast<HWND>(windowMeant().handle);
+        if (real || !scrollWin)
+            wheelAt(at.x(), at.y(), notches, horizontal);
+        else
+            bgWheelAt(scrollWin, POINT{ at.x(), at.y() }, notches, horizontal);
         return QObject::tr("Scrolled %1 by %2.").arg(direction).arg(amount);
     }
 
@@ -1951,9 +2286,15 @@ QString carryOut(const QVariantMap &args, DeskState &state,
             at = QPoint(c.x + c.w / 2, c.y + c.h / 2);
         else if (!pointOf("x", "y", &at))
             return QObject::tr("Failed: %1").arg(error);
-        SetCursorPos(at.x(), at.y());
-        return QObject::tr("The pointer is resting there now. Take a screenshot with "
-                           "screen true to see a tooltip or menu it opened.");
+        state.cursorX = at.x();
+        state.cursorY = at.y();
+        AgentCursor::pointAt(at, false);
+        if (real)
+            SetCursorPos(at.x(), at.y());
+        else
+            bgMoveTo(reinterpret_cast<HWND>(windowMeant().handle), POINT{ at.x(), at.y() });
+        return QObject::tr("The agent's pointer is resting there now. Take a screenshot "
+                           "with screen true to see a tooltip or menu it opened.");
     }
 
     if (action == QLatin1String("read_text")) {
@@ -2197,7 +2538,7 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         const DesktopControl target = controlNamed();
         if (target.key.isEmpty())
             return listAgain();
-        if (click(state.target.handle, target, &error))
+        if (click(state.target.handle, target, &error, real))
             return QObject::tr("Clicked %1.").arg(target.name.isEmpty() ? target.type : target.name);
         return QObject::tr("Failed: %1").arg(error);
     }
@@ -2209,7 +2550,7 @@ QString carryOut(const QVariantMap &args, DeskState &state,
             return QObject::tr("Failed: no text was given.");
         if (target.key.isEmpty())
             return listAgain();
-        if (fill(state.target.handle, target, text, &error))
+        if (fill(state.target.handle, target, text, &error, real))
             return QObject::tr("Typed it in.");
         return QObject::tr("Failed: %1").arg(error);
     }

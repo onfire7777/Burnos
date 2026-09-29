@@ -31,16 +31,13 @@ public:
     bool isActive() const { return m_active; }
     void setActive(bool active);
 
-    // True when a point in this widget's coordinates lands on the orb itself,
-    // rather than on the empty space or the caption strip around it. The window
-    // is far wider and taller than the orb so the answer has room to wrap, but
-    // only the orb is solid: everything else is see through and click through.
+    // True when a point in this widget's coordinates lands on the orb itself
+    // rather than the corners around it. Only the orb is solid: everything
+    // else is see through and click through.
     bool hitsOrb(const QPointF &pos) const;
 
-    // The orb's diameter with nothing to say. The window is bigger than this,
-    // because the orb GROWS when an answer arrives and the words are painted
-    // inside it - but every pixel of the window that is not orb is invisible
-    // and clicks straight through, so the box is not there to look at.
+    // The orb's diameter. The window is exactly this square, and every pixel of
+    // it that is not orb is invisible and clicks straight through.
     void setOrbDiameter(int px);
 
     // NO TEXT IS EVER SHOWN FOR AN ANSWER. While the orb is speaking it goes
@@ -133,7 +130,7 @@ private:
     QString m_statusText;
     qreal m_statusFraction = -1.0; // negative means the size is unknown yet
     bool m_thinking = false;       // answering, so the microphone is shut
-    bool m_speaking = false;       // the answer is up in the speech bubble
+    bool m_speaking = false;       // the voice is saying the answer
     bool m_preparing = false;      // the answer is back, the voice is not yet
 
     // The muted word in the middle of the orb: "I'm listening" while armed and

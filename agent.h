@@ -169,6 +169,9 @@ signals:
 private:
     void talk(const QString &said);
     void sendTalk(int turn, const QString &said, const QString &memories);
+    // One question to the talking model - fast provider, the talker's tools -
+    // answered on onTalkAnswer.
+    void askTalker(int turn, const QJsonArray &messages, const QString &who);
     void onTalkAnswer(int turn, const OpenRouterClient::Reply &reply);
     // The talker asked its memory something: look it up and ask the talker
     // once more with what was found, for the answer to say.

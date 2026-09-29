@@ -111,7 +111,6 @@ public:
     // Reads the list and starts every server on it.
     void load();
 
-    QList<McpServer *> servers() const { return m_servers; }
     McpServer *server(const QString &name) const;
     QStringList readyNames() const;
 

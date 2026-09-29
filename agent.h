@@ -5,6 +5,7 @@
 #include "openrouter.h"
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QJsonArray>
 #include <QList>
 #include <QObject>
@@ -21,6 +22,7 @@ class ComposioClient;
 namespace BurnOS {
 
 class Agent;
+class McpClient;
 
 // ONE PIECE OF BACKGROUND WORK - "open GitHub", "write a poem in Notepad".
 //
@@ -71,6 +73,7 @@ private:
     void onAnswer(const OpenRouterClient::Reply &reply);
     void runNextCall();
     void runAppAction(const QVariantMap &args);
+    void runMcp(const QVariantMap &args);
     void answerCall(const QString &result, const QByteArray &png = QByteArray());
     void flushShots();
     void pruneContext();
@@ -137,11 +140,14 @@ public:
     // Muted: the talker and every task stop, now.
     void stopAll();
 
-    bool isThinking() const { return m_request != 0; }
+    // From the moment something is heard until the talker's answer is ready:
+    // the memory lookup before it, the request, and a recall after it.
+    bool isThinking() const { return !m_asking.isEmpty(); }
     int liveTasks() const;
 
     OpenRouterClient *ai() const { return m_ai; }
     ComposioClient *composio() const { return m_composio; }
+    McpClient *mcp() const { return m_mcp; }
 
 signals:
     // Say this out loud. `turn` is the talker turn it answers, or 0 for news
@@ -156,7 +162,15 @@ signals:
 
 private:
     void talk(const QString &said);
+    void sendTalk(int turn, const QString &said, const QString &memories);
     void onTalkAnswer(int turn, const OpenRouterClient::Reply &reply);
+    // The talker asked its memory something: look it up and ask the talker
+    // once more with what was found, for the answer to say.
+    void recall(int turn, const QJsonObject &assistant, const QHash<QString, QString> &results,
+                const QString &callId, const QString &query);
+    // What a memory search found, as lines for the talker, each with a short
+    // id it can hand back to forget one.
+    QString memoryNotes(const QJsonObject &result);
     // Carries out one of the talker's three tools and says, in a few words,
     // what came of it. `acted` is false when nothing could be done.
     QString runTalkTool(const QString &name, const QJsonObject &args, bool *acted);
@@ -172,6 +186,14 @@ private:
 
     OpenRouterClient *const m_ai;
     ComposioClient *const m_composio;
+    // The user's MCP servers, their long-term memory among them.
+    McpClient *m_mcp = nullptr;
+    // Short memory ids the talker has been shown, and the full ids behind them.
+    QHash<QString, QString> m_memoryIds;
+    // What the talker was last sent, for a recall's second round, and the turn
+    // that has already had one - a second recall in a turn is refused.
+    QJsonArray m_talkSent;
+    int m_recalledTurn = 0;
 
     // What was SAID, both ways, oldest first: the user's words, the talker's
     // answers and the news the tasks brought back. Never the tool plumbing.

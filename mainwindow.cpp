@@ -75,7 +75,8 @@ bool isSettingsCommand(const QString &text)
 QStringList instantReplies()
 {
     return {QStringLiteral("On it."), QStringLiteral("Okay."),
-            QStringLiteral("Stopped.")};
+            QStringLiteral("Stopped."), QStringLiteral("Got it."),
+            QStringLiteral("Forgotten.")};
 }
 
 // A rehearsal line of the form "@4 what time is it" is said four seconds after

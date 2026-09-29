@@ -2,6 +2,7 @@
 
 #include "composio.h"
 #include "livelog.h"
+#include "mcp.h"
 #include "settings.h"
 
 #include <QCoreApplication>
@@ -54,6 +55,33 @@ constexpr int kMaxToolTotal = 120000;
 // A finished task stays in the talker's report this long, so "how did that
 // go?" still has an answer.
 constexpr qint64 kKeepFinishedMs = 10 * 60 * 1000;
+
+// THE USER'S LONG-TERM MEMORY lives in Mnemosyne, over MCP. One desktop, one
+// person: a single tenant and user, fixed here so every memory lands in the
+// same place. The lookup before each answer gets this long before the answer
+// goes ahead without it.
+constexpr auto kMemoryTenant = "burnos";
+constexpr auto kMemoryUser = "owner";
+constexpr int kMemoryLookupMs = 3000;
+constexpr double kMemoryMinScore = 0.3;
+
+const char kMemoryPrompt[] =
+    "LONG-TERM MEMORY. You have a memory that lasts beyond this conversation "
+    "and beyond restarts - but ONLY what the remember tool stores. When the user "
+    "asks you to remember something you MUST call remember with it written as "
+    "one plain sentence about them - 'The user's favourite code editor is Qt "
+    "Creator.' - and say 'Got it.'; saying 'Got it' without calling remember "
+    "stores nothing at all. NEVER say you remember anything that is not in the "
+    "memory notes you were given or in what recall found. When they "
+    "ask what you remember, or ask something only your memory could answer "
+    "and the memory notes you were given do not already hold it, call recall "
+    "with what to look for, and if that finds nothing, say you do not know. "
+    "When they ask you to forget something, call "
+    "forget_memory with its memory id from the notes; if the notes do not show "
+    "it, recall it first. Store ONLY what they ask you to remember - never the "
+    "conversation itself, and never passwords, keys or card numbers. Use what "
+    "you remember naturally, including in the briefs you write for tasks: 'my "
+    "editor' is the editor they told you about.";
 
 // ---------------------------------------------------------------------------
 // THE TALKER'S BRIEF. It talks and it delegates; it never operates anything.
@@ -212,6 +240,33 @@ QString ago(qint64 ms)
     return QStringLiteral("%1 hours").arg(minutes / 60);
 }
 
+// "Remember that my editor is Qt Creator" -> "my editor is Qt Creator". Empty
+// when the words are not an instruction to remember - a question about
+// memory ("do you remember...?") is not one.
+QString rememberCommand(const QString &said)
+{
+    QString s = said.simplified();
+    while (!s.isEmpty() && !s.at(0).isLetter())
+        s.remove(0, 1);
+    if (s.endsWith(QLatin1Char('?')))
+        return {};
+    static const char *const kLeads[] = {
+        "please remember that ", "please remember ", "remember that ", "remember ",
+        "can you remember that ", "could you remember that ", "don't forget that ",
+        "do not forget that ", "make a note that ", "keep in mind that ",
+    };
+    for (const char *lead : kLeads) {
+        const QString prefix = QString::fromLatin1(lead);
+        if (s.startsWith(prefix, Qt::CaseInsensitive)) {
+            QString fact = s.mid(prefix.size()).trimmed();
+            while (fact.endsWith(QLatin1Char('.')) || fact.endsWith(QLatin1Char('!')))
+                fact.chop(1);
+            return fact.size() >= 3 ? fact : QString();
+        }
+    }
+    return {};
+}
+
 // Given as a number where the model behaved and as "2" where it did not.
 int taskNumber(const QJsonValue &value)
 {
@@ -243,11 +298,43 @@ QJsonObject numberParam(const QString &description)
                        {QStringLiteral("description"), description}};
 }
 
-// The talker's three tools. It can start work, change work and stop work, and
-// nothing else: everything that touches the machine happens inside a task.
-QJsonArray talkTools()
+// The talker's tools. It can start work, change work and stop work - and, when
+// the memory is up, remember, recall and forget. Nothing else: everything that
+// touches the machine happens inside a task.
+QJsonArray talkTools(bool memory)
 {
     QJsonArray list;
+    if (memory) {
+        list.append(functionTool(
+            QStringLiteral("remember"),
+            QStringLiteral("Keep something the user asked you to remember, for good."),
+            QJsonObject{
+                {"type", "object"},
+                {"properties", QJsonObject{
+                    {"fact", textParam(QStringLiteral(
+                         "One plain sentence about the user, such as The user's "
+                         "favourite code editor is Qt Creator."))}}},
+                {"required", QJsonArray{"fact"}},
+            }));
+        list.append(functionTool(
+            QStringLiteral("recall"),
+            QStringLiteral("Look something up in your long-term memory of the user."),
+            QJsonObject{
+                {"type", "object"},
+                {"properties", QJsonObject{
+                    {"query", textParam(QStringLiteral("What to look for, in a few words."))}}},
+                {"required", QJsonArray{"query"}},
+            }));
+        list.append(functionTool(
+            QStringLiteral("forget_memory"),
+            QStringLiteral("Forget one thing in your long-term memory, by its memory id."),
+            QJsonObject{
+                {"type", "object"},
+                {"properties", QJsonObject{
+                    {"id", textParam(QStringLiteral("The memory id from the notes."))}}},
+                {"required", QJsonArray{"id"}},
+            }));
+    }
     list.append(functionTool(
         QStringLiteral("start_task"),
         QStringLiteral("Start a background task that does something on the "
@@ -526,11 +613,43 @@ QJsonObject askUserTool()
                     {"required", QJsonArray{"question"}}});
 }
 
-QJsonArray taskTools(bool online)
+// The user's MCP servers, found and then called - two steps, because a server
+// such as Mnemosyne has dozens of tools and their arguments have to be seen
+// before they can be used.
+QJsonObject mcpTool()
+{
+    const QJsonObject properties{
+        {"action", QJsonObject{
+            {"type", "string"},
+            {"enum", QJsonArray{"list_tools", "call_tool"}},
+            {"description",
+             "list_tools shows what the servers offer - narrowed by server and "
+             "by words in query - with the arguments each tool takes. call_tool "
+             "runs one of them."}}},
+        {"server", textParam(QStringLiteral("The server's name, such as memory."))},
+        {"query", textParam(QStringLiteral("For list_tools: words to look for."))},
+        {"tool", textParam(QStringLiteral("For call_tool: the tool's name exactly as listed."))},
+        {"arguments", QJsonObject{
+            {"type", "object"},
+            {"additionalProperties", true},
+            {"description", "For call_tool: the tool's arguments by the names listed."}}},
+    };
+    return functionTool(QStringLiteral("mcp"),
+                        QStringLiteral("Use the user's MCP servers - their long-term "
+                                       "memory, and anything else they have "
+                                       "connected to Burnos."),
+                        QJsonObject{{"type", "object"},
+                                    {"properties", properties},
+                                    {"required", QJsonArray{"action"}}});
+}
+
+QJsonArray taskTools(bool online, bool mcp)
 {
     QJsonArray list{computerUseTool(), filesTool(), shellTool(), askUserTool()};
     if (online)
         list.append(appActionTool());
+    if (mcp)
+        list.append(mcpTool());
     return list;
 }
 
@@ -573,6 +692,12 @@ QString describeStep(const QString &function, const QVariantMap &args)
     const QString action = args.value(QStringLiteral("action")).toString();
     if (function == QLatin1String("ask_user"))
         return QStringLiteral("asking the user a question");
+    if (function == QLatin1String("mcp")) {
+        return QStringLiteral("using %1")
+            .arg(args.value(QStringLiteral("server")).toString().isEmpty()
+                     ? QStringLiteral("the user's MCP servers")
+                     : args.value(QStringLiteral("server")).toString());
+    }
     if (function == QLatin1String("files")) {
         const QString path = args.value(QStringLiteral("path")).toString();
         if (action == QLatin1String("read"))
@@ -683,6 +808,20 @@ void Task::start()
                                   QString::fromLatin1(kTaskPrompt)));
             if (Settings::hasComposioKey())
                 m_messages.append(msg(QStringLiteral("system"), appsNote()));
+            const QStringList servers = m_agent->mcp()->readyNames();
+            if (!servers.isEmpty()) {
+                m_messages.append(msg(
+                    QStringLiteral("system"),
+                    tr("THE USER'S MCP SERVERS, ALREADY CONNECTED, through the mcp "
+                       "tool: %1. Never look for their configuration files or "
+                       "processes - call mcp with list_tools to see what they "
+                       "offer, then call_tool. The one called memory is the user's "
+                       "long-term memory (Mnemosyne): pass tenant_id '%2' and "
+                       "user_id '%3' to every tool of it.")
+                        .arg(servers.join(QStringLiteral(", ")),
+                             QString::fromLatin1(kMemoryTenant),
+                             QString::fromLatin1(kMemoryUser))));
+            }
             m_messages.append(msg(QStringLiteral("system"),
                                   tr("The time now is %1. The user's home folder "
                                      "is %2. The window in front right now. %3")
@@ -730,7 +869,8 @@ void Task::ask()
     OpenRouterClient::Request request;
     request.messages = m_messages;
     if (!m_wrappingUp)
-        request.tools = taskTools(Settings::hasComposioKey());
+        request.tools = taskTools(Settings::hasComposioKey(),
+                                  !m_agent->mcp()->readyNames().isEmpty());
     request.who = QStringLiteral("task %1").arg(m_id);
     request.timeoutMs = kTaskRequestMs;
     request.maxTokens = kTaskMaxTokens;
@@ -890,6 +1030,11 @@ void Task::runNextCall()
         return;
     }
 
+    if (name == QLatin1String("mcp")) {
+        runMcp(args);
+        return;
+    }
+
     if (name == QLatin1String("ask_user")) {
         const QString question = args.value(QStringLiteral("question")).toString().trimmed();
         if (question.isEmpty()) {
@@ -981,6 +1126,61 @@ void Task::runAppAction(const QVariantMap &args)
     answerCall(tr("'%1' is not something app_action does. Use find_tools to look "
                   "for a tool, run_tool to carry it out, or connect_app to sign in "
                   "to an app.").arg(action));
+}
+
+void Task::runMcp(const QVariantMap &args)
+{
+    McpClient *mcp = m_agent->mcp();
+    const QString action = args.value(QStringLiteral("action")).toString();
+    const QString serverName = args.value(QStringLiteral("server")).toString().trimmed();
+
+    if (action == QLatin1String("list_tools")) {
+        answerCall(mcp->describeTools(serverName, args.value(QStringLiteral("query")).toString()));
+        return;
+    }
+
+    if (action == QLatin1String("call_tool")) {
+        McpServer *server = mcp->server(serverName);
+        if (!server || !server->isReady()) {
+            answerCall(tr("Failed: there is no ready MCP server called '%1'. Ready: %2.")
+                           .arg(serverName,
+                                mcp->readyNames().isEmpty()
+                                    ? QStringLiteral("none")
+                                    : mcp->readyNames().join(QStringLiteral(", "))));
+            return;
+        }
+        const QString tool = args.value(QStringLiteral("tool")).toString().trimmed();
+        if (!server->hasTool(tool)) {
+            answerCall(tr("Failed: %1 has no tool called '%2'. Use list_tools first.")
+                           .arg(serverName, tool));
+            return;
+        }
+        // An object where the model behaved, a string of JSON where it did not.
+        const QVariant raw = args.value(QStringLiteral("arguments"));
+        QJsonObject arguments;
+        if (raw.typeId() == QMetaType::QString)
+            arguments = QJsonDocument::fromJson(raw.toString().toUtf8()).object();
+        else
+            arguments = QJsonObject::fromVariantMap(raw.toMap());
+
+        const QPointer<Task> self(this);
+        const int id = m_id;
+        server->call(tool, arguments,
+                     [self, id, tool](bool ok, const QJsonObject &result, const QString &error) {
+            const QString text = ok ? McpServer::textOf(result)
+                                    : tr("Failed: %1").arg(error.isEmpty()
+                                                              ? McpServer::textOf(result)
+                                                              : error);
+            liveLog(QStringLiteral("task %1: mcp %2 %3")
+                        .arg(id)
+                        .arg(tool, ok ? QStringLiteral("answered") : QStringLiteral("failed")));
+            if (self && self->isLive())
+                self->answerCall(text.isEmpty() ? tr("It ran and said nothing.") : text);
+        }, 60000);
+        return;
+    }
+
+    answerCall(tr("Failed: mcp needs action list_tools or call_tool."));
 }
 
 void Task::answerCall(const QString &result, const QByteArray &png)
@@ -1129,7 +1329,13 @@ Agent::Agent(OpenRouterClient *ai, ComposioClient *composio, QObject *parent)
     : QObject(parent)
     , m_ai(ai)
     , m_composio(composio)
+    , m_mcp(new McpClient(this))
 {
+    m_mcp->load();
+    connect(m_mcp, &McpClient::memoryChanged, this, [](bool ready) {
+        liveLog(QStringLiteral("memory is %1").arg(ready ? QStringLiteral("READY")
+                                                          : QStringLiteral("not available")));
+    });
 }
 
 int Agent::liveTasks() const
@@ -1157,13 +1363,14 @@ void Agent::hear(const QString &text)
     if (said.isEmpty())
         return;
 
-    if (m_request) {
+    if (!m_asking.isEmpty()) {
         // STILL TALKING, and the talker has not answered yet. Nothing has been
         // done about the first half, so that request is dropped and the whole
         // thought asked as one - a pause for breath must not split one question
         // into two unrelated ones.
         liveLog(QStringLiteral("talk: still talking - folded into the question in flight"));
-        m_ai->cancel(m_request);
+        if (m_request)
+            m_ai->cancel(m_request);
         m_request = 0;
         said = m_asking + QLatin1Char(' ') + said;
     } else if (m_unspokenTurn) {
@@ -1189,17 +1396,73 @@ void Agent::talk(const QString &said)
     pruneTasks();
     m_asking = said;
     const int turn = ++m_turn;
+    emit thinkingChanged(true);
+
+    // MEMORY FIRST, when there is one. Whatever the user once asked to be
+    // remembered that bears on what they just said goes to the talker with it,
+    // so "open my editor" can mean the editor they told it about last week.
+    // Local and quick - and skipped if the memory does not answer in time.
+    McpServer *memory = m_mcp->memory();
+    if (!memory) {
+        sendTalk(turn, said, QString());
+        return;
+    }
+    memory->call(QStringLiteral("search"),
+                 QJsonObject{{"tenant_id", kMemoryTenant},
+                             {"user_id", kMemoryUser},
+                             {"query", said}},
+                 [this, turn, said](bool ok, const QJsonObject &result, const QString &error) {
+        if (turn != m_turn || m_asking.isEmpty())
+            return; // a newer turn took over, or everything was stopped
+        QString notes;
+        if (ok) {
+            notes = memoryNotes(result);
+            if (!notes.isEmpty()) {
+                liveLog(QStringLiteral("talk %1: memory brought %2 note(s)")
+                            .arg(turn)
+                            .arg(notes.count(QLatin1Char('\n')) + 1));
+            }
+        } else {
+            liveLog(QStringLiteral("talk %1: memory lookup failed (%2), going on without it")
+                        .arg(turn)
+                        .arg(error));
+        }
+        sendTalk(turn, said, notes);
+    }, kMemoryLookupMs);
+}
+
+void Agent::sendTalk(int turn, const QString &said, const QString &memories)
+{
+    const bool remembering = m_mcp->memory() != nullptr;
 
     QJsonArray messages;
     messages.append(msg(QStringLiteral("system"), QString::fromLatin1(kTalkPrompt)));
+    if (remembering)
+        messages.append(msg(QStringLiteral("system"), QString::fromLatin1(kMemoryPrompt)));
     messages.append(msg(QStringLiteral("system"), statusReport()));
+    if (!memories.isEmpty()) {
+        messages.append(msg(QStringLiteral("system"),
+                            tr("FROM YOUR LONG-TERM MEMORY - things the user once asked "
+                               "you to remember that may bear on this. Use them where "
+                               "they help, and never read the memory ids out:\n%1")
+                                .arg(memories)));
+    } else if (remembering) {
+        // Said outright, because a model left to fill the gap will invent a
+        // memory rather than admit to none - it once named a favourite editor
+        // it had never been told.
+        messages.append(msg(QStringLiteral("system"),
+                            tr("Your long-term memory holds nothing that matches what "
+                               "was just said. If the question needs a memory, call "
+                               "recall - never answer from a guess.")));
+    }
     for (const QJsonValue &line : std::as_const(m_history))
         messages.append(line);
     messages.append(msg(QStringLiteral("user"), said));
+    m_talkSent = messages;
 
     OpenRouterClient::Request request;
     request.messages = messages;
-    request.tools = talkTools();
+    request.tools = talkTools(remembering);
     request.who = QStringLiteral("talk %1").arg(turn);
     request.timeoutMs = kTalkTimeoutMs;
     request.fastest = true;
@@ -1219,10 +1482,12 @@ void Agent::talk(const QString &said)
 void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
 {
     m_request = 0;
+    if (turn != m_turn)
+        return; // a newer turn took over
     const QString asked = m_asking;
-    m_asking.clear();
 
     if (!reply.ok) {
+        m_asking.clear();
         liveLog(QStringLiteral("talk %1 FAILED: %2").arg(turn).arg(reply.error));
         emit failed(reply.error);
         emit thinkingChanged(false);
@@ -1240,21 +1505,63 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
     QString ack;
     QString refusal;
     QStringList did;
+    QString recallQuery;
+    QString recallCallId;
+    QHash<QString, QString> results;
     for (const QJsonValue &value : calls) {
         const QJsonObject fn = value.toObject().value(QStringLiteral("function")).toObject();
         const QString name = fn.value(QStringLiteral("name")).toString();
         const QJsonObject args = QJsonDocument::fromJson(
                                      fn.value(QStringLiteral("arguments")).toString().toUtf8())
                                      .object();
+        const QString callId = value.toObject().value(QStringLiteral("id")).toString();
+        did.append(name);
+        // RECALL waits for the memory's answer, below. Everything else runs
+        // now. A second recall in the same turn is not run at all.
+        if (name == QLatin1String("recall")) {
+            if (m_recalledTurn != turn) {
+                recallQuery = args.value(QStringLiteral("query")).toString().trimmed();
+                recallCallId = callId;
+            }
+            continue;
+        }
         bool ok = false;
         const QString said = runTalkTool(name, args, &ok);
-        did.append(name);
+        results.insert(callId, said);
         if (ok) {
             acted = true;
             if (ack.isEmpty())
                 ack = said;
         } else if (refusal.isEmpty()) {
             refusal = said;
+        }
+    }
+
+    if (!recallQuery.isEmpty()) {
+        m_recalledTurn = turn;
+        recall(turn, message, results, recallCallId, recallQuery);
+        return; // still thinking: the answer comes after the memory's
+    }
+
+    // THE SAFETY NET for "remember that ...": a model that says "Got it" and
+    // never calls remember has stored nothing, and the user would only find
+    // out a week later. When the words were plainly an instruction to
+    // remember and no remember was called, the user's own words are kept.
+    if (!did.contains(QStringLiteral("remember")) && m_mcp->memory()) {
+        const QString fact = rememberCommand(asked);
+        if (!fact.isEmpty()) {
+            liveLog(QStringLiteral("memory: the talker did not call remember - keeping "
+                                   "the user's own words"));
+            bool ok = false;
+            runTalkTool(QStringLiteral("remember"),
+                        QJsonObject{{QStringLiteral("fact"),
+                                     QStringLiteral("The user asked to be remembered: %1").arg(fact)}},
+                        &ok);
+            if (ok) {
+                acted = true;
+                if (text.isEmpty())
+                    text = tr("Got it.");
+            }
         }
     }
 
@@ -1271,12 +1578,14 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
         text = message.value(QStringLiteral("reasoning")).toString().trimmed();
 
     if (text.isEmpty()) {
+        m_asking.clear();
         liveLog(QStringLiteral("talk %1: EMPTY answer after %2 ms").arg(turn).arg(reply.ms));
         emit failed(tr("The model gave an empty answer."));
         emit thinkingChanged(false);
         return;
     }
 
+    m_asking.clear();
     remember(QStringLiteral("user"), asked);
     remember(QStringLiteral("assistant"), text);
     trimHistory();
@@ -1300,9 +1609,148 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
     emit thinkingChanged(false);
 }
 
+void Agent::recall(int turn, const QJsonObject &assistant,
+                   const QHash<QString, QString> &results, const QString &callId,
+                   const QString &query)
+{
+    // What the memory found goes back as that call's result, every other call
+    // gets what it did, and the talker is asked once more for what to say.
+    const auto answer = [this, turn, assistant, results, callId](const QString &found) {
+        if (turn != m_turn || m_asking.isEmpty())
+            return;
+        QJsonArray messages = m_talkSent;
+        messages.append(assistant);
+        for (const QJsonValue &value : assistant.value(QStringLiteral("tool_calls")).toArray()) {
+            const QString id = value.toObject().value(QStringLiteral("id")).toString();
+            messages.append(QJsonObject{
+                {QStringLiteral("role"), QStringLiteral("tool")},
+                {QStringLiteral("tool_call_id"), id},
+                {QStringLiteral("content"), id == callId ? found
+                                                         : results.value(id, QStringLiteral("Done."))}});
+        }
+        OpenRouterClient::Request request;
+        request.messages = messages;
+        // The tools stay offered, because a history holding tool calls is
+        // refused by some providers without them; a second recall this turn
+        // is simply not run.
+        request.tools = talkTools(m_mcp->memory() != nullptr);
+        request.who = QStringLiteral("talk %1 recall").arg(turn);
+        request.timeoutMs = kTalkTimeoutMs;
+        request.fastest = true;
+        m_request = m_ai->send(request, [this, turn](const OpenRouterClient::Reply &reply) {
+            onTalkAnswer(turn, reply);
+        });
+    };
+
+    McpServer *memory = m_mcp->memory();
+    if (!memory) {
+        answer(tr("The memory is not available right now."));
+        return;
+    }
+    liveLog(QStringLiteral("talk %1: recalling '%2'").arg(turn).arg(query));
+    memory->call(QStringLiteral("search"),
+                 QJsonObject{{"tenant_id", kMemoryTenant},
+                             {"user_id", kMemoryUser},
+                             {"query", query}},
+                 [this, answer](bool ok, const QJsonObject &result, const QString &error) {
+        if (!ok) {
+            answer(tr("The memory could not be searched: %1").arg(error));
+            return;
+        }
+        const QString notes = memoryNotes(result);
+        liveLog(QStringLiteral("recall found %1 note(s)")
+                    .arg(notes.isEmpty() ? 0 : notes.count(QLatin1Char('\n')) + 1));
+        answer(notes.isEmpty() ? tr("Nothing in the memory matches that.")
+                               : tr("From the memory:\n%1").arg(notes));
+    }, 5000);
+}
+
+QString Agent::memoryNotes(const QJsonObject &result)
+{
+    // Mnemosyne answers with structured content: whether it abstained, and
+    // its hits, each with an id and the text that was remembered.
+    QJsonObject found = result.value(QStringLiteral("structuredContent")).toObject();
+    if (found.isEmpty())
+        found = QJsonDocument::fromJson(McpServer::textOf(result).toUtf8()).object();
+    if (found.value(QStringLiteral("abstained")).toBool())
+        return {};
+
+    QStringList lines;
+    for (const QJsonValue &value : found.value(QStringLiteral("hits")).toArray()) {
+        const QJsonObject hit = value.toObject();
+        const QString text = hit.value(QStringLiteral("text")).toString().simplified();
+        const QString cid = hit.value(QStringLiteral("id")).toString();
+        if (text.isEmpty() || cid.isEmpty())
+            continue;
+        if (hit.value(QStringLiteral("score")).toDouble() < kMemoryMinScore)
+            continue;
+        const QString shortId = cid.left(12);
+        m_memoryIds.insert(shortId, cid);
+        lines.append(QStringLiteral("- [memory %1] %2").arg(shortId, text.left(400)));
+        if (lines.size() >= 5)
+            break;
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
 QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *acted)
 {
     *acted = false;
+
+    // REMEMBER and FORGET go to the memory and the talker does not wait: they
+    // take a moment, and if one fails the voice says so afterwards.
+    if (name == QLatin1String("remember")) {
+        McpServer *memory = m_mcp->memory();
+        const QString fact = args.value(QStringLiteral("fact")).toString().simplified();
+        if (!memory)
+            return tr("My memory is not available right now.");
+        if (fact.isEmpty())
+            return tr("I didn't catch what to remember.");
+        memory->call(QStringLiteral("capture"),
+                     QJsonObject{{"tenant_id", kMemoryTenant},
+                                 {"user_id", kMemoryUser},
+                                 {"actor", "burnos"},
+                                 {"source_type", "conversation"},
+                                 {"content", fact}},
+                     [this, fact](bool ok, const QJsonObject &result, const QString &error) {
+            if (ok) {
+                liveLog(QStringLiteral("memory: REMEMBERED '%1' as %2")
+                            .arg(fact.left(200),
+                                 result.value(QStringLiteral("structuredContent")).toObject()
+                                     .value(QStringLiteral("cid")).toString().left(12)));
+                return;
+            }
+            const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
+            liveLog(QStringLiteral("memory: could NOT remember '%1': %2").arg(fact.left(200), why));
+            emit say(tr("I could not save that to my memory: %1").arg(why), 0);
+        });
+        *acted = true;
+        return tr("Got it.");
+    }
+
+    if (name == QLatin1String("forget_memory")) {
+        McpServer *memory = m_mcp->memory();
+        const QString id = args.value(QStringLiteral("id")).toString().trimmed();
+        const QString cid = m_memoryIds.value(id.left(12),
+                                              id.size() == 64 ? id : QString());
+        if (!memory)
+            return tr("My memory is not available right now.");
+        if (cid.isEmpty())
+            return tr("I couldn't tell which memory that was.");
+        memory->call(QStringLiteral("forget"),
+                     QJsonObject{{"tenant_id", kMemoryTenant}, {"cid", cid}},
+                     [this, cid](bool ok, const QJsonObject &result, const QString &error) {
+            if (ok) {
+                liveLog(QStringLiteral("memory: FORGOT %1").arg(cid.left(12)));
+                return;
+            }
+            const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
+            liveLog(QStringLiteral("memory: could NOT forget %1: %2").arg(cid.left(12), why));
+            emit say(tr("I could not forget that: %1").arg(why), 0);
+        });
+        *acted = true;
+        return tr("Forgotten.");
+    }
 
     if (name == QLatin1String("start_task")) {
         const QString title = args.value(QStringLiteral("title")).toString().simplified();
@@ -1363,6 +1811,13 @@ QString Agent::statusReport() const
     const DesktopWindow front = Computer::foreground();
     if (!front.title.isEmpty())
         lines.append(tr("The window in front is '%1'.").arg(front.title));
+    const QStringList servers = m_mcp->readyNames();
+    if (!servers.isEmpty()) {
+        lines.append(tr("Tasks can use the user's MCP servers directly through their "
+                        "mcp tool, already connected: %1 - memory is the user's "
+                        "long-term memory.")
+                         .arg(servers.join(QStringLiteral(", "))));
+    }
 
     QStringList report;
     for (const QPointer<Task> &t : m_tasks) {

@@ -11,6 +11,10 @@
 #include <QImage>
 #include <QProcess>
 #include <QThread>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QPointer>
+#include <QSet>
 
 #include <windows.h>
 #include <shellapi.h>
@@ -1425,6 +1429,324 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
                            "value to read")
                 .arg(control.describe()));
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// ONE ACTION, AS THE MODEL ASKED FOR IT.
+//
+// Everything below runs on the hands thread, so it may block and it may sleep:
+// nothing the user can see or hear waits on it. It used to live in MainWindow
+// and hold the thread the orb draws on for up to nine seconds, inside nested
+// event loops, while a program started.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Sleep in short slices, letting go the moment the task is stopped. False if
+// it was.
+bool pauseFor(int ms, const std::atomic_bool &cancelled)
+{
+    for (int waited = 0; waited < ms; waited += 50) {
+        if (cancelled.load())
+            return false;
+        QThread::msleep(ulong(qMin(50, ms - waited)));
+    }
+    return !cancelled.load();
+}
+
+QString act(const QVariantMap &args, DeskState &state,
+            const std::atomic_bool &cancelled, QByteArray *png)
+{
+    const QString action = args.value(QStringLiteral("action")).toString();
+    QString error;
+
+    const auto namedControl = [&args, &state]() -> DesktopControl {
+        const QString wanted = args.value(QStringLiteral("control")).toString().trimmed();
+        for (const DesktopControl &c : std::as_const(state.offered)) {
+            if (c.key.compare(wanted, Qt::CaseInsensitive) == 0)
+                return c;
+        }
+        return {};
+    };
+
+    // THE LIST OF CONTROLS IS FROM BEFORE THE LAST CHANGE, and a step that
+    // opens something moves the screen on underneath it. When the model names
+    // a key that is no longer there, re-read what is in front and hand the NEW
+    // list back, instead of aiming at whatever the old key pointed to.
+    //
+    // THE TASK'S OWN WINDOW, never simply whatever is in front. With several
+    // tasks at work the window in front may well be another task's, and
+    // re-reading that handed one task the other's controls - the calculator
+    // task found itself holding the browser's list. Only when its own window
+    // has gone does it fall back to the one in front.
+    const auto listAgain = [&state]() -> QString {
+        DesktopWindow again;
+        const HWND own = reinterpret_cast<HWND>(state.target.handle);
+        if (own && IsWindow(own)) {
+            wchar_t title[512] = {};
+            const int length = GetWindowTextW(own, title, 511);
+            again.handle = state.target.handle;
+            again.title = length > 0 ? QString::fromWCharArray(title, length)
+                                     : state.target.title;
+        } else {
+            again = foreground();
+        }
+        return QObject::tr("Failed: that control is not on screen any more - the "
+                           "screen has changed since the list you were given. %1")
+            .arg(describeControls(again, state));
+    };
+
+    if (action == QLatin1String("launch")) {
+        const QString name = args.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty())
+            return QObject::tr("Failed: no program was named.");
+
+        // What is already open, so the new window can be told from the rest.
+        QSet<quint64> before;
+        for (const DesktopWindow &w : windows())
+            before.insert(w.handle);
+
+        QString opened;
+        if (!launchAnything(name, &opened, &error))
+            return QObject::tr("Failed: %1").arg(error);
+        if (opened.isEmpty())
+            opened = name;
+
+        // WAIT FOR THE WINDOW. The next move is nearly always to type into what
+        // was just opened, and a program takes a second or two to put a window
+        // up - handing back now would hand back whatever was in front BEFORE.
+        DesktopWindow fresh;
+        QElapsedTimer clock;
+        clock.start();
+        while (fresh.isNull() && clock.elapsed() < 9000) {
+            if (!pauseFor(150, cancelled))
+                return QObject::tr("Stopped.");
+            for (const DesktopWindow &w : windows()) {
+                if (!before.contains(w.handle)) {
+                    fresh = w;
+                    break;
+                }
+            }
+        }
+
+        if (fresh.isNull()) {
+            return QObject::tr("%1 was started but it has not put a window up yet. "
+                               "Use list_windows in a moment to see whether it came up.")
+                .arg(opened);
+        }
+
+        // A XAML app reports almost nothing for its first second on screen, so
+        // reading its controls the instant the window exists finds an empty
+        // shell. Let it finish drawing itself.
+        if (!pauseFor(900, cancelled))
+            return QObject::tr("Stopped.");
+        return QObject::tr("Opened %1. %2").arg(opened, describeControls(fresh, state));
+    }
+
+    if (action == QLatin1String("open_url")) {
+        const QString url = args.value(QStringLiteral("url")).toString().trimmed();
+        QString opened;
+        if (!openUrl(url, &opened, &error))
+            return QObject::tr("Failed: %1").arg(error);
+
+        // A page takes a moment to come up and the next move is to look at
+        // it, so the controls handed back have to be the NEW ones.
+        if (!pauseFor(2600, cancelled))
+            return QObject::tr("Stopped.");
+
+        const DesktopWindow front = foreground();
+        if (front.isNull())
+            return QObject::tr("Opened %1 in the user's own browser.").arg(opened);
+        return QObject::tr("Opened %1 in the browser the user already had open, so "
+                           "they are signed in there as themselves. %2")
+            .arg(opened, describeControls(front, state));
+    }
+
+    if (action == QLatin1String("run_command")) {
+        const QString command = args.value(QStringLiteral("command")).toString().trimmed();
+        QString printed;
+        if (runCommand(command, &printed, &error))
+            return printed;
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    if (action == QLatin1String("list_windows")) {
+        const QList<DesktopWindow> open = windows();
+        if (open.isEmpty())
+            return QObject::tr("Nothing is open.");
+        QStringList titles;
+        for (const DesktopWindow &w : open)
+            titles.append(w.title);
+        return QObject::tr("%1 windows are open: %2")
+            .arg(open.size())
+            .arg(titles.join(QStringLiteral("; ")));
+    }
+
+    if (action == QLatin1String("screenshot")) {
+        const QString wanted = args.value(QStringLiteral("window")).toString().trimmed();
+        const DesktopWindow target = wanted.isEmpty() ? foreground() : findWindow(wanted);
+        if (target.isNull())
+            return QObject::tr("Failed: I could not find that window.");
+
+        const WindowShot shot = capture(target.handle);
+        if (shot.isNull())
+            return QObject::tr("Failed: that window would not be captured.");
+
+        state.shotWindow = target.handle;
+        state.shotScale = shot.scale;
+        if (png)
+            *png = shot.png;
+
+        return QObject::tr("Screenshot of '%1', %2 by %3 pixels.")
+            .arg(target.title)
+            .arg(shot.width)
+            .arg(shot.height);
+    }
+
+    if (action == QLatin1String("click_at")) {
+        if (state.shotWindow == 0) {
+            return QObject::tr("Failed: take a screenshot first, so there is a "
+                               "picture to pick a point out of.");
+        }
+        const int pictureX = args.value(QStringLiteral("x")).toInt();
+        const int pictureY = args.value(QStringLiteral("y")).toInt();
+
+        // Back out of the picture's pixels into the window's own.
+        const int windowX = int(pictureX / state.shotScale);
+        const int windowY = int(pictureY / state.shotScale);
+
+        if (clickAt(state.shotWindow, windowX, windowY, &error)) {
+            return QObject::tr("Clicked at %1, %2 in that screenshot.")
+                .arg(pictureX)
+                .arg(pictureY);
+        }
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    if (action == QLatin1String("list_controls")) {
+        const QString wanted = args.value(QStringLiteral("window")).toString().trimmed();
+        const DesktopWindow target = wanted.isEmpty() ? foreground() : findWindow(wanted);
+        if (target.isNull())
+            return QObject::tr("Failed: I could not find that window.");
+        return describeControls(target, state);
+    }
+
+    if (action == QLatin1String("click")) {
+        const DesktopControl target = namedControl();
+        if (target.key.isEmpty())
+            return listAgain();
+        if (click(state.target.handle, target, &error))
+            return QObject::tr("Clicked %1.").arg(target.name.isEmpty() ? target.type : target.name);
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    if (action == QLatin1String("press_key")) {
+        const QString key = args.value(QStringLiteral("key")).toString().trimmed().toLower();
+        if (pressKey(key, &error))
+            return QObject::tr("Pressed %1.").arg(key);
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    if (action == QLatin1String("type_text")) {
+        const QString text = args.value(QStringLiteral("text")).toString();
+        const DesktopControl target = namedControl();
+        if (text.isEmpty())
+            return QObject::tr("Failed: no text was given.");
+        if (target.key.isEmpty())
+            return listAgain();
+        if (fill(state.target.handle, target, text, &error))
+            return QObject::tr("Typed it in.");
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    return QObject::tr("Failed: %1 is not something I can do.").arg(action);
+}
+
+// The thread every action runs on. It runs a message loop - exec() - under a
+// single threaded COM apartment, which is what UI Automation and the shell's
+// app list were written for, and between actions COM can deliver to it.
+class HandsThread : public QThread
+{
+protected:
+    void run() override
+    {
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        exec();
+        CoUninitialize();
+    }
+};
+
+QObject *hands()
+{
+    static QObject *const context = []() {
+        auto *thread = new HandsThread;
+        thread->setObjectName(QStringLiteral("Burnos hands"));
+        auto *object = new QObject;
+        object->moveToThread(thread);
+        thread->start();
+        // Never deleted, on purpose: a QThread destroyed while an action is
+        // still sleeping takes the whole process down with it. At exit it is
+        // asked to stop and given a moment to finish what it is doing.
+        QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, [thread]() {
+            thread->quit();
+            thread->wait(3000);
+        });
+        return object;
+    }();
+    return context;
+}
+
+} // namespace
+
+QString describeControls(const DesktopWindow &target, DeskState &state)
+{
+    state.target = target;
+    state.offered = controls(target.handle);
+
+    if (target.isNull() || target.title.isEmpty()) {
+        return QObject::tr("There is no window in front, so there is nothing to "
+                           "click or type into.");
+    }
+    if (state.offered.isEmpty()) {
+        return QObject::tr("'%1' offers nothing that can be clicked or typed into. "
+                           "Take a screenshot of it and use click_at instead.")
+            .arg(target.title);
+    }
+
+    QStringList lines;
+    for (const DesktopControl &c : std::as_const(state.offered))
+        lines.append(QStringLiteral("%1: %2").arg(c.key, c.describe()));
+    return QObject::tr("'%1' has these controls, and the key to give back for each "
+                       "one:\n%2")
+        .arg(target.title, lines.join(QLatin1Char('\n')));
+}
+
+DeskResult perform(const QVariantMap &args, const DeskState &state,
+                   const std::atomic_bool &cancelled)
+{
+    DeskResult out;
+    out.state = state;
+    out.text = act(args, out.state, cancelled, &out.png);
+    return out;
+}
+
+void onHands(QObject *guard, std::function<DeskResult()> job,
+             std::function<void(const DeskResult &)> done)
+{
+    const QPointer<QObject> alive(guard);
+    QMetaObject::invokeMethod(
+        hands(),
+        [alive, job, done]() {
+            const DeskResult result = job();
+            QMetaObject::invokeMethod(
+                qApp,
+                [alive, result, done]() {
+                    if (alive)
+                        done(result);
+                },
+                Qt::QueuedConnection);
+        },
+        Qt::QueuedConnection);
 }
 
 } // namespace Computer

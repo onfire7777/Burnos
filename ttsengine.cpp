@@ -6,6 +6,7 @@
 #include <QAudioDevice>
 #include <QAudioOutput>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -47,6 +48,18 @@ bool TtsEngine::speak(const QString &text)
 
     if (m_busy) {
         stop(); // a newer answer always wins over one still being spoken
+    }
+
+    // MADE ALREADY: said at once, with no synthesis to wait for.
+    const QString cached = cachePath(spoken);
+    if (QFileInfo::exists(cached)) {
+        m_text = spoken;
+        m_busy = true;
+        emit started();
+        BurnOS::liveLog(QStringLiteral("kokoro skipped: '%1' was made already")
+                            .arg(spoken));
+        play(cached);
+        return true;
     }
 
     if (!QFileInfo::exists(cliPath())) {
@@ -286,4 +299,83 @@ void TtsEngine::stop()
         m_player->stop();
 
     m_cancelled = false;
+}
+
+void TtsEngine::prepare(const QStringList &phrases)
+{
+    for (const QString &phrase : phrases) {
+        if (!QFileInfo::exists(cachePath(phrase)) && !m_toWarm.contains(phrase))
+            m_toWarm.append(phrase);
+    }
+    if (!m_warm || m_warm->state() == QProcess::NotRunning)
+        warmNext();
+}
+
+void TtsEngine::warmNext()
+{
+    while (!m_toWarm.isEmpty() && QFileInfo::exists(cachePath(m_toWarm.first())))
+        m_toWarm.removeFirst();
+    if (m_toWarm.isEmpty() || !QFileInfo::exists(cliPath()) || !BurnOS::Tts::ready())
+        return;
+
+    const QString phrase = m_toWarm.takeFirst();
+    m_warmTarget = cachePath(phrase);
+    QDir().mkpath(QFileInfo(m_warmTarget).absolutePath());
+
+    if (!m_warm) {
+        m_warm = new QProcess(this);
+        connect(m_warm, &QProcess::finished, this, [this](int code, QProcess::ExitStatus) {
+            // Written under another name and renamed only once complete, so a
+            // half written file can never be played as a reply.
+            const QString part = m_warmTarget + QStringLiteral(".part.wav");
+            if (code == 0 && QFileInfo(part).size() > 44) {
+                QFile::remove(m_warmTarget);
+                QFile::rename(part, m_warmTarget);
+                BurnOS::liveLog(QStringLiteral("voice cache: ready %1")
+                                    .arg(QFileInfo(m_warmTarget).fileName()));
+            } else {
+                QFile::remove(part);
+                BurnOS::liveLog(QStringLiteral("voice cache: kokoro exit %1").arg(code));
+            }
+            warmNext();
+        });
+    }
+
+    const QStringList args{
+        QStringLiteral("--kokoro-model=") + BurnOS::Tts::modelPath(),
+        QStringLiteral("--kokoro-voices=") + BurnOS::Tts::voicesPath(),
+        QStringLiteral("--kokoro-tokens=") + BurnOS::Tts::tokensPath(),
+        QStringLiteral("--kokoro-data-dir=") + BurnOS::Tts::espeakDataDir(),
+        QStringLiteral("--num-threads=2"),
+        QStringLiteral("--sid=%1").arg(BurnOS::Settings::ttsVoice()),
+        QStringLiteral("--output-filename=") + m_warmTarget + QStringLiteral(".part.wav"),
+        phrase,
+    };
+    BurnOS::liveLog(QStringLiteral("voice cache: making '%1' with voice %2")
+                        .arg(phrase)
+                        .arg(BurnOS::Settings::ttsVoice()));
+    m_warm->setWorkingDirectory(QFileInfo(cliPath()).absolutePath());
+    m_warm->start(cliPath(), args);
+}
+
+QString TtsEngine::cachePath(const QString &text) const
+{
+    // Case and punctuation do not change how a short reply sounds, so "On it!"
+    // plays the "On it." already made.
+    QString key;
+    for (const QChar c : text.toLower()) {
+        if (c.isLetterOrNumber() || c.isSpace())
+            key.append(c);
+    }
+    key = key.simplified();
+    const QByteArray id = QCryptographicHash::hash(
+                              QStringLiteral("%1|%2")
+                                  .arg(BurnOS::Settings::ttsVoice())
+                                  .arg(key)
+                                  .toUtf8(),
+                              QCryptographicHash::Sha1)
+                              .toHex()
+                              .left(20);
+    return QDir::temp().filePath(QStringLiteral("burnos-voice-cache/%1.wav")
+                                     .arg(QString::fromLatin1(id)));
 }

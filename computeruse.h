@@ -5,6 +5,12 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
+
+#include <atomic>
+#include <functional>
+
+class QObject;
 
 // One visible top level window.
 struct DesktopWindow
@@ -42,6 +48,27 @@ struct WindowShot
     int height = 0;
     qreal scale = 1.0; // picture pixels per window pixel
     bool isNull() const { return png.isEmpty(); }
+};
+
+// What ONE task knows about the desktop between one action and the next: the
+// window it is working in, the controls it was last shown there, and its last
+// screenshot. Every background task carries its own, so two tasks never click
+// with each other's list or aim at each other's picture.
+struct DeskState
+{
+    DesktopWindow target;
+    QList<DesktopControl> offered;
+    quint64 shotWindow = 0;
+    qreal shotScale = 1.0; // picture pixels per window pixel
+};
+
+// What one action did: the plain sentence handed back to the model, a picture
+// if it took one, and the task's desk as the action left it.
+struct DeskResult
+{
+    QString text;
+    QByteArray png;
+    DeskState state;
 };
 
 // The things Burnos is allowed to do to this machine.
@@ -121,6 +148,33 @@ bool click(quint64 handle, const DesktopControl &control, QString *error);
 // and by focusing and typing where it does not.
 bool fill(quint64 handle, const DesktopControl &control, const QString &text,
           QString *error);
+
+// ---------------------------------------------------------------------------
+// THE HANDS
+// ---------------------------------------------------------------------------
+
+// One window's controls, worded for the model, and remembered in `state` as
+// what their keys refer to.
+QString describeControls(const DesktopWindow &target, DeskState &state);
+
+// Carry out one computer_use action - the model's arguments as they came - and
+// say in plain words what happened. BLOCKING, and meant to be: it runs on the
+// hands thread, never on the thread the orb draws on. `cancelled` is checked
+// through every wait, so a stopped task lets go at once.
+DeskResult perform(const QVariantMap &args, const DeskState &state,
+                   const std::atomic_bool &cancelled);
+
+// EVERYTHING THAT TOUCHES THE DESKTOP RUNS ON ONE THREAD, one action at a time
+// and in the order asked, because there is one screen and one mouse: UI
+// Automation, the keyboard, clicks, screenshots, launching. The orb and the
+// microphone never wait on an action, and UI Automation gets a thread of its
+// own, which is where a UIA client belongs.
+//
+// `job` runs on that thread; `done` is called back on the main thread with
+// what it returned - unless `guard` has been destroyed by then, in which case
+// nobody is left to tell and it is not called at all.
+void onHands(QObject *guard, std::function<DeskResult()> job,
+             std::function<void(const DeskResult &)> done);
 
 } // namespace Computer
 } // namespace BurnOS

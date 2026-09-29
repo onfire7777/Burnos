@@ -78,6 +78,13 @@ class ComposioClient : public QObject
 public:
     explicit ComposioClient(QObject *parent = nullptr);
 
+    // THE ANSWER TO ONE CALLER, already worded for the model. Since v0.4
+    // several background tasks can use the apps at the same moment, and each
+    // one has to get back the answer to its OWN question - so a caller that
+    // passes one of these hears there, and nothing is emitted. The
+    // integrations dialog passes none and listens to the signals as before.
+    using Answer = std::function<void(bool ok, const QString &summary)>;
+
     // True when a key is stored. No key means the app tool is not even offered
     // to the model, rather than offered and then failing.
     static bool isConfigured();
@@ -95,7 +102,7 @@ public:
     // session's link endpoint. The connection finishes OUT OF BAND, in that
     // browser, which is why the dialog polls afterwards rather than waiting on
     // a reply. An app that needs no sign in answers on noSignInNeeded().
-    void connectApp(const QString &slug);
+    void connectApp(const QString &slug, Answer answer = {});
 
     // Revoke and forget one connection. The account itself is untouched; what
     // goes away is Composio's permission to act on it.
@@ -105,10 +112,11 @@ public:
     // sentence. The answer on toolsFound() is already worded for the model: the
     // tools, their arguments, and which of the apps involved still need a sign
     // in.
-    void searchTools(const QString &useCase);
+    void searchTools(const QString &useCase, Answer answer = {});
 
     // Run one tool in the session. `arguments` is the object its schema asks for.
-    void runTool(const QString &toolSlug, const QJsonObject &arguments);
+    void runTool(const QString &toolSlug, const QJsonObject &arguments,
+                 Answer answer = {});
 
     bool isBusy() const { return m_inFlight > 0; }
 

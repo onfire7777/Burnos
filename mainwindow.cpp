@@ -124,6 +124,7 @@ MainWindow::MainWindow(QWidget *parent)
                                  : QStringLiteral("MISSING"))
                         .arg(BurnOS::Settings::micSensitivity())
                         .arg(BurnOS::Settings::micOpenThreshold(), 0, 'f', 4));
+    BurnOS::liveLog(QStringLiteral("Burnos %1").arg(QCoreApplication::applicationVersion()));
     BurnOS::liveLog(QStringLiteral("models: talking %1, working %2")
                         .arg(BurnOS::Settings::openRouterModel(),
                              BurnOS::Settings::hasTaskModel()

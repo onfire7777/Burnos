@@ -34,19 +34,9 @@ constexpr qint64 kBytesPerSecond = qint64(kSampleRate) * kBytesPerSample;
 constexpr int kPrerollMs = 320;
 // Less voiced audio than this was a cough, a door or a keyboard.
 constexpr int kMinSpeechMs = 350;
-// How long it has to STAY loud before it counts as somebody talking. A door, a
-// cough or a keystroke is loud for an instant; a voice is not. This is what
-// keeps quiet room noise from arming the orb, rather than simply setting the
-// threshold so high that quiet speech is missed with it. The pre-roll is
-// longer than this, so nothing said during the attack is lost.
-constexpr int kAttackMs = 140;
 // Nobody asks a question for half a minute. This stops a noisy room from
 // recording for ever.
 constexpr int kMaxPhraseMs = 30000;
-// The floor under the adaptive threshold is a setting now - see
-// BurnOS::Settings::micOpenThreshold. It was briefly hardcoded at 0.030 and the
-// user had to shout: the ATTACK below is what rejects noise, so this does not
-// have to be high and should not be.
 
 // Silero hears in steps of 512 samples, 32 ms at 16 kHz, and a phrase starts
 // once two steps in a row sound like speech - a keystroke is one step at most.
@@ -409,25 +399,14 @@ qint64 AudioLevelTap::writeData(const char *data, qint64 size)
     const int count = static_cast<int>(size / 2);
 
     int peak = 0;
-    qreal square = 0.0;
-    for (int i = 0; i < count; ++i) {
-        const qreal s = samples[i];
-        square += s * s;
-        const int v = qAbs(static_cast<int>(samples[i]));
-        if (v > peak)
-            peak = v;
-    }
+    for (int i = 0; i < count; ++i)
+        peak = qMax(peak, qAbs(static_cast<int>(samples[i])));
 
     if (count > 0) {
         // Deliberately hot. A raw linear level barely moves for normal speech,
         // so the curve is bent hard to make quiet talking still show.
-        const qreal norm = peak / 32768.0;
-        emit levelChanged(qBound(0.0, qPow(norm, 0.45) * 1.8, 1.0));
-
-        // The detector gets RMS instead, which one keyboard tap cannot fake
-        // the way it fakes a peak.
-        emit audioChunk(QByteArray(data, static_cast<qsizetype>(size)),
-                        qSqrt(square / count) / 32768.0);
+        emit levelChanged(qBound(0.0, qPow(peak / 32768.0, 0.45) * 1.8, 1.0));
+        emit audioChunk(QByteArray(data, static_cast<qsizetype>(size)));
     }
 
     return size;
@@ -463,21 +442,20 @@ bool SttEngine::startLive()
         return false;
     }
 
-    // THE EARS. Silero decides what is speech whenever its weights load; the
-    // old loudness gate is only what is left if they will not, and the log
-    // says which one is listening.
+    // THE EARS: Silero decides what is speech. The installer will not let the
+    // orb start without its weights, so a load that fails here is a damaged
+    // file - said, rather than listened past.
     if (!m_vad) {
-        m_vad = std::make_unique<BurnOS::SileroVad>();
+        auto vad = std::make_unique<BurnOS::SileroVad>();
         QString why;
-        if (m_vad->load(BurnOS::Models::vadModel(), &why)) {
-            BurnOS::liveLog(QStringLiteral("voice detector: Silero %1, speech opens at %2")
-                                .arg(m_vad->version())
-                                .arg(BurnOS::Settings::vadThreshold(), 0, 'f', 2));
-        } else {
-            BurnOS::liveLog(QStringLiteral("voice detector: Silero unavailable (%1), "
-                                           "listening by loudness instead")
-                                .arg(why));
+        if (!vad->load(BurnOS::Models::vadModel(), &why)) {
+            emit failed(tr("The voice detector would not load: %1").arg(why));
+            return false;
         }
+        m_vad = std::move(vad);
+        BurnOS::liveLog(QStringLiteral("voice detector: Silero %1, speech opens at %2")
+                            .arg(m_vad->version())
+                            .arg(BurnOS::Settings::vadThreshold(), 0, 'f', 2));
     }
 
     if (!openMicrophone())
@@ -539,11 +517,6 @@ bool SttEngine::resumeListening()
 
     BurnOS::liveLog(QStringLiteral("listening again"));
     return true;
-}
-
-bool SttEngine::canListenOverVoice() const
-{
-    return m_vad && m_vad->isLoaded();
 }
 
 void SttEngine::setOverVoice(bool on)
@@ -610,7 +583,6 @@ bool SttEngine::openMicrophone()
     m_attackBytes = 0;
     m_idleBytes = 0;
     m_beats = 0;
-    m_floor = 0.004;
     // A new stream: Silero starts with no memory of the last one.
     m_vadIn.clear();
     if (m_vad)
@@ -635,103 +607,13 @@ void SttEngine::closeMicrophone()
     emit levelChanged(0.0);
 }
 
-void SttEngine::onAudio(const QByteArray &pcm, qreal rms)
+void SttEngine::onAudio(const QByteArray &pcm)
 {
     if (!m_live || !m_source)
         return;
 
-    if (m_vad && m_vad->isLoaded())
-        hearBySilero(pcm);
-    else
-        hearByLevel(pcm, rms);
-}
-
-void SttEngine::hearByLevel(const QByteArray &pcm, qreal rms)
-{
-    // The thresholds ride on top of whatever the room is doing, with a floor
-    // under them for a room that is genuinely silent.
-    // Read every time, so a change in the settings dialog applies to the very
-    // next syllable. The adaptive part still rides on whatever the room is
-    // doing; the setting is only the floor under it.
-    const qreal quietest = BurnOS::Settings::micOpenThreshold();
-    const qreal openAt = qMax(quietest, m_floor * 4.5);
-    const qreal closeAt = qMax(quietest * 0.55, m_floor * 2.5);
-
-    if (!m_capturing) {
-        // A short tail is always kept, so a phrase never starts clipped. It is
-        // longer than the attack below, so the run up is inside it either way.
-        m_preroll.append(pcm);
-        const qint64 keep = msToBytes(kPrerollMs);
-        if (m_preroll.size() > keep)
-            m_preroll.remove(0, static_cast<qsizetype>(m_preroll.size() - keep));
-
-        if (rms < openAt) {
-            // Learn the room, but only out of audio nobody is talking over.
-            m_floor = m_floor * 0.95 + rms * 0.05;
-            m_attackBytes = 0;
-
-            // The first few seconds of every open microphone are traced, so a
-            // run can be proved to have measured the room at all. After that it
-            // goes quiet, because a log growing all day proves nothing.
-            m_idleBytes += pcm.size();
-            if (m_beats < 5 && m_idleBytes >= msToBytes(1000)) {
-                m_idleBytes = 0;
-                ++m_beats;
-                BurnOS::liveLog(QStringLiteral("listening: rms %1, floor %2, opens at %3")
-                                    .arg(rms, 0, 'f', 4)
-                                    .arg(m_floor, 0, 'f', 4)
-                                    .arg(openAt, 0, 'f', 4));
-            }
-            return;
-        }
-
-        // Loud enough - but a door, a cough or a keystroke is loud for an
-        // instant too. It has to STAY loud before anyone is deemed to be
-        // talking, which throws out a spike without having to set the bar so
-        // high that quiet speech goes with it.
-        m_attackBytes += pcm.size();
-        if (m_attackBytes < msToBytes(kAttackMs))
-            return;
-
-        m_capturing = true;
-        m_speech = m_preroll; // the pre-roll already holds the whole attack
-        m_preroll.clear();
-        m_voicedBytes = m_attackBytes;
-        m_silenceBytes = 0;
-        m_attackBytes = 0;
-
-        BurnOS::liveLog(QStringLiteral("speech STARTED, rms %1 over %2 (floor %3)")
-                            .arg(rms, 0, 'f', 4)
-                            .arg(openAt, 0, 'f', 4)
-                            .arg(m_floor, 0, 'f', 4));
-        emit speechStarted();
-        return;
-    }
-
-    m_speech.append(pcm);
-    if (rms >= closeAt) {
-        m_voicedBytes += pcm.size();
-        m_silenceBytes = 0;
-    } else {
-        m_silenceBytes += pcm.size();
-    }
-
-    // Read every time, so a change in the settings dialog applies to the very
-    // next phrase without restarting anything.
-    const int hangoverMs = BurnOS::Settings::hangoverMs();
-    const bool quietEnough = m_silenceBytes >= msToBytes(hangoverMs);
-    const bool tooLong = m_speech.size() >= msToBytes(kMaxPhraseMs);
-    if (!quietEnough && !tooLong)
-        return;
-
-    endPhrase(tooLong, hangoverMs);
-}
-
-void SttEngine::hearBySilero(const QByteArray &pcm)
-{
-    // The audio itself is kept exactly as it always was - a short pre-roll
-    // while waiting, the whole phrase once one has started. Only the DECISION
-    // is Silero's.
+    // A short pre-roll while waiting, the whole phrase once one has started;
+    // whether one HAS started is Silero's decision.
     if (m_capturing) {
         m_speech.append(pcm);
     } else {
@@ -800,8 +682,16 @@ void SttEngine::decide(float speech, float rms)
         // Anything else that sounds like speech is the orb's own voice coming
         // back. How loud it gets is held at its peaks, fading only slowly, so
         // the loudest syllable of an answer sets the bar for the rest of it.
+        //
+        // ONCE LEARNED IT ONLY CREEPS UP, by half as much again per step. The
+        // first 32 ms of somebody starting to talk over the voice is quieter
+        // than the rest; taken in whole as echo, it lifted the bar above their
+        // own voice and barge-in failed about half the time.
         if (speech >= closeAt) {
-            m_echoLevel = qMax(m_echoLevel * 0.995f, rms);
+            const float heard = m_echoSteps < kEchoLearnSteps
+                                    ? rms
+                                    : qMin(rms, m_echoLevel * 1.5f);
+            m_echoLevel = qMax(m_echoLevel * 0.995f, heard);
             if (m_echoSteps < kEchoLearnSteps && ++m_echoSteps == kEchoLearnSteps) {
                 BurnOS::liveLog(QStringLiteral("echo learned: the voice comes back at "
                                                "rms %1, talking over it takes %2")
@@ -885,12 +775,9 @@ void SttEngine::endPhrase(bool tooLong, int hangoverMs)
                         .arg(voicedMs)
                         .arg(tooLong ? QStringLiteral(" (length cap)") : QString()));
 
-    // What follows tears the microphone down, and we are inside its own write
-    // call, so it happens on the next turn of the event loop instead.
-    // The microphone deliberately STAYS OPEN. The user is allowed to carry on
-    // talking while we work, and whatever they add gets folded into the same
-    // question - MainWindow does that part. Still deferred by one turn of the
-    // event loop, because we are inside the audio device's own write call.
+    // The microphone STAYS OPEN: whatever the user adds while we work is folded
+    // into the same question by the Agent. Deferred by one turn of the event
+    // loop, because we are inside the audio device's own write call.
     QTimer::singleShot(0, this, [this, phrase]() { transcribe(phrase); });
 }
 
@@ -920,22 +807,12 @@ void SttEngine::selfTest()
                             .arg(QFileInfo(file).fileName())
                             .arg(m_overVoice ? QStringLiteral(" over the voice") : QString()));
         for (qsizetype at = 0; at + chunk <= pcm.size() && m_live; at += chunk)
-            onAudio(pcm.mid(at, chunk), 0.0);
+            onAudio(pcm.mid(at, chunk));
         BurnOS::liveLog(QStringLiteral("SELF TEST: fed the whole file"));
         return;
     }
-    QByteArray loud(chunk, Qt::Uninitialized);
-    QByteArray quiet(chunk, '\0');
-    qint16 *s = reinterpret_cast<qint16 *>(loud.data());
-    for (int i = 0; i < chunk / 2; ++i)
-        s[i] = static_cast<qint16>(8000.0 * qSin(2.0 * M_PI * 220.0 * i / kSampleRate));
-
-    BurnOS::liveLog(QStringLiteral("SELF TEST: 900 ms of tone at rms 0.17, then silence"));
-    for (int i = 0; i < 45 && m_live; ++i)
-        onAudio(loud, 0.17);
-    for (int i = 0; i < 50 && m_live; ++i)
-        onAudio(quiet, 0.0);
-    BurnOS::liveLog(QStringLiteral("SELF TEST: fed 1900 ms in total"));
+    BurnOS::liveLog(QStringLiteral("SELF TEST: BURNOS_VAD_SELFTEST has to name a 16 kHz "
+                                   "mono WAV"));
 }
 
 void SttEngine::transcribe(const QByteArray &pcm)

@@ -17,9 +17,8 @@ namespace BurnOS {
 class SileroVad;
 }
 
-// Sits between the microphone and the engine so the same bytes can be measured
-// on their way past: the orb needs the waveform to warp to, and the voice
-// detector needs the loudness. Neither can be read back out of a file.
+// Sits between the microphone and the engine, so the orb can be handed how
+// loud the room is on the way past.
 class AudioLevelTap : public QIODevice
 {
     Q_OBJECT
@@ -29,8 +28,7 @@ public:
 
 signals:
     void levelChanged(qreal level); // 0.0 silent, 1.0 loud, for the orb
-    // The same buffer with its RMS, 0.0 to 1.0, for the detector.
-    void audioChunk(const QByteArray &pcm, qreal rms);
+    void audioChunk(const QByteArray &pcm);
 
 protected:
     qint64 readData(char *data, qint64 maxSize) override;
@@ -49,9 +47,8 @@ public:
     explicit SttEngine(QObject *parent = nullptr);
     ~SttEngine() override;
 
-    bool isLive() const { return m_live; }                 // armed
-    bool isListening() const { return m_source != nullptr; } // mic open
-    bool isCapturing() const { return m_capturing; }       // keeping a phrase
+    bool isLive() const { return m_live; }           // armed
+    bool isCapturing() const { return m_capturing; } // keeping a phrase
 
     // Arm live mode and open the microphone. False means it never opened and
     // failed() has been emitted.
@@ -71,14 +68,11 @@ public:
     // setup where the echo is loud, nobody can be louder and this simply never
     // fires, which is exactly how v0.3 behaved.
     void setOverVoice(bool on);
-    // Only Silero can tell a voice from its echo; the loudness gate cannot, so
-    // without it the microphone still has to close while the orb speaks.
-    bool canListenOverVoice() const;
 
-    // Proof without a microphone: synthetic tone then silence, fed straight
-    // through the detector, so the thresholds and the 650 ms hangover can be
-    // read back out of the log. Armed by BURNOS_VAD_SELFTEST in the
-    // environment, never in a normal run.
+    // THE CHECK on the phrase logic: the 16 kHz mono WAV named by
+    // BURNOS_VAD_SELFTEST is fed through it as if it were the microphone -
+    // with BURNOS_VAD_OVERVOICE, as if the orb were talking over it. Never in
+    // a normal run.
     void selfTest();
 
     // The voice detector on its own, for proving it against the official
@@ -100,11 +94,7 @@ private:
     QString cliPath() const;
     bool openMicrophone();
     void closeMicrophone();
-    void onAudio(const QByteArray &pcm, qreal rms);
-    // The two detectors. Silero decides whenever its weights are loaded; the
-    // loudness gate is only what is left if they cannot be.
-    void hearBySilero(const QByteArray &pcm);
-    void hearByLevel(const QByteArray &pcm, qreal rms);
+    void onAudio(const QByteArray &pcm);
     // One Silero verdict on 32 ms of audio, with that audio's loudness: start,
     // carry on or end a phrase - or, over the voice, learn the echo.
     void decide(float speech, float rms);
@@ -134,10 +124,9 @@ private:
     QByteArray m_preroll;     // the moment before it, so no syllable is lost
     qint64 m_silenceBytes = 0;
     qint64 m_voicedBytes = 0;
-    qint64 m_attackBytes = 0; // how long it has been loud without opening yet
+    qint64 m_attackBytes = 0; // how long it has sounded like speech, not yet a phrase
     qint64 m_idleBytes = 0;   // quiet audio since the last trace line
     int m_beats = 0;          // how many of those lines were written
-    qreal m_floor = 0.004;    // running estimate of the room's own noise
 
     // The Silero voice detector, and the samples waiting for a full 32 ms.
     std::unique_ptr<BurnOS::SileroVad> m_vad;

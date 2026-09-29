@@ -110,20 +110,17 @@ MainWindow::MainWindow(QWidget *parent)
     // Written once at startup, because almost every puzzling report turns out
     // to be a setting rather than a fault, and the log is the only channel this
     // program has. The key itself is never logged, only whether there is one.
-    BurnOS::liveLog(QStringLiteral("settings: model %1, %2 tokens, hangover %3 ms, "
-                                   "sensitivity %7 (opens at %8), "
-                                   "voice %4, volume %5, key %6")
-                        .arg(BurnOS::Settings::openRouterModel())
+    BurnOS::liveLog(QStringLiteral("Burnos %1").arg(QCoreApplication::applicationVersion()));
+    BurnOS::liveLog(QStringLiteral("settings: %1 tokens, hangover %2 ms, sensitivity %3 "
+                                   "(speech opens at %4), voice %5, volume %6, key %7")
                         .arg(BurnOS::Settings::replyTokens())
                         .arg(BurnOS::Settings::hangoverMs())
+                        .arg(BurnOS::Settings::micSensitivity())
+                        .arg(BurnOS::Settings::vadThreshold(), 0, 'f', 2)
                         .arg(BurnOS::Settings::ttsVoice())
                         .arg(BurnOS::Settings::ttsVolume())
-                        .arg(BurnOS::Settings::hasOpenRouterKey()
-                                 ? QStringLiteral("stored")
-                                 : QStringLiteral("MISSING"))
-                        .arg(BurnOS::Settings::micSensitivity())
-                        .arg(BurnOS::Settings::micOpenThreshold(), 0, 'f', 4));
-    BurnOS::liveLog(QStringLiteral("Burnos %1").arg(QCoreApplication::applicationVersion()));
+                        .arg(BurnOS::Settings::hasOpenRouterKey() ? QStringLiteral("stored")
+                                                                  : QStringLiteral("MISSING")));
     BurnOS::liveLog(QStringLiteral("models: talking %1, working %2")
                         .arg(BurnOS::Settings::openRouterModel(),
                              BurnOS::Settings::hasTaskModel()
@@ -191,10 +188,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_stt, &SttEngine::bargeIn, this, [this]() {
         BurnOS::liveLog(QStringLiteral("voice: stopped - the user is talking over it"));
         m_tts->stop();
-        m_voice = Speech();
-        m_voiceBusy = false;
-        m_voicePlaying = false;
-        m_orb->stopSpeaking();
+        voiceGone();
     });
     // The orb brightens while a phrase is being kept, so the detector's opinion
     // is visible without any text.
@@ -251,13 +245,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_orb->setPreparing(false);
         m_voicePlaying = true;
         // The microphone STAYS OPEN while the voice plays: it learns how loud
-        // the voice comes back and lets the user talk over it. Only if Silero
-        // is not there to tell a voice from its echo does it close, as in v0.3,
-        // because our own voice must never become the next question.
-        if (m_stt->canListenOverVoice())
-            m_stt->setOverVoice(true);
-        else
-            m_stt->pauseListening();
+        // the voice comes back and lets the user talk over it.
+        m_stt->setOverVoice(true);
         BurnOS::liveLog(QStringLiteral("orb deep blue: speaking %1 chars")
                             .arg(text.size()));
         m_orb->setSpeaking(true);
@@ -268,22 +257,14 @@ MainWindow::MainWindow(QWidget *parent)
     // The real loudness of the voice, every frame, so the orb breathes with it.
     connect(m_tts, &TtsEngine::level, m_orb, &OrbWidget::setSpeechLevel);
     connect(m_tts, &TtsEngine::finished, this, [this]() {
-        m_stt->setOverVoice(false);
-        m_orb->stopSpeaking();
-        m_voice = Speech();
-        m_voiceBusy = false;
-        m_voicePlaying = false;
+        voiceGone();
         listenAgain();
         speakNext();
         rehearseWhenIdle();
     });
     // A failed voice must not kill live mode: say why, then listen again.
     connect(m_tts, &TtsEngine::failed, this, [this](const QString &reason) {
-        m_stt->setOverVoice(false);
-        m_voice = Speech();
-        m_voiceBusy = false;
-        m_voicePlaying = false;
-        m_orb->stopSpeaking();
+        voiceGone();
         listenAgain();
         showNotice(reason);
         speakNext();
@@ -592,6 +573,15 @@ void MainWindow::speakNext()
         BurnOS::liveLog(QStringLiteral("UNSPOKEN: %1").arg(words));
 }
 
+void MainWindow::voiceGone()
+{
+    m_stt->setOverVoice(false);
+    m_voice = Speech();
+    m_voiceBusy = false;
+    m_voicePlaying = false;
+    m_orb->stopSpeaking();
+}
+
 void MainWindow::refreshThinking()
 {
     m_orb->setThinking(m_transcribing || m_agent->isThinking());
@@ -622,11 +612,8 @@ void MainWindow::forceStop()
     m_rehearsalWaiting = false;
 
     m_stt->stopLive();
-    m_stt->setOverVoice(false);
     m_tts->stop();
-    m_voice = Speech();
-    m_voiceBusy = false;
-    m_voicePlaying = false;
+    voiceGone();
     m_transcribing = false;
     m_agent->stopAll();
 
@@ -637,7 +624,6 @@ void MainWindow::forceStop()
     m_orb->setThinking(false);
     m_orb->setPreparing(false);
     m_orb->setWorking(false);
-    m_orb->stopSpeaking();
 
     BurnOS::liveLog(QStringLiteral("muted: microphone, talker, tasks, voice and queue "
                                    "all stopped"));
@@ -656,12 +642,8 @@ void MainWindow::openSettings()
     // carry on.
     const bool wasLive = m_stt->isLive();
     m_stt->pauseListening();
-    m_stt->setOverVoice(false);
     m_tts->stop();
-    m_voice = Speech();
-    m_voiceBusy = false;
-    m_voicePlaying = false;
-    m_orb->stopSpeaking();
+    voiceGone();
     m_orb->setPreparing(false);
 
     SettingsDialog dialog(this);

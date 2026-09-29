@@ -43,17 +43,12 @@ int replyTokens();
 void setReplyTokens(int tokens);
 
 // How readily the microphone opens, 0 to 100, where 100 picks up the quietest
-// speech. It does NOT need to be low to reject noise: a spike is thrown out by
-// the attack window in sttengine.cpp, which is a far better filter than simply
-// refusing to hear anything quiet.
+// speech. It does NOT need to be low to reject noise: Silero barely scores a
+// keyboard or a door at all.
 int micSensitivity();
 void setMicSensitivity(int percent);
 
-// The same setting as the RMS the gate actually opens at, 0.010 to 0.050.
-// Only used when the Silero weights cannot be loaded.
-double micOpenThreshold();
-
-// The same setting again, as the speech probability Silero has to reach before
+// The same setting, as the speech probability Silero has to reach before
 // a phrase starts: 0.85 at the least sensitive, 0.35 at the most.
 double vadThreshold();
 

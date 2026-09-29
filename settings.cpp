@@ -232,12 +232,6 @@ void setMicSensitivity(int percent)
     s.sync();
 }
 
-double micOpenThreshold()
-{
-    // 0 -> 0.050 (only a raised voice), 100 -> 0.010 (a whisper across a desk).
-    return 0.050 - 0.040 * (micSensitivity() / 100.0);
-}
-
 double vadThreshold()
 {
     // 0 -> 0.85 (only unmistakable speech), 100 -> 0.35 (anything that is

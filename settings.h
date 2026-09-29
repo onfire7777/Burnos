@@ -38,7 +38,12 @@ int micSensitivity();
 void setMicSensitivity(int percent);
 
 // The same setting as the RMS the gate actually opens at, 0.010 to 0.050.
+// Only used when the Silero weights cannot be loaded.
 double micOpenThreshold();
+
+// The same setting again, as the speech probability Silero has to reach before
+// a phrase starts: 0.85 at the least sensitive, 0.35 at the most.
+double vadThreshold();
 
 // How long a pause has to last before a phrase counts as finished, in
 // milliseconds. Too short and it answers before the speaker has finished

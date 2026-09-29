@@ -1,6 +1,7 @@
 #include "installer.h"
 #include "sttpaths.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -23,6 +24,13 @@ constexpr auto kTtsUrl =
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/"
     "kokoro-en-v0_19.tar.bz2";
 
+// The voice detector: Silero 6.2.0 as whisper.cpp converted it, under 1 MB.
+// Checked against a fixed SHA256 once it lands, because it is read by hand
+// rather than by a library that would notice a bad file itself.
+constexpr auto kVadUrl =
+    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/"
+    "ggml-silero-v6.2.0.bin";
+
 } // namespace
 
 ModelInstaller::ModelInstaller(QObject *parent)
@@ -35,7 +43,8 @@ ModelInstaller::~ModelInstaller() = default;
 
 bool ModelInstaller::everythingPresent()
 {
-    return BurnOS::Stt::modelPresent() && BurnOS::Tts::ready();
+    return BurnOS::Stt::modelPresent() && BurnOS::Tts::ready()
+           && BurnOS::Stt::vadPresent();
 }
 
 void ModelInstaller::start()
@@ -83,6 +92,22 @@ void ModelInstaller::next()
             download(QUrl(QString::fromLatin1(kTtsUrl)),
                      BurnOS::Tts::dir() + QStringLiteral("/kokoro-en-v0_19.tar.bz2"),
                      tr("Downloading voice"), true);
+            return;
+        }
+        next();
+        return;
+
+    case 2:
+        if (!BurnOS::Stt::vadPresent()) {
+            QString error;
+            if (!BurnOS::Stt::ensureDir(&error)) {
+                emit failed(error);
+                return;
+            }
+            m_expectSha = BurnOS::Stt::vadSha256();
+            download(QUrl(QString::fromLatin1(kVadUrl)),
+                     BurnOS::Stt::vadModelPath(),
+                     tr("Downloading voice detector"), false);
             return;
         }
         next();
@@ -159,6 +184,26 @@ void ModelInstaller::onFinished()
         m_file->write(reply->readAll());
         m_file->flush();
         m_file->close();
+    }
+
+    // A file with a known fingerprint is checked before it is let in.
+    if (m_file && !m_expectSha.isEmpty()) {
+        const QByteArray expected = m_expectSha;
+        m_expectSha.clear();
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        if (!m_file->open(QIODevice::ReadOnly) || !hash.addData(m_file)) {
+            m_file->remove();
+            emit failed(tr("Could not read back %1")
+                            .arg(QDir::toNativeSeparators(m_file->fileName())));
+            return;
+        }
+        m_file->close();
+        if (hash.result().toHex() != expected) {
+            m_file->remove();
+            emit failed(tr("The voice detector download was damaged. Restart Burnos "
+                           "to fetch it again."));
+            return;
+        }
     }
 
     QFile::remove(m_destPath);

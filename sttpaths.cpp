@@ -15,6 +15,13 @@ namespace {
 // models/ggml-parakeet-tdt-0.6b-v3.bin - always pass -m modelPath().
 constexpr auto kModelFileName = "ggml-parakeet-tdt-0.6b-v3-q8_0.bin";
 
+// Silero VAD 6.2.0, converted by whisper.cpp. Checked by size here and by
+// SHA256 when it is downloaded.
+constexpr auto kVadFileName = "ggml-silero-v6.2.0.bin";
+constexpr qint64 kVadBytes = 885098;
+constexpr auto kVadSha256 =
+    "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987";
+
 QString programDataDir()
 {
     // %ProgramData% is the supported way to reach C:/ProgramData. The
@@ -78,6 +85,27 @@ bool modelPresent()
 {
     const QFileInfo info(modelPath());
     return info.exists() && info.isFile() && info.size() > 0;
+}
+
+QString vadModelPath()
+{
+    return dir() + QLatin1Char('/') + QLatin1String(kVadFileName);
+}
+
+bool vadPresent()
+{
+    const QFileInfo info(vadModelPath());
+    return info.exists() && info.isFile() && info.size() == kVadBytes;
+}
+
+QByteArray vadSha256()
+{
+    return QByteArray(kVadSha256);
+}
+
+qint64 vadBytes()
+{
+    return kVadBytes;
 }
 
 } // namespace Stt

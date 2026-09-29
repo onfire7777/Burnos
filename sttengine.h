@@ -7,8 +7,15 @@
 #include <QObject>
 #include <QString>
 
+#include <memory>
+#include <vector>
+
 class QAudioSource;
 class QProcess;
+
+namespace BurnOS {
+class SileroVad;
+}
 
 // Sits between the microphone and the engine so the same bytes can be measured
 // on their way past: the orb needs the waveform to warp to, and the voice
@@ -63,6 +70,12 @@ public:
     // environment, never in a normal run.
     void selfTest();
 
+    // The voice detector on its own, for proving it against the official
+    // model: every 32 ms of a 16 kHz mono WAV, one speech probability per line.
+    // Run as Burnos.exe --vad-probe in.wav out.txt, never in normal use.
+    static bool probeFile(const QString &wavPath, const QString &outPath,
+                          QString *error);
+
 signals:
     void transcribed(const QString &text);
     void failed(const QString &reason);
@@ -75,6 +88,17 @@ private:
     bool openMicrophone();
     void closeMicrophone();
     void onAudio(const QByteArray &pcm, qreal rms);
+    // The two detectors. Silero decides whenever its weights are loaded; the
+    // loudness gate is only what is left if they cannot be.
+    void hearBySilero(const QByteArray &pcm);
+    void hearByLevel(const QByteArray &pcm, qreal rms);
+    // One Silero verdict on 32 ms of audio: start, carry on or end a phrase.
+    void decide(float speech);
+    // The phrase is over: hand it to the recogniser, or drop it if it was too
+    // short to be anybody talking.
+    void endPhrase(bool tooLong, int hangoverMs);
+    // Raw 16 kHz mono 16 bit samples out of a WAV, for the self test and probe.
+    static QByteArray readPcm(const QString &wavPath, QString *error);
     void transcribe(const QByteArray &pcm);
     void drainQueue();
     bool writeWav(const QByteArray &pcm, const QString &wavPath,
@@ -100,6 +124,10 @@ private:
     qint64 m_idleBytes = 0;   // quiet audio since the last trace line
     int m_beats = 0;          // how many of those lines were written
     qreal m_floor = 0.004;    // running estimate of the room's own noise
+
+    // The Silero voice detector, and the samples waiting for a full 32 ms.
+    std::unique_ptr<BurnOS::SileroVad> m_vad;
+    std::vector<float> m_vadIn;
 };
 
 #endif // STTENGINE_H

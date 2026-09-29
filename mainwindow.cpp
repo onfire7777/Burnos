@@ -175,7 +175,21 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     // --- THE EARS -----------------------------------------------------------
-    connect(m_stt, &SttEngine::levelChanged, m_orb, &OrbWidget::setLevel);
+    // The core warps with the microphone - but not while the orb is talking,
+    // when the microphone now stays open and mostly hears the orb itself.
+    connect(m_stt, &SttEngine::levelChanged, this, [this](qreal level) {
+        m_orb->setLevel(m_voicePlaying ? 0.0 : level);
+    });
+    // TALKING OVER THE VOICE: the user started speaking, clearly louder than
+    // the orb's own echo. The voice stops at once and the phrase is theirs.
+    connect(m_stt, &SttEngine::bargeIn, this, [this]() {
+        BurnOS::liveLog(QStringLiteral("voice: stopped - the user is talking over it"));
+        m_tts->stop();
+        m_voice = Speech();
+        m_voiceBusy = false;
+        m_voicePlaying = false;
+        m_orb->stopSpeaking();
+    });
     // The orb brightens while a phrase is being kept, so the detector's opinion
     // is visible without any text.
     connect(m_stt, &SttEngine::speechStarted, this, [this]() {
@@ -230,10 +244,14 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_tts, &TtsEngine::speaking, this, [this](const QString &text) {
         m_orb->setPreparing(false);
         m_voicePlaying = true;
-        // The microphone shuts here, and only here. Up to this moment the user
-        // was free to keep talking - but our own voice must never become the
-        // next question, and there is no echo cancellation yet.
-        m_stt->pauseListening();
+        // The microphone STAYS OPEN while the voice plays: it learns how loud
+        // the voice comes back and lets the user talk over it. Only if Silero
+        // is not there to tell a voice from its echo does it close, as in v0.3,
+        // because our own voice must never become the next question.
+        if (m_stt->canListenOverVoice())
+            m_stt->setOverVoice(true);
+        else
+            m_stt->pauseListening();
         BurnOS::liveLog(QStringLiteral("orb deep blue: speaking %1 chars")
                             .arg(text.size()));
         m_orb->setSpeaking(true);
@@ -244,6 +262,7 @@ MainWindow::MainWindow(QWidget *parent)
     // The real loudness of the voice, every frame, so the orb breathes with it.
     connect(m_tts, &TtsEngine::level, m_orb, &OrbWidget::setSpeechLevel);
     connect(m_tts, &TtsEngine::finished, this, [this]() {
+        m_stt->setOverVoice(false);
         m_orb->stopSpeaking();
         m_voice = Speech();
         m_voiceBusy = false;
@@ -254,6 +273,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
     // A failed voice must not kill live mode: say why, then listen again.
     connect(m_tts, &TtsEngine::failed, this, [this](const QString &reason) {
+        m_stt->setOverVoice(false);
         m_voice = Speech();
         m_voiceBusy = false;
         m_voicePlaying = false;
@@ -569,6 +589,7 @@ void MainWindow::forceStop()
     m_rehearsalWaiting = false;
 
     m_stt->stopLive();
+    m_stt->setOverVoice(false);
     m_tts->stop();
     m_voice = Speech();
     m_voiceBusy = false;
@@ -602,6 +623,7 @@ void MainWindow::openSettings()
     // carry on.
     const bool wasLive = m_stt->isLive();
     m_stt->pauseListening();
+    m_stt->setOverVoice(false);
     m_tts->stop();
     m_voice = Speech();
     m_voiceBusy = false;

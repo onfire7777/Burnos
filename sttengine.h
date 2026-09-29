@@ -64,6 +64,17 @@ public:
     // Open it again after a turn, if live mode is still armed.
     bool resumeListening();
 
+    // TALKING OVER THE VOICE. While the orb speaks, the microphone stays open
+    // and hears the orb's own voice come back from the speakers. That echo is
+    // learned, and only speech clearly louder than it - somebody talking into
+    // the microphone - counts: then bargeIn() fires and a phrase starts. On a
+    // setup where the echo is loud, nobody can be louder and this simply never
+    // fires, which is exactly how v0.3 behaved.
+    void setOverVoice(bool on);
+    // Only Silero can tell a voice from its echo; the loudness gate cannot, so
+    // without it the microphone still has to close while the orb speaks.
+    bool canListenOverVoice() const;
+
     // Proof without a microphone: synthetic tone then silence, fed straight
     // through the detector, so the thresholds and the 650 ms hangover can be
     // read back out of the log. Armed by BURNOS_VAD_SELFTEST in the
@@ -82,6 +93,8 @@ signals:
     void levelChanged(qreal level);
     void speechStarted();
     void speechEnded();
+    // The user started talking over the orb's voice. Stop the voice now.
+    void bargeIn();
 
 private:
     QString cliPath() const;
@@ -92,8 +105,9 @@ private:
     // loudness gate is only what is left if they cannot be.
     void hearBySilero(const QByteArray &pcm);
     void hearByLevel(const QByteArray &pcm, qreal rms);
-    // One Silero verdict on 32 ms of audio: start, carry on or end a phrase.
-    void decide(float speech);
+    // One Silero verdict on 32 ms of audio, with that audio's loudness: start,
+    // carry on or end a phrase - or, over the voice, learn the echo.
+    void decide(float speech, float rms);
     // The phrase is over: hand it to the recogniser, or drop it if it was too
     // short to be anybody talking.
     void endPhrase(bool tooLong, int hangoverMs);
@@ -128,6 +142,15 @@ private:
     // The Silero voice detector, and the samples waiting for a full 32 ms.
     std::unique_ptr<BurnOS::SileroVad> m_vad;
     std::vector<float> m_vadIn;
+
+    // Over the voice: how loud the orb's own voice comes back, held at its
+    // peaks and kept for the life of the process, how much of it has been
+    // heard, and how long the current voice has been playing.
+    bool m_overVoice = false;
+    float m_echoLevel = 0.004f;
+    int m_echoSteps = 0;
+    int m_bargeSteps = 0;
+    qint64 m_overVoiceBytes = 0;
 };
 
 #endif // STTENGINE_H

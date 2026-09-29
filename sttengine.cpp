@@ -53,6 +53,21 @@ constexpr int kMaxPhraseMs = 30000;
 constexpr int kVadChunkBytes = 512 * kBytesPerSample;
 constexpr int kVadAttackMs = 64;
 
+// OVER THE VOICE. Measured on 2026-09-28 with the Antlion microphone: the
+// orb's own voice came back 270 ms late and 43 dB down - quiet, but Silero
+// still calls it speech. A person talking into the microphone is 30 dB or more
+// above that, so speech only counts over the voice when it is this many times
+// louder than the loudest echo heard, and never below the floor.
+constexpr float kBargeOverEcho = 8.0f;
+constexpr float kBargeFloor = 0.012f;
+// Three steps in a row, 96 ms, so one loud syllable of echo cannot do it.
+constexpr int kBargeSteps = 3;
+// The first moments of a voice are not listened for: its echo has not even
+// arrived yet.
+constexpr int kBargeWarmupMs = 250;
+// Until this much of the echo has been heard, everything is taken to be echo.
+constexpr int kEchoLearnSteps = 10;
+
 qint64 msToBytes(int ms)
 {
     return kBytesPerSecond * ms / 1000;
@@ -526,6 +541,24 @@ bool SttEngine::resumeListening()
     return true;
 }
 
+bool SttEngine::canListenOverVoice() const
+{
+    return m_vad && m_vad->isLoaded();
+}
+
+void SttEngine::setOverVoice(bool on)
+{
+    if (m_overVoice == on)
+        return;
+    m_overVoice = on;
+    m_bargeSteps = 0;
+    m_overVoiceBytes = 0;
+    if (on && m_source) {
+        BurnOS::liveLog(QStringLiteral("listening over the voice (echo %1)")
+                            .arg(double(m_echoLevel), 0, 'f', 4));
+    }
+}
+
 bool SttEngine::openMicrophone()
 {
     closeMicrophone();
@@ -716,19 +749,72 @@ void SttEngine::hearBySilero(const QByteArray &pcm)
     // The microphone hands over 20 ms at a time and Silero listens in 32 ms
     // steps, so whatever is left over waits for the next buffer.
     while (m_vadIn.size() >= size_t(BurnOS::SileroVad::kChunk)) {
+        double square = 0.0;
+        for (int i = 0; i < BurnOS::SileroVad::kChunk; ++i)
+            square += double(m_vadIn[size_t(i)]) * double(m_vadIn[size_t(i)]);
+        const float rms = float(std::sqrt(square / BurnOS::SileroVad::kChunk));
         const float speech = m_vad->process(m_vadIn.data());
         m_vadIn.erase(m_vadIn.begin(), m_vadIn.begin() + BurnOS::SileroVad::kChunk);
-        decide(speech);
+        decide(speech, rms);
     }
 }
 
-void SttEngine::decide(float speech)
+void SttEngine::decide(float speech, float rms)
 {
     // Read every time, so the sensitivity slider applies to the very next step.
     // A phrase OPENS at the threshold and only counts as quiet again well under
     // it, so a voice trailing off at the end of a word does not end the phrase.
     const float openAt = float(BurnOS::Settings::vadThreshold());
     const float closeAt = qMax(0.15f, openAt - 0.15f);
+
+    if (m_overVoice && !m_capturing) {
+        m_overVoiceBytes += kVadChunkBytes;
+        const float bargeAt = qMax(kBargeFloor, m_echoLevel * kBargeOverEcho);
+        const bool learned = m_echoSteps >= kEchoLearnSteps;
+        const bool warm = m_overVoiceBytes > msToBytes(kBargeWarmupMs);
+
+        // SOMEBODY TALKING OVER IT: speech, and far louder than the echo.
+        if (learned && warm && speech >= openAt && rms >= bargeAt) {
+            if (++m_bargeSteps < kBargeSteps)
+                return;
+            BurnOS::liveLog(QStringLiteral("BARGE IN: speech %1 at rms %2 over %3 "
+                                           "(echo %4)")
+                                .arg(double(speech), 0, 'f', 3)
+                                .arg(double(rms), 0, 'f', 4)
+                                .arg(double(bargeAt), 0, 'f', 4)
+                                .arg(double(m_echoLevel), 0, 'f', 4));
+            m_bargeSteps = 0;
+            m_overVoice = false;
+            m_capturing = true;
+            m_speech = m_preroll;
+            m_preroll.clear();
+            m_voicedBytes = qint64(kBargeSteps) * kVadChunkBytes;
+            m_silenceBytes = 0;
+            m_attackBytes = 0;
+            emit bargeIn();
+            emit speechStarted();
+            return;
+        }
+        m_bargeSteps = 0;
+
+        // Anything else that sounds like speech is the orb's own voice coming
+        // back. How loud it gets is held at its peaks, fading only slowly, so
+        // the loudest syllable of an answer sets the bar for the rest of it.
+        if (speech >= closeAt) {
+            m_echoLevel = qMax(m_echoLevel * 0.995f, rms);
+            if (m_echoSteps < kEchoLearnSteps && ++m_echoSteps == kEchoLearnSteps) {
+                BurnOS::liveLog(QStringLiteral("echo learned: the voice comes back at "
+                                               "rms %1, talking over it takes %2")
+                                    .arg(double(m_echoLevel), 0, 'f', 4)
+                                    .arg(double(qMax(kBargeFloor,
+                                                     m_echoLevel * kBargeOverEcho)),
+                                         0, 'f', 4));
+            }
+        } else {
+            m_echoLevel = qMax(0.0005f, m_echoLevel * 0.9995f);
+        }
+        return;
+    }
 
     if (!m_capturing) {
         // The first seconds of every open microphone are traced, so a run can
@@ -825,9 +911,14 @@ void SttEngine::selfTest()
             BurnOS::liveLog(QStringLiteral("SELF TEST: %1").arg(error));
             return;
         }
-        BurnOS::liveLog(QStringLiteral("SELF TEST: feeding %1 ms of %2")
+        // BURNOS_VAD_OVERVOICE rehearses the file as if the orb were talking
+        // the whole time, which is how talking over the voice is proved.
+        if (qEnvironmentVariableIsSet("BURNOS_VAD_OVERVOICE"))
+            setOverVoice(true);
+        BurnOS::liveLog(QStringLiteral("SELF TEST: feeding %1 ms of %2%3")
                             .arg(bytesToMs(pcm.size()))
-                            .arg(QFileInfo(file).fileName()));
+                            .arg(QFileInfo(file).fileName())
+                            .arg(m_overVoice ? QStringLiteral(" over the voice") : QString()));
         for (qsizetype at = 0; at + chunk <= pcm.size() && m_live; at += chunk)
             onAudio(pcm.mid(at, chunk), 0.0);
         BurnOS::liveLog(QStringLiteral("SELF TEST: fed the whole file"));

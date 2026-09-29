@@ -30,9 +30,16 @@ constexpr int kVoiceCount = 11;
 constexpr int kSaveDelayMs = 400;
 
 // The models worth offering, in the order they are shown. Each earned its
-// place by actually being used for a while, which is why the list is five long
+// place by actually being used or timed, which is why the list is seven long
 // and not fifty: a combo of every model on OpenRouter is a worse choice than no
-// choice at all.
+// choice at all. BOTH model boxes offer this same list, because a model's
+// strengths decide which job it suits, not which box it sits in.
+//
+// Timed on 2026-09-29 with _research/model-bench.ps1, reasoning medium, three
+// runs each. To answer or hand off: Gemini 3.5 Flash Lite 0.6-0.9 s, GPT-6
+// Luna about 1.1 s, MiMo 2.6 Flash 1.3-3 s with outliers past 9 s. One working
+// step with a screenshot: Grok 4.7 1.4 s, Claude Sonnet 5.5 2.8 s, Claude Opus
+// 5.5 3.7 s. Every one of them handed off and acted correctly.
 //
 // EVERY ONE OF THESE IS CHECKED against OpenRouter's own catalogue as the
 // dialog opens, and any that turns out not to see the screen or not to call
@@ -54,15 +61,21 @@ struct ModelChoice
 
 constexpr ModelChoice kModels[] = {
     {"xiaomi/mimo-v2.6-flash",
-     "Fastest to start talking. The default, and the right answer for ordinary "
-     "conversation."},
-    {"anthropic/claude-sonnet-5.5",
-     "Reasons the hardest. Best when it has to work out which control to click "
-     "or which tool to run."},
+     "The default. Quick and cheap, and able to do the work as well as the "
+     "talking."},
+    {"google/gemini-3.5-flash-lite",
+     "The fastest to answer in testing, well under a second. A talking model "
+     "first; it can see, so it can do light work too."},
     {"openai/gpt-6-luna",
-     "Phrases an answer the most naturally out loud."},
+     "Phrases an answer the most naturally out loud, in about a second."},
+    {"anthropic/claude-sonnet-5.5",
+     "Reasons hard and drives the machine well. The natural working model."},
+    {"anthropic/claude-opus-5.5",
+     "Reasons the hardest of all. The working model for big jobs - slower and "
+     "dearer, which working in the background hides."},
     {"x-ai/grok-4.7",
-     "Reads a screenshot quickly and acts on what it saw."},
+     "Reads a screenshot quickly and acts on what it saw. A fast working "
+     "model."},
     {"deepseek/deepseek-v4.1-flash",
      "Quick and cheap. Fine for questions, weaker at driving the machine."},
 };

@@ -505,7 +505,14 @@ void MainWindow::moveEvent(QMoveEvent *event)
 
 void MainWindow::queueSpeech(const QString &text, int turn)
 {
-    const QString words = text.trimmed();
+    // THE VOICE SAYS WORDS, NOT FORMATTING. Every prompt asks for plain
+    // speech, and a stronger working model still writes `fizz.py` in code
+    // quotes or **bold** now and then. The marks come out here, at the one
+    // door every spoken line comes through, whichever model wrote it.
+    QString words = text;
+    words.remove(QLatin1Char('`'));
+    words.remove(QLatin1Char('*'));
+    words = words.trimmed();
     if (words.isEmpty())
         return;
     m_speech.append(Speech{words, turn});

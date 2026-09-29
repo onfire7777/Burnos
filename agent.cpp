@@ -13,6 +13,7 @@
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QLocale>
+#include <QRegularExpression>
 #include <QThreadPool>
 #include <QTimer>
 
@@ -122,8 +123,11 @@ const char kTalkPrompt[] =
     "\n"
     "If the user adds to or changes something a task is still working on, "
     "call steer_task with the change instead of starting another task. If "
-    "they want it stopped, call stop_task. If a task is waiting for an answer "
-    "from the user and they give it, pass the answer on with steer_task.\n"
+    "they plainly ask for it to be stopped or cancelled, call stop_task. An "
+    "exclamation, a sigh or a remark about something else - 'oh no', 'hmm', "
+    "'wait' - never stops work: carry on, or ask in a few words. If a task is "
+    "waiting for an answer from the user and they give it, pass the answer on "
+    "with steer_task.\n"
     "\n"
     "When they ask how something is going, answer from the task list you are "
     "given, in one sentence. Everything else - questions, chat, facts, advice, "
@@ -270,6 +274,21 @@ QString rememberCommand(const QString &said)
     return {};
 }
 
+// Whether the words plainly ask for work to be stopped. stop_task is the one
+// tool that throws work away, so it is only honoured when they do: a lighter
+// talking model once heard "Oh no." - somebody reacting to something else in
+// the room - and stopped a task a second into its work.
+bool meansStop(const QString &said)
+{
+    static const QRegularExpression kStop(
+        QStringLiteral("\\b(stop|cancel|abort|halt|kill|quit|enough|scrap|pause|"
+                       "end (it|that|this|the)|never ?mind|forget (it|about|that)|"
+                       "drop (it|that)|leave it|call it off|don'?t bother|do not bother|"
+                       "don'?t do|do not do|don'?t need|do not need|no longer need)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    return kStop.match(said).hasMatch();
+}
+
 // Given as a number where the model behaved and as "2" where it did not.
 int taskNumber(const QJsonValue &value)
 {
@@ -372,7 +391,9 @@ QJsonArray talkTools(bool memory)
         }));
     list.append(functionTool(
         QStringLiteral("stop_task"),
-        QStringLiteral("Stop a running task."),
+        QStringLiteral("Stop a running task, throwing its work away. ONLY when "
+                       "the user plainly asks for it to be stopped or cancelled - "
+                       "never on an exclamation or an unclear remark."),
         QJsonObject{
             {"type", "object"},
             {"properties", QJsonObject{
@@ -1559,6 +1580,19 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
                 recallQuery = args.value(QStringLiteral("query")).toString().trimmed();
                 recallCallId = callId;
             }
+            continue;
+        }
+        // THE SAFETY NET for stop_task: work carries on unless the words
+        // plainly asked for it to stop, and the user hears how to stop it.
+        if (name == QLatin1String("stop_task") && !meansStop(asked)) {
+            liveLog(QStringLiteral("talk %1: stop_task REFUSED - '%2' does not ask "
+                                   "for anything to stop")
+                        .arg(turn)
+                        .arg(asked.left(160)));
+            const QString kept = tr("I've kept it going. Say stop if you want it stopped.");
+            results.insert(callId, kept);
+            if (refusal.isEmpty())
+                refusal = kept;
             continue;
         }
         bool ok = false;

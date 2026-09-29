@@ -4,12 +4,15 @@
 #include "livelog.h"
 #include "settings.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QLocale>
+#include <QThreadPool>
 #include <QTimer>
 
 namespace BurnOS {
@@ -165,6 +168,21 @@ const char kTaskPrompt[] =
     "THAT PICTURE's own pixels from its top left corner. Never click a point "
     "you have not seen.\n"
     "\n"
+    "THE KEYBOARD AND THE MOUSE. press_keys takes any shortcut - 'ctrl+s', "
+    "'ctrl+l', 'alt+tab', 'win+r'. type_text with no control types wherever the "
+    "window's cursor is. Every screenshot outlines the controls with their keys: "
+    "click by key wherever there is one, and by point only where there is not. "
+    "read_text gives you a page's or a document's words far more reliably than "
+    "reading them off a picture.\n"
+    "\n"
+    "CODE AND FILES go through the files tool, never through an editor's "
+    "window: read before you change anything, edit with the exact text, write "
+    "whole new files. Builds, tests, git and scripts go through the shell tool, "
+    "in the project's own folder, with the time a long build needs. Read what "
+    "it printed; if it failed, fix the cause and run it again, until it works "
+    "or you are sure it cannot. Where the user will want to see the result, "
+    "open it for them.\n"
+    "\n"
     "When a command prints something the user wanted, report the ANSWER, not "
     "the raw output.";
 
@@ -283,23 +301,32 @@ QJsonObject computerUseTool()
     const QJsonObject properties{
         {"action", QJsonObject{
             {"type", "string"},
-            {"enum", QJsonArray{"launch", "open_url", "run_command", "list_windows",
-                                "list_controls", "screenshot", "click", "click_at",
-                                "press_key", "type_text"}},
+            {"enum", QJsonArray{"launch", "open_url", "list_windows", "list_controls",
+                                "screenshot", "click", "click_at", "type_text",
+                                "press_keys", "scroll", "drag", "move_mouse",
+                                "read_text", "window", "wait_for", "clipboard"}},
             {"description",
              "launch OPENS A PROGRAM BY ITS NAME and is the only way you should "
              "open one - it finds Store apps, which have no command line at all, "
              "and it tells you the new window's controls once it is up. "
              "open_url OPENS A WEB PAGE in the browser the user already has, on "
              "the profile they are signed in on, and is the only way you should "
-             "open a website. run_command runs a Windows command line and gives "
-             "you back what it printed; use it for commands, NOT for opening "
-             "programs. list_windows says what is open. list_controls re-reads "
-             "what a window offers, which you need after anything that changes "
-             "the screen. screenshot SHOWS YOU a window so you can see it for "
-             "yourself. click presses a named control. click_at clicks a point "
-             "you picked out of a screenshot. press_key presses one key. "
-             "type_text types into a field."}}},
+             "open a website. list_windows says what is open. list_controls "
+             "re-reads what a window offers. screenshot SHOWS YOU a window - or "
+             "the whole screen with screen true - with every control outlined and "
+             "its key drawn on it. click presses a named control (button right "
+             "or double true for those). click_at clicks a point you picked out "
+             "of the last screenshot. type_text types into a named control, or "
+             "with no control wherever the window's cursor is. press_keys "
+             "presses any keys or chords in order: 'ctrl+s', 'alt+tab', 'win+r', "
+             "'ctrl+shift+esc', 'ctrl+a delete', 'f5', 'enter'. scroll turns the "
+             "wheel over a point, a control or the window. drag drags from x,y "
+             "to to_x,to_y. move_mouse hovers. read_text gives you the words in "
+             "a window or control - a web page, a document, a dialog - without "
+             "a picture. window focuses, maximizes, minimizes, restores or "
+             "closes a window. wait_for waits until a window or some text "
+             "appears, or for some seconds. clipboard reads it, or sets it to "
+             "text."}}},
         {"name", textParam(QStringLiteral(
              "For launch. What the program is called, as a person would say "
              "it: Microsoft Store, Firefox, Notepad, Spotify, Calculator. Work "
@@ -309,31 +336,55 @@ QJsonObject computerUseTool()
              "For open_url. The web address itself, such as github.com or "
              "https://mail.google.com. Give the site, not a search for it."))},
         {"window", textParam(QStringLiteral(
-             "For screenshot and list_controls. Part of the title of the window "
-             "meant. Leave it out for whatever is in front."))},
+             "Part of the title of the window meant, for screenshot, "
+             "list_controls, type_text, press_keys, read_text, window and "
+             "wait_for. Leave it out for the window you are working in."))},
+        {"screen", QJsonObject{{"type", "boolean"},
+                               {"description", "For screenshot: true for the whole "
+                                               "monitor your window is on, as the "
+                                               "user sees it - dialogs, menus and "
+                                               "tooltips too."}}},
         {"x", numberParam(QStringLiteral(
-             "For click_at. How far ACROSS the screenshot the point is, in that "
-             "picture's own pixels, from its left edge."))},
+             "For click_at, drag, scroll and move_mouse. How far ACROSS the last "
+             "screenshot the point is, in that picture's own pixels."))},
         {"y", numberParam(QStringLiteral(
-             "For click_at. How far DOWN the screenshot the point is, in that "
-             "picture's own pixels, from its top edge."))},
-        {"command", textParam(QStringLiteral(
-             "For run_command. The command line, exactly as it would be typed "
-             "at a Windows prompt: dir, tasklist, ipconfig, and so on. DO NOT "
-             "use this to open a program - use launch for that, because a Store "
-             "app has no command line to start."))},
+             "How far DOWN the last screenshot the point is, in that picture's "
+             "own pixels."))},
+        {"to_x", numberParam(QStringLiteral("For drag: where to drop, across."))},
+        {"to_y", numberParam(QStringLiteral("For drag: where to drop, down."))},
+        {"button", QJsonObject{{"type", "string"},
+                               {"enum", QJsonArray{"left", "right", "middle"}},
+                               {"description", "For click and click_at. Left if "
+                                               "left out."}}},
+        {"double", QJsonObject{{"type", "boolean"},
+                               {"description", "For click and click_at: a double "
+                                               "click."}}},
         {"control", textParam(QStringLiteral(
-             "For click and type_text. The key of the control from the on "
-             "screen list, exactly as shown, such as c7."))},
-        {"key", QJsonObject{
-            {"type", "string"},
-            {"enum", QJsonArray{"enter", "escape", "tab", "space", "backspace",
-                                "delete", "up", "down", "left", "right", "home",
-                                "end", "pageup", "pagedown", "f5"}},
-            {"description", "For press_key."}}},
+             "The key of a control from the list or the screenshot, exactly as "
+             "shown, such as c7 - for click, type_text, scroll, move_mouse and "
+             "read_text."))},
+        {"keys", textParam(QStringLiteral(
+             "For press_keys. Keys joined with + are pressed together, and "
+             "groups separated by spaces go one after another: 'ctrl+l', "
+             "'ctrl+a delete', 'alt+f4', 'win+r', 'shift+tab', 'pagedown'. Any "
+             "single character, f1 to f24, enter, escape, tab, space, "
+             "backspace, delete, insert, home, end, pageup, pagedown, arrows, "
+             "ctrl, alt, shift, win, volumeup, volumedown, mute, playpause."))},
         {"text", textParam(QStringLiteral(
-             "For type_text. Exactly the words to type, and nothing else - no "
-             "leading 'type' and no full stop unless one was meant."))},
+             "For type_text: exactly the words to type - a new line is Enter. "
+             "For wait_for: the words to wait for. For clipboard: what to put "
+             "on it; leave it out to read the clipboard instead."))},
+        {"direction", QJsonObject{{"type", "string"},
+                                  {"enum", QJsonArray{"up", "down", "left", "right"}},
+                                  {"description", "For scroll."}}},
+        {"amount", numberParam(QStringLiteral(
+             "For scroll: how many notches of the wheel, 5 if left out."))},
+        {"how", QJsonObject{{"type", "string"},
+                            {"enum", QJsonArray{"focus", "maximize", "minimize",
+                                                "restore", "close"}},
+                            {"description", "For window."}}},
+        {"seconds", numberParam(QStringLiteral(
+             "For wait_for: the longest to wait, up to 60; 10 if left out."))},
     };
     return functionTool(QStringLiteral("computer_use"),
                         QStringLiteral("Operate the Windows machine Burnos is "
@@ -390,6 +441,78 @@ QJsonObject appActionTool()
                                     {"required", QJsonArray{"action"}}});
 }
 
+// CODING. Files are read and changed directly, never by typing into an editor's
+// window: it is exact, it is fast, and nothing on screen can get in the way.
+QJsonObject filesTool()
+{
+    const QJsonObject properties{
+        {"action", QJsonObject{
+            {"type", "string"},
+            {"enum", QJsonArray{"read", "write", "edit", "list", "find", "search"}},
+            {"description",
+             "read a text file with numbered lines - offset and limit for a long "
+             "one. write a whole file, creating its folders as needed. edit a "
+             "file by replacing an exact piece of it: old is copied exactly from "
+             "what read showed, without the line numbers, and must be unique "
+             "unless replace_all. list a folder. find files by name under a "
+             "folder. search file contents under a folder with a regular "
+             "expression."}}},
+        {"path", textParam(QStringLiteral(
+             "The file or folder, as a full Windows path. A relative path is "
+             "under the user's home folder."))},
+        {"offset", numberParam(QStringLiteral(
+             "For read: the first line wanted, counting from 1."))},
+        {"limit", numberParam(QStringLiteral(
+             "For read: how many lines, 400 if left out, at most 2000."))},
+        {"content", textParam(QStringLiteral("For write: the whole new content."))},
+        {"old", textParam(QStringLiteral("For edit: the exact text to replace."))},
+        {"new", textParam(QStringLiteral("For edit: what replaces it."))},
+        {"replace_all", QJsonObject{{"type", "boolean"},
+                                    {"description", "For edit: every place old appears."}}},
+        {"pattern", textParam(QStringLiteral(
+             "For find: a file name pattern such as *.cpp or CMakeLists.txt. "
+             "For search: a regular expression."))},
+        {"glob", textParam(QStringLiteral(
+             "For search: only files whose names match this, such as *.h."))},
+        {"ignore_case", QJsonObject{{"type", "boolean"},
+                                    {"description", "For search."}}},
+    };
+    return functionTool(QStringLiteral("files"),
+                        QStringLiteral("Read, write and change files and look "
+                                       "through folders on this machine - code, "
+                                       "notes, configuration, anything in text."),
+                        QJsonObject{{"type", "object"},
+                                    {"properties", properties},
+                                    {"required", QJsonArray{"action", "path"}}});
+}
+
+QJsonObject shellTool()
+{
+    const QJsonObject properties{
+        {"command", textParam(QStringLiteral(
+             "The command line, as typed at a Windows prompt: a build, tests, "
+             "git, python, node, powershell -c \"...\", dir. Not for opening "
+             "programs - computer_use launch does that."))},
+        {"cwd", textParam(QStringLiteral(
+             "The folder to run it in; the user's home folder if left out."))},
+        {"timeout", numberParam(QStringLiteral(
+             "Seconds before it is stopped: 120 if left out, at most 900. Give a "
+             "long build the time it needs."))},
+        {"background", QJsonObject{{"type", "boolean"},
+                                   {"description", "Start it and let it keep "
+                                                   "running - a server, a watcher, "
+                                                   "a program - instead of waiting "
+                                                   "for it to finish."}}},
+    };
+    return functionTool(QStringLiteral("shell"),
+                        QStringLiteral("Run a command line on this machine and get "
+                                       "back its exit code and what it printed. "
+                                       "Nothing else waits while it runs."),
+                        QJsonObject{{"type", "object"},
+                                    {"properties", properties},
+                                    {"required", QJsonArray{"command"}}});
+}
+
 QJsonObject askUserTool()
 {
     return functionTool(
@@ -405,7 +528,7 @@ QJsonObject askUserTool()
 
 QJsonArray taskTools(bool online)
 {
-    QJsonArray list{computerUseTool(), askUserTool()};
+    QJsonArray list{computerUseTool(), filesTool(), shellTool(), askUserTool()};
     if (online)
         list.append(appActionTool());
     return list;
@@ -450,6 +573,34 @@ QString describeStep(const QString &function, const QVariantMap &args)
     const QString action = args.value(QStringLiteral("action")).toString();
     if (function == QLatin1String("ask_user"))
         return QStringLiteral("asking the user a question");
+    if (function == QLatin1String("files")) {
+        const QString path = args.value(QStringLiteral("path")).toString();
+        if (action == QLatin1String("read"))
+            return QStringLiteral("reading %1").arg(path);
+        if (action == QLatin1String("write"))
+            return QStringLiteral("writing %1").arg(path);
+        if (action == QLatin1String("edit"))
+            return QStringLiteral("changing %1").arg(path);
+        return QStringLiteral("looking through %1").arg(path);
+    }
+    if (function == QLatin1String("shell")) {
+        return QStringLiteral("running %1")
+            .arg(args.value(QStringLiteral("command")).toString().left(80));
+    }
+    if (action == QLatin1String("press_keys"))
+        return QStringLiteral("pressing %1").arg(args.value(QStringLiteral("keys")).toString());
+    if (action == QLatin1String("scroll"))
+        return QStringLiteral("scrolling");
+    if (action == QLatin1String("drag"))
+        return QStringLiteral("dragging");
+    if (action == QLatin1String("read_text"))
+        return QStringLiteral("reading what is on screen");
+    if (action == QLatin1String("window"))
+        return QStringLiteral("arranging windows");
+    if (action == QLatin1String("wait_for"))
+        return QStringLiteral("waiting for something to appear");
+    if (action == QLatin1String("clipboard"))
+        return QStringLiteral("using the clipboard");
     if (function == QLatin1String("app_action")) {
         if (action == QLatin1String("run_tool")) {
             return QStringLiteral("running %1 in the user's apps")
@@ -533,9 +684,11 @@ void Task::start()
             if (Settings::hasComposioKey())
                 m_messages.append(msg(QStringLiteral("system"), appsNote()));
             m_messages.append(msg(QStringLiteral("system"),
-                                  tr("The time now is %1. The window in front "
-                                     "right now. %2")
-                                      .arg(nowWords(), r.text)));
+                                  tr("The time now is %1. The user's home folder "
+                                     "is %2. The window in front right now. %3")
+                                      .arg(nowWords(),
+                                           QDir::toNativeSeparators(QDir::homePath()),
+                                           r.text)));
             m_messages.append(msg(QStringLiteral("user"), m_instruction));
             ask();
         });
@@ -700,6 +853,35 @@ void Task::runNextCall()
                             .arg(r.text.simplified().left(200)));
                 answerCall(r.text, r.png);
             });
+        return;
+    }
+
+    if (name == QLatin1String("files")) {
+        // ON A POOL THREAD: a search through a big project takes a moment, and
+        // nothing else - the talker, the other tasks - should wait on it.
+        const QPointer<Task> self(this);
+        const int id = m_id;
+        QThreadPool::globalInstance()->start([self, args, id]() {
+            const QString result = Computer::files(args);
+            QMetaObject::invokeMethod(
+                qApp,
+                [self, result, id]() {
+                    liveLog(QStringLiteral("task %1: %2").arg(id).arg(result.simplified().left(200)));
+                    if (self && self->isLive())
+                        self->answerCall(result);
+                },
+                Qt::QueuedConnection);
+        });
+        return;
+    }
+
+    if (name == QLatin1String("shell")) {
+        Computer::runShell(this, args, m_cancelled, [this](const QString &result) {
+            if (!isLive())
+                return;
+            liveLog(QStringLiteral("task %1: %2").arg(m_id).arg(result.simplified().left(200)));
+            answerCall(result);
+        });
         return;
     }
 
@@ -1174,7 +1356,9 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
 QString Agent::statusReport() const
 {
     QStringList lines;
-    lines.append(tr("The time now is %1.").arg(nowWords()));
+    lines.append(tr("The time now is %1. The user's home folder is %2, and their "
+                    "Desktop is %2\\Desktop.")
+                     .arg(nowWords(), QDir::toNativeSeparators(QDir::homePath())));
 
     const DesktopWindow front = Computer::foreground();
     if (!front.title.isEmpty())

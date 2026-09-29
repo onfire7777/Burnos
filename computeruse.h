@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 
 class QObject;
 
@@ -21,20 +22,23 @@ struct DesktopWindow
 };
 
 // One control inside a window, as UI Automation sees it. The key is ours, not
-// Windows': c0, c1, c2 and so on, because Jev answers with a key from a list we
-// hand it and most controls have no AutomationId to answer with.
+// Windows': c0, c1, c2 and so on, because most controls have no AutomationId
+// to answer with - and the same key is drawn on the screenshot, so the model
+// can point at what it sees.
 struct DesktopControl
 {
     QString key;
-    QString id;   // AutomationId, often empty
-    QString name; // what a person would call it
-    QString type; // Button, Edit, MenuItem, TabItem ...
-    int x = 0;
+    QString id;    // AutomationId, often empty
+    QString name;  // what a person would call it
+    QString type;  // Button, Edit, MenuItem, TabItem ...
+    QString state; // on, off, selected, expanded, collapsed, disabled - or empty
+    QString value; // what a field holds, cut short
+    int x = 0;     // screen pixels
     int y = 0;
     int w = 0;
     int h = 0;
 
-    // What Jev is shown. Short on purpose: it is one line of a list of forty.
+    // What the model is shown: one line of a list of fifty.
     QString describe() const;
 };
 
@@ -58,7 +62,12 @@ struct DeskState
 {
     DesktopWindow target;
     QList<DesktopControl> offered;
+    // The last screenshot: of one window, or of the whole screen, and how far
+    // it was shrunk. A point in the picture maps back through these.
     quint64 shotWindow = 0;
+    bool shotScreen = false;
+    int shotLeft = 0; // the screen's own top left, for a whole-screen picture
+    int shotTop = 0;
     qreal shotScale = 1.0; // picture pixels per window pixel
 };
 
@@ -71,11 +80,10 @@ struct DeskResult
     DeskState state;
 };
 
-// The things Burnos is allowed to do to this machine.
-//
-// Deliberately a CLOSED SET. Nothing here takes an arbitrary command line or an
-// arbitrary key sequence, so a misheard sentence cannot turn into an arbitrary
-// process. Adding a capability means adding it here on purpose.
+// EVERYTHING BURNOS DOES TO THIS MACHINE: windows, UI Automation, the mouse,
+// the keyboard, screenshots, the clipboard, launching, files and commands.
+// It is wide open by design - a voice agent that is meant to be able to do
+// anything on the computer - so everything it does is written to the log.
 namespace BurnOS {
 namespace Computer {
 
@@ -138,7 +146,7 @@ bool clickAt(quint64 handle, int windowX, int windowY, QString *error);
 
 // Visible, named controls of one window, nearest the top left first. Capped,
 // because the whole list travels to Jev as the options of a question.
-QList<DesktopControl> controls(quint64 handle, int limit = 40);
+QList<DesktopControl> controls(quint64 handle, int limit = 50);
 
 // Invoked through UI Automation where the control supports it, and with a real
 // mouse click where it does not.
@@ -175,6 +183,25 @@ DeskResult perform(const QVariantMap &args, const DeskState &state,
 // nobody is left to tell and it is not called at all.
 void onHands(QObject *guard, std::function<DeskResult()> job,
              std::function<void(const DeskResult &)> done);
+
+// ---------------------------------------------------------------------------
+// CODING: files and commands
+// ---------------------------------------------------------------------------
+
+// One files action - read, write, edit, list, find or search - on any path on
+// this machine, answered in plain words for the model. Blocking; it runs on a
+// pool thread, never on the orb's.
+QString files(const QVariantMap &args);
+
+// A command line, run in a folder of the model's choosing for as long as it
+// takes, up to a limit - a build, a test run, a script. NOTHING WAITS ON IT:
+// the process runs on its own and `done` hears what it printed once it ends,
+// is stopped, or runs out of time. Not called if `guard` is gone by then.
+// A task that is stopped stops its command too: `cancelled` is watched, and
+// the whole process tree is ended the moment it is set.
+void runShell(QObject *guard, const QVariantMap &args,
+              std::shared_ptr<std::atomic_bool> cancelled,
+              std::function<void(const QString &)> done);
 
 } // namespace Computer
 } // namespace BurnOS

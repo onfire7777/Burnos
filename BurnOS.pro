@@ -17,6 +17,7 @@ SOURCES += \
     integrationsdialog.cpp \
     main.cpp \
     mainwindow.cpp \
+    mcp.cpp \
     modelcatalogue.cpp \
     openrouter.cpp \
     orbwidget.cpp \
@@ -34,6 +35,7 @@ HEADERS += \
     integrationsdialog.h \
     livelog.h \
     mainwindow.h \
+    mcp.h \
     modelcatalogue.h \
     openrouter.h \
     orbwidget.h \

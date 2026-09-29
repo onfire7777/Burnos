@@ -19,11 +19,23 @@ void setOpenRouterKey(const QString &key);
 // True when a non empty key is stored. Cheaper than decrypting to check.
 bool hasOpenRouterKey();
 
-// The OpenRouter model id used for every turn, falling back to the shipped
-// default when nothing has been chosen.
+// The TALKING model: every answer the orb says out loud, and every decision to
+// hand work off to a task. Falls back to the shipped default when nothing has
+// been chosen. Stored where the one and only model always was, so an install
+// from before v0.5 goes on talking on exactly what it chose.
 QString openRouterModel();
 void setOpenRouterModel(const QString &model);
 QString defaultOpenRouterModel();
+
+// The WORKING model: what every background task thinks with - driving the
+// desktop, writing code, anything handed off with start_task - at the same
+// time as the talking model carries on the conversation. Nothing stored means
+// the same model as the talking, which is how every version before 0.5 ran,
+// so taskModel() always names a real model and hasTaskModel() says whether it
+// is a separate one.
+QString taskModel();
+bool hasTaskModel();
+void setTaskModel(const QString &model); // empty goes back to "same as talking"
 
 // Token budget for one answer. Clamped, because a reasoning model spends part
 // of it thinking and a tiny budget comes back empty.

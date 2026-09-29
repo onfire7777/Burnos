@@ -12,8 +12,8 @@ class QSlider;
 class QSpinBox;
 class QTimer;
 
-// The one place every stored preference can be changed: the OpenRouter key and
-// model, how long an answer may be, how long a pause ends a sentence, which
+// The one place every stored preference can be changed: the OpenRouter key,
+// the talking model and the working model, how long an answer may be, how long a pause ends a sentence, which
 // Kokoro voice says it and how loudly, and whether the orb stays above every
 // other window.
 //
@@ -64,8 +64,12 @@ private:
     // Once OpenRouter has said what each model can do: take the ones that
     // cannot do the job off the list, then write the line underneath.
     void applyCatalogue();
-    // The line under the model box, in plain words, every time the choice moves.
+    // The lines under both model boxes, in plain words, every time either moves.
+    // They are written together because what the talking model has to be able
+    // to do depends on whether it does the work as well.
     void refreshModelNote();
+    // The working model box as a slug, or empty for "same as the talking model".
+    QString chosenTaskModel() const;
 
     QLineEdit *m_key = nullptr;
     QCheckBox *m_showKey = nullptr;
@@ -73,6 +77,11 @@ private:
     // Says whether the chosen model can see the screen and call tools, which is
     // the whole of what Burnos needs from one.
     QLabel *m_modelNote = nullptr;
+    // The model background tasks think with, at the same time as the talking
+    // model above carries on the conversation. Its first entry stores nothing
+    // and means the talking model does both, as before v0.5.
+    QComboBox *m_taskModel = nullptr;
+    QLabel *m_taskModelNote = nullptr;
     QSpinBox *m_tokens = nullptr;
     // Integrations are a page of their own, not a row here: the catalogue runs
     // to fifteen hundred apps and needs a search box. This is the way in.

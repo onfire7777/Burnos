@@ -19,6 +19,8 @@ constexpr auto kKeyPath = "openrouter/key";
 // Everything else the settings dialog can change. Only the key is encrypted:
 // the rest is plain preference, worth nothing to anyone reading the registry.
 constexpr auto kModelPath  = "openrouter/model";
+// Since v0.5. Absent means tasks work on the talking model above.
+constexpr auto kTaskModelPath = "openrouter/taskModel";
 constexpr auto kTokensPath = "openrouter/maxTokens";
 constexpr auto kHangoverPath = "stt/hangoverMs";
 constexpr auto kSensitivityPath = "stt/sensitivity";
@@ -173,6 +175,32 @@ void setOpenRouterModel(const QString &model)
         s.remove(QString::fromLatin1(kModelPath));
     else
         s.setValue(QString::fromLatin1(kModelPath), trimmed);
+    s.sync();
+}
+
+QString taskModel()
+{
+    const QString stored =
+        store().value(QString::fromLatin1(kTaskModelPath)).toString().trimmed();
+    return stored.isEmpty() ? openRouterModel() : stored;
+}
+
+bool hasTaskModel()
+{
+    return !store().value(QString::fromLatin1(kTaskModelPath)).toString().trimmed().isEmpty();
+}
+
+void setTaskModel(const QString &model)
+{
+    // Stored exactly as chosen, even when it happens to be the default: there
+    // is no shipped working model to follow, and "same as talking" is said by
+    // storing nothing at all.
+    QSettings s = store();
+    const QString trimmed = model.trimmed();
+    if (trimmed.isEmpty())
+        s.remove(QString::fromLatin1(kTaskModelPath));
+    else
+        s.setValue(QString::fromLatin1(kTaskModelPath), trimmed);
     s.sync();
 }
 

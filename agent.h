@@ -55,6 +55,9 @@ public:
     // Its result once it has ended, worded to be said out loud.
     QString outcome() const { return m_outcome; }
     int steps() const { return m_toolCalls; }
+    // The model it thinks with: the working model, or the talking one once the
+    // working model has failed it twice running.
+    QString model() const;
     qint64 runningMs() const;
     qint64 endedAgoMs() const;
 
@@ -92,6 +95,9 @@ private:
     QElapsedTimer m_ended;
     int m_toolCalls = 0;
     int m_retries = 0;
+    // Set, for good, when a separate working model failed twice in a row and
+    // the task moved to the talking model to finish rather than die.
+    bool m_onTalkModel = false;
     bool m_nudged = false;
     bool m_wrappingUp = false;
 

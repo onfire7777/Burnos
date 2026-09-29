@@ -67,6 +67,16 @@ constexpr ModelChoice kModels[] = {
      "Quick and cheap. Fine for questions, weaker at driving the machine."},
 };
 
+// The first entry on the working model's list. Chosen, nothing is stored and
+// every task runs on the talking model - exactly how Burnos ran before v0.5.
+constexpr auto kSameAsTalking = "Same as the talking model";
+
+// The three colours a line under a model box can be: all is well, the
+// catalogue has never heard of it, and it cannot do the job.
+constexpr auto kNotePlain = "#8fa3bd";
+constexpr auto kNoteWarn = "#d8b46a";
+constexpr auto kNoteRefuse = "#e58a8a";
+
 // Same palette as the orb's context menu, or the dialog would look like it
 // belongs to another program.
 constexpr auto kStyle =
@@ -128,9 +138,9 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         m_model->setItemData(m_model->count() - 1,
                              tr(choice.note), Qt::ToolTipRole);
     }
-    m_model->setToolTip(tr("Which model answers. Every one of these works; they "
-                           "trade speed against how well they reason. Hover a "
-                           "choice to see what it is good at, or type any other "
+    m_model->setToolTip(tr("Which model listens and answers you. Pick a fast one: "
+                           "every second it thinks is a second of silence. Hover "
+                           "a choice to see what it is good at, or type any other "
                            "OpenRouter model id. Picking one takes effect at "
                            "once; a typed one when you press Enter or click "
                            "away."));
@@ -142,6 +152,34 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     m_modelNote = new QLabel(this);
     m_modelNote->setWordWrap(true);
     m_modelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+
+    // THE WORKING MODEL. Every background task thinks with this one while the
+    // talking model above carries on the conversation, both at once: a fast
+    // model to talk, a substantive one to do the work. The first entry stores
+    // nothing and runs tasks on the talking model, the way every version
+    // before 0.5 did, which is why it is the default.
+    m_taskModel = new QComboBox(this);
+    m_taskModel->setEditable(true);
+    m_taskModel->setInsertPolicy(QComboBox::NoInsert);
+    m_taskModel->addItem(tr(kSameAsTalking));
+    m_taskModel->setItemData(0, tr("One model does everything. Simplest, and the "
+                                   "cheapest when that model is a fast one."),
+                             Qt::ToolTipRole);
+    for (const ModelChoice &choice : kModels) {
+        m_taskModel->addItem(QString::fromLatin1(choice.slug));
+        m_taskModel->setItemData(m_taskModel->count() - 1,
+                                 tr(choice.note), Qt::ToolTipRole);
+    }
+    m_taskModel->setToolTip(tr("Which model does the work you hand off - driving "
+                               "the desktop, writing code, anything that takes "
+                               "more than a sentence. It works in the background "
+                               "at the same time as the conversation, so a "
+                               "slower, stronger model here never slows the "
+                               "talking down."));
+
+    m_taskModelNote = new QLabel(this);
+    m_taskModelNote->setWordWrap(true);
+    m_taskModelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
 
     connect(BurnOS::ModelCatalogue::instance(), &BurnOS::ModelCatalogue::loaded,
             this, &SettingsDialog::applyCatalogue);
@@ -166,6 +204,11 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     m_integrations->setToolTip(tr("Connect Gmail, Slack, Notion, GitHub and "
                                   "about fifteen hundred other apps, so you can "
                                   "ask for things in them out loud."));
+
+    // NOT A DEFAULT BUTTON. A dialog hands Enter to its first push button, and
+    // this was it: pressing Enter to commit a typed model id opened the
+    // integrations page instead. Enter belongs to the field being typed in.
+    m_integrations->setAutoDefault(false);
 
     connect(m_integrations, &QPushButton::clicked, this, [this]() {
         IntegrationsDialog dialog(this);
@@ -271,8 +314,10 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->setHorizontalSpacing(14);
     form->setVerticalSpacing(10);
     form->addRow(tr("OpenRouter key"), keyRow);
-    form->addRow(tr("Model"), m_model);
+    form->addRow(tr("Talking model"), m_model);
     form->addRow(QString(), m_modelNote);
+    form->addRow(tr("Working model"), m_taskModel);
+    form->addRow(QString(), m_taskModelNote);
     form->addRow(tr("Answer length"), m_tokens);
     form->addRow(tr("Integrations"), integrationsRow);
     form->addRow(tr("Microphone sensitivity"), sensitivityRow);
@@ -293,6 +338,10 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     // reach it, and nothing to cancel either - a Cancel that silently undid the
     // size you just watched the orb take would be a lie.
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    // Nor this one, for the same reason: Enter commits a field, it does not
+    // close the page. Escape and the button itself still do.
+    if (QPushButton *close = buttons->button(QDialogButtonBox::Close))
+        close->setAutoDefault(false);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
 
     auto *footer = new QHBoxLayout;
@@ -337,6 +386,9 @@ void SettingsDialog::load()
     // is one and simply types the text in where there is not, which is exactly
     // right for a model somebody pasted in by hand.
     m_model->setCurrentText(BurnOS::Settings::openRouterModel());
+    m_taskModel->setCurrentText(BurnOS::Settings::hasTaskModel()
+                                    ? BurnOS::Settings::taskModel()
+                                    : tr(kSameAsTalking));
 
     m_tokens->setValue(BurnOS::Settings::replyTokens());
 
@@ -399,11 +451,19 @@ void SettingsDialog::wireLive()
     }
     connect(m_model, &QComboBox::activated, this,
             [this](int) { saveCredentials(); });
+    if (QLineEdit *edit = m_taskModel->lineEdit()) {
+        connect(edit, &QLineEdit::editingFinished, this,
+                &SettingsDialog::saveCredentials);
+    }
+    connect(m_taskModel, &QComboBox::activated, this,
+            [this](int) { saveCredentials(); });
 
     // The line underneath follows the box as it changes, so the answer to "can
     // this one do the job" is there BEFORE the choice is committed rather than
     // after it has broken a turn.
     connect(m_model, &QComboBox::currentTextChanged, this,
+            [this](const QString &) { refreshModelNote(); });
+    connect(m_taskModel, &QComboBox::currentTextChanged, this,
             [this](const QString &) { refreshModelNote(); });
     refreshModelNote();
 }
@@ -434,27 +494,100 @@ void SettingsDialog::saveCredentials()
     // throws the entire request away, so choosing one here would quietly break
     // every turn that checks its own work. The field goes back to what was
     // stored and the line underneath says why.
-    const QString wanted = m_model->currentText().trimmed();
-    if (!wanted.isEmpty()
-        && !BurnOS::ModelCatalogue::instance()->fitToRun(wanted)) {
-        const QString kept = BurnOS::Settings::openRouterModel();
-        BurnOS::liveLog(QStringLiteral("settings REFUSED model %1: it cannot do "
-                                       "what Burnos asks of a model. Still on %2")
-                            .arg(wanted, kept));
-        // Put back with the signals off, or currentTextChanged would overwrite
-        // the explanation below with a cheerful line about the model that is
-        // actually stored.
-        const QSignalBlocker quiet(m_model);
-        m_model->setCurrentText(kept);
-        m_modelNote->setStyleSheet(QStringLiteral("color: #e58a8a;"));
-        m_modelNote->setText(tr("%1 cannot do what Burnos asks of a model, so it "
-                                "was not saved. Still using %2.")
-                                 .arg(wanted, kept));
+    //
+    // TWO MODELS since v0.5, judged TOGETHER: what the talking model has to be
+    // able to do depends on whether it does the work as well.
+    BurnOS::ModelCatalogue *catalogue = BurnOS::ModelCatalogue::instance();
+    const QString talk = m_model->currentText().trimmed();
+    const QString work = chosenTaskModel();
+    const QString keptTalk = BurnOS::Settings::openRouterModel();
+    const QString keptWork = BurnOS::Settings::hasTaskModel()
+                                 ? BurnOS::Settings::taskModel()
+                                 : QString();
+
+    // NOTHING CHANGED, SO NOTHING TO SAY. One Enter commits a field twice -
+    // once for the line edit, and once more when the combo finds the text it
+    // was put back to on its own list - and that second pass must not wipe out
+    // the red line explaining a refusal the first one has just written.
+    const QString talkNow = talk.isEmpty() ? BurnOS::Settings::defaultOpenRouterModel()
+                                           : talk;
+    if (talkNow == keptTalk && work == keptWork)
         return;
+
+    QString workRefused;
+    if (!work.isEmpty() && !catalogue->fitToRun(work)) {
+        workRefused = tr("%1 cannot both see the screen and use tools, which "
+                         "every task needs, so it was not saved.").arg(work);
+    }
+    const QString workAfter = workRefused.isEmpty() ? work : keptWork;
+
+    // Only a model that has just been CHANGED is judged here, so the one that
+    // was already stored is never refused for a clash the other just caused.
+    const bool talkChanged = talkNow != keptTalk;
+    QString talkRefused;
+    if (talkChanged && !talk.isEmpty() && !catalogue->fitToTalk(talk)) {
+        talkRefused = tr("%1 cannot call tools, so it could neither start work "
+                         "nor remember anything. It was not saved.").arg(talk);
+    } else if (talkChanged && !talk.isEmpty() && workAfter.isEmpty()
+               && !catalogue->fitToRun(talk)) {
+        talkRefused = tr("%1 cannot see the screen, so it can only talk while a "
+                         "separate working model does the work - choose that "
+                         "first. It was not saved.").arg(talk);
+    }
+    const QString talkAfter = !talkRefused.isEmpty() ? keptTalk
+                              : talk.isEmpty() ? BurnOS::Settings::defaultOpenRouterModel()
+                                               : talk;
+
+    // THE LAST WAY TO BREAK IT: going back to one model while the talking one
+    // is a model that cannot see.
+    if (workRefused.isEmpty() && work.isEmpty() && !keptWork.isEmpty()
+        && !catalogue->fitToRun(talkAfter)) {
+        workRefused = tr("%1 cannot see the screen, so it cannot do the work as "
+                         "well as the talking.").arg(talkAfter);
     }
 
-    BurnOS::Settings::setOpenRouterModel(wanted);
+    // A refused box is put back with its signals off, or currentTextChanged
+    // would overwrite the explanation below with a cheerful line about what
+    // is actually stored.
+    if (workRefused.isEmpty()) {
+        BurnOS::Settings::setTaskModel(work);
+    } else {
+        BurnOS::liveLog(QStringLiteral("settings REFUSED working model %1: %2")
+                            .arg(work.isEmpty() ? QStringLiteral("same as talking") : work,
+                                 workRefused));
+        const QSignalBlocker quiet(m_taskModel);
+        m_taskModel->setCurrentText(keptWork.isEmpty() ? tr(kSameAsTalking) : keptWork);
+    }
+    if (talkRefused.isEmpty()) {
+        BurnOS::Settings::setOpenRouterModel(talk);
+    } else {
+        BurnOS::liveLog(QStringLiteral("settings REFUSED talking model %1: %2")
+                            .arg(talk, talkRefused));
+        const QSignalBlocker quiet(m_model);
+        m_model->setCurrentText(keptTalk);
+    }
+
+    // Both lines describe what is now stored; a refusal then takes over its
+    // own line, in red, saying why and what is still in use.
     refreshModelNote();
+    const QString red = QStringLiteral("color: %1;").arg(QLatin1String(kNoteRefuse));
+    if (!workRefused.isEmpty()) {
+        m_taskModelNote->setStyleSheet(red);
+        m_taskModelNote->setText(tr("%1 Still using %2.")
+                                     .arg(workRefused,
+                                          keptWork.isEmpty() ? tr("the talking model")
+                                                             : keptWork));
+    }
+    if (!talkRefused.isEmpty()) {
+        m_modelNote->setStyleSheet(red);
+        m_modelNote->setText(tr("%1 Still using %2.").arg(talkRefused, keptTalk));
+    }
+}
+
+QString SettingsDialog::chosenTaskModel() const
+{
+    const QString text = m_taskModel->currentText().trimmed();
+    return text == tr(kSameAsTalking) ? QString() : text;
 }
 
 void SettingsDialog::applyCatalogue()
@@ -471,59 +604,111 @@ void SettingsDialog::applyCatalogue()
     // one currently in use is left alone even if it fails - taking it out from
     // under the user while they are looking at it explains nothing; the line
     // underneath does that instead.
-    const QString chosen = m_model->currentText();
-    const QSignalBlocker quiet(m_model);
-    for (int i = m_model->count() - 1; i >= 0; --i) {
-        const QString slug = m_model->itemText(i);
-        if (slug != chosen && !catalogue->fitToRun(slug))
-            m_model->removeItem(i);
-    }
-    m_model->setCurrentText(chosen);
+    //
+    // Each list by its own bar: the talking one needs tools, the working one
+    // tools and eyes. The working list's first entry, "same as talking", is
+    // not a model and always stays.
+    const auto prune = [catalogue](QComboBox *box, bool working) {
+        const QString chosen = box->currentText();
+        const QSignalBlocker quiet(box);
+        for (int i = box->count() - 1; i >= 0; --i) {
+            const QString slug = box->itemText(i);
+            if (slug == chosen || (working && i == 0))
+                continue;
+            if (!(working ? catalogue->fitToRun(slug) : catalogue->fitToTalk(slug)))
+                box->removeItem(i);
+        }
+        box->setCurrentText(chosen);
+    };
+    prune(m_model, false);
+    prune(m_taskModel, true);
     refreshModelNote();
 }
 
 void SettingsDialog::refreshModelNote()
 {
     BurnOS::ModelCatalogue *catalogue = BurnOS::ModelCatalogue::instance();
-    const QString slug = m_model->currentText().trimmed();
+    const auto say = [](QLabel *note, const char *colour, const QString &text) {
+        note->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(colour)));
+        note->setText(text);
+    };
+    const auto unknown = [](const QString &slug) {
+        return tr("OpenRouter has no model called %1. Check the spelling, or "
+                  "pick one from the list.").arg(slug);
+    };
+
+    const QString talk = m_model->currentText().trimmed();
+    const QString work = chosenTaskModel();
+    // One model doing both, so the talking one needs all a task does.
+    const bool alsoWorks = work.isEmpty();
+
+    // "Same as talking" needs no catalogue to explain.
+    if (alsoWorks) {
+        say(m_taskModelNote, kNotePlain,
+            tr("Tasks run on the talking model, the way Burnos always has. "
+               "Choose a stronger model here and the hard work is done by it, "
+               "in the background, while the talking stays fast."));
+    }
 
     if (!catalogue->isLoaded()) {
-        m_modelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
-        m_modelNote->setText(tr("Asking OpenRouter what this model can do..."));
+        say(m_modelNote, kNotePlain, tr("Asking OpenRouter what this model can do..."));
+        if (!alsoWorks)
+            say(m_taskModelNote, kNotePlain, tr("Asking OpenRouter what this model can do..."));
         return;
     }
 
-    if (slug.isEmpty())
-        return;
-
-    if (!catalogue->knows(slug)) {
-        m_modelNote->setStyleSheet(QStringLiteral("color: #d8b46a;"));
-        m_modelNote->setText(tr("OpenRouter has no model called %1. Check the "
-                                "spelling, or pick one from the list.").arg(slug));
-        return;
+    // THE TALKING MODEL: tools always, and eyes only when it does the work too.
+    if (!talk.isEmpty() && !catalogue->knows(talk)) {
+        say(m_modelNote, kNoteWarn, unknown(talk));
+    } else if (!talk.isEmpty()) {
+        const BurnOS::ModelFacts facts = catalogue->facts(talk);
+        const QString label = facts.name.isEmpty() ? talk : facts.name;
+        if (!facts.callsTools) {
+            say(m_modelNote, kNoteRefuse,
+                tr("%1 cannot call tools, so it could neither start work nor "
+                   "remember anything. Burnos will not talk on it.").arg(label));
+        } else if (!facts.seesImages && alsoWorks) {
+            say(m_modelNote, kNoteRefuse,
+                tr("%1 cannot see the screen, so it can only talk while a "
+                   "separate working model does the work. Choose one below.")
+                    .arg(label));
+        } else if (!facts.seesImages) {
+            say(m_modelNote, kNotePlain,
+                tr("%1 talks and calls its tools. It never has to see: the "
+                   "working model below does everything on screen.").arg(label));
+        } else if (alsoWorks) {
+            say(m_modelNote, kNotePlain,
+                tr("%1 can see the screen and use its tools, so it can talk and "
+                   "do the work as well.").arg(label));
+        } else {
+            say(m_modelNote, kNotePlain,
+                tr("%1 can see the screen and use its tools. It does the "
+                   "talking; the working model below does the work at the "
+                   "same time.").arg(label));
+        }
     }
 
-    const BurnOS::ModelFacts facts = catalogue->facts(slug);
-    const QString label = facts.name.isEmpty() ? slug : facts.name;
-
+    // THE WORKING MODEL: tools and eyes, because every task may need both.
+    if (alsoWorks)
+        return;
+    if (!catalogue->knows(work)) {
+        say(m_taskModelNote, kNoteWarn, unknown(work));
+        return;
+    }
+    const BurnOS::ModelFacts facts = catalogue->facts(work);
+    const QString label = facts.name.isEmpty() ? work : facts.name;
     if (facts.canDoTheJob()) {
-        m_modelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
-        m_modelNote->setText(tr("%1 can see the screen and use its tools, which "
-                                "is everything Burnos asks of a model.")
-                                 .arg(label));
+        say(m_taskModelNote, kNotePlain,
+            tr("%1 can see the screen and use its tools. Every task thinks with "
+               "it in the background while the talking model keeps the "
+               "conversation going.").arg(label));
         return;
     }
-
     QStringList missing;
-    if (!facts.seesImages) {
-        missing.append(tr("cannot see the screen, so it cannot check its own "
-                          "work"));
-    }
-    if (!facts.callsTools) {
-        missing.append(tr("cannot call tools, so it cannot operate this "
-                          "machine"));
-    }
-    m_modelNote->setStyleSheet(QStringLiteral("color: #e58a8a;"));
-    m_modelNote->setText(tr("%1 %2. Burnos will not run on it.")
-                             .arg(label, missing.join(tr(", and it "))));
+    if (!facts.seesImages)
+        missing.append(tr("cannot see the screen, so it cannot check its own work"));
+    if (!facts.callsTools)
+        missing.append(tr("cannot call tools, so it cannot operate this machine"));
+    say(m_taskModelNote, kNoteRefuse,
+        tr("%1 %2. No task will run on it.").arg(label, missing.join(tr(", and it "))));
 }

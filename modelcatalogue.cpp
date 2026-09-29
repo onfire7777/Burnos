@@ -66,6 +66,7 @@ void ModelCatalogue::load()
                                     .toArray();
 
         int able = 0;
+        int talkers = 0;
         for (const QJsonValue &value : data) {
             const QJsonObject model = value.toObject();
 
@@ -93,14 +94,17 @@ void ModelCatalogue::load()
 
             if (f.canDoTheJob())
                 ++able;
+            if (f.canTalk())
+                ++talkers;
             m_facts.insert(f.slug, f);
         }
 
         m_loaded = !m_facts.isEmpty();
         liveLog(QStringLiteral("model catalogue: %1 models, %2 can both see the "
-                               "screen and call tools")
+                               "screen and call tools, %3 can at least talk")
                     .arg(m_facts.size())
-                    .arg(able));
+                    .arg(able)
+                    .arg(talkers));
         if (m_loaded)
             emit loaded();
     });
@@ -123,6 +127,14 @@ bool ModelCatalogue::fitToRun(const QString &slug) const
     if (found == m_facts.cend())
         return true;   // never heard of it, so not ours to refuse
     return found.value().canDoTheJob();
+}
+
+bool ModelCatalogue::fitToTalk(const QString &slug) const
+{
+    const auto found = m_facts.constFind(slug.trimmed());
+    if (found == m_facts.cend())
+        return true;   // the same benefit of the doubt as fitToRun
+    return found.value().canTalk();
 }
 
 QStringList ModelCatalogue::capable() const

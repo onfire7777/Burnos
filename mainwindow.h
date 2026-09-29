@@ -69,6 +69,9 @@ private:
     // The user carried on talking before this turn's answer was said.
     void retractSpeech(int turn);
     void speakNext();
+    // Nothing is being said any more, however it ended: the voice state is
+    // cleared and the orb stops looking like it is talking.
+    void voiceGone();
     // "Thinking" on the orb: a phrase is being transcribed, or the talker is
     // working out what to say.
     void refreshThinking();

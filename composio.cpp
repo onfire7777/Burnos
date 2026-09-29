@@ -286,13 +286,10 @@ void ComposioClient::call(const QByteArray &verb, const QString &path,
     else
         reply = m_net->sendCustomRequest(request, verb, payload);
 
-    ++m_inFlight;
     BurnOS::liveLog(QStringLiteral("composio %1 %2")
                         .arg(QString::fromLatin1(verb), path));
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, what, done]() {
-        if (m_inFlight > 0)
-            --m_inFlight;
         reply->deleteLater();
 
         const QByteArray raw = reply->readAll();
@@ -608,17 +605,8 @@ void ComposioClient::disconnectApp(const QString &connectionId)
          });
 }
 
-void ComposioClient::searchTools(const QString &useCase, Answer answer)
+void ComposioClient::searchTools(const QString &useCase, Answer reply)
 {
-    // To the caller that asked, where it passed an answer; to whoever listens
-    // for the signal where it did not.
-    const auto reply = [this, answer](bool ok, const QString &summary) {
-        if (answer)
-            answer(ok, summary);
-        else
-            emit toolsFound(ok, summary);
-    };
-
     const QString query = useCase.trimmed().left(1000);
     if (query.isEmpty()) {
         reply(false, tr("The search needs a sentence saying what to do."));
@@ -654,15 +642,8 @@ void ComposioClient::searchTools(const QString &useCase, Answer answer)
 }
 
 void ComposioClient::runTool(const QString &toolSlug, const QJsonObject &arguments,
-                             Answer answer)
+                             Answer finish)
 {
-    const auto finish = [this, answer](bool ok, const QString &summary) {
-        if (answer)
-            answer(ok, summary);
-        else
-            emit toolFinished(ok, summary);
-    };
-
     if (toolSlug.isEmpty()) {
         finish(false, tr("No tool was named."));
         return;

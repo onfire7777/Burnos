@@ -186,7 +186,7 @@ const char kTaskPrompt[] =
     "you click or type into what appeared.\n"
     "\n"
     "CHECK YOUR OWN WORK WITH YOUR EYES. After any action meant to change "
-    "something - launch, click, click_at, type_text, press_key - take a "
+    "something - launch, click, click_at, type_text, press_keys - take a "
     "screenshot and LOOK at it before you report anything. A tool result "
     "saying a click was sent does not mean the program opened, the dialog "
     "appeared or the field took the text. Only report something as done once "
@@ -287,6 +287,16 @@ bool meansStop(const QString &said)
                        "don'?t do|do not do|don'?t need|do not need|no longer need)\\b"),
         QRegularExpression::CaseInsensitiveOption);
     return kStop.match(said).hasMatch();
+}
+
+// A tool's arguments: an object where the model behaved, a string of JSON
+// where it did not. BOTH are taken - a step thrown away over quoting is a step
+// the model has to spend again.
+QJsonObject argumentsOf(const QVariant &raw)
+{
+    return raw.typeId() == QMetaType::QString
+               ? QJsonDocument::fromJson(raw.toString().toUtf8()).object()
+               : QJsonObject::fromVariantMap(raw.toMap());
 }
 
 // Given as a number where the model behaved and as "2" where it did not.
@@ -765,8 +775,6 @@ QString describeStep(const QString &function, const QVariantMap &args)
         return QStringLiteral("opening %1").arg(args.value(QStringLiteral("name")).toString());
     if (action == QLatin1String("open_url"))
         return QStringLiteral("opening %1").arg(args.value(QStringLiteral("url")).toString());
-    if (action == QLatin1String("run_command"))
-        return QStringLiteral("running a command");
     if (action == QLatin1String("screenshot"))
         return QStringLiteral("looking at the screen");
     if (action == QLatin1String("list_windows") || action == QLatin1String("list_controls"))
@@ -1156,16 +1164,7 @@ void Task::runAppAction(const QVariantMap &args)
             answerCall(tr("run_tool needs the slug of a tool find_tools gave you."));
             return;
         }
-        // The arguments arrive as an object where the model behaved and as a
-        // string of JSON where it did not. BOTH are accepted: a step thrown
-        // away over quoting is a step the model has to spend again.
-        const QVariant raw = args.value(QStringLiteral("arguments"));
-        QJsonObject arguments;
-        if (raw.typeId() == QMetaType::QString)
-            arguments = QJsonDocument::fromJson(raw.toString().toUtf8()).object();
-        else
-            arguments = QJsonObject::fromVariantMap(raw.toMap());
-        apps->runTool(tool, arguments, back);
+        apps->runTool(tool, argumentsOf(args.value(QStringLiteral("arguments"))), back);
         return;
     }
 
@@ -1212,13 +1211,7 @@ void Task::runMcp(const QVariantMap &args)
                            .arg(serverName, tool));
             return;
         }
-        // An object where the model behaved, a string of JSON where it did not.
-        const QVariant raw = args.value(QStringLiteral("arguments"));
-        QJsonObject arguments;
-        if (raw.typeId() == QMetaType::QString)
-            arguments = QJsonDocument::fromJson(raw.toString().toUtf8()).object();
-        else
-            arguments = QJsonObject::fromVariantMap(raw.toMap());
+        const QJsonObject arguments = argumentsOf(args.value(QStringLiteral("arguments")));
 
         const QPointer<Task> self(this);
         const int id = m_id;
@@ -1517,23 +1510,27 @@ void Agent::sendTalk(int turn, const QString &said, const QString &memories)
     messages.append(msg(QStringLiteral("user"), said));
     m_talkSent = messages;
 
-    OpenRouterClient::Request request;
-    request.messages = messages;
-    request.tools = talkTools(remembering);
-    request.who = QStringLiteral("talk %1").arg(turn);
-    request.timeoutMs = kTalkTimeoutMs;
-    request.fastest = true;
-
     liveLog(QStringLiteral("talk %1: heard '%2' - %3 task(s) running, %4 line(s) of history")
                 .arg(turn)
                 .arg(said.left(300))
                 .arg(liveTasks())
                 .arg(m_history.size()));
+    askTalker(turn, messages, QStringLiteral("talk %1").arg(turn));
+}
 
+void Agent::askTalker(int turn, const QJsonArray &messages, const QString &who)
+{
+    OpenRouterClient::Request request;
+    request.messages = messages;
+    // Offered on a recall's second round too: some providers refuse a history
+    // holding tool calls without them. A second recall in a turn is not run.
+    request.tools = talkTools(m_mcp->memory() != nullptr);
+    request.who = who;
+    request.timeoutMs = kTalkTimeoutMs;
+    request.fastest = true;
     m_request = m_ai->send(request, [this, turn](const OpenRouterClient::Reply &reply) {
         onTalkAnswer(turn, reply);
     });
-    emit thinkingChanged(true);
 }
 
 void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
@@ -1698,18 +1695,7 @@ void Agent::recall(int turn, const QJsonObject &assistant,
                 {QStringLiteral("content"), id == callId ? found
                                                          : results.value(id, QStringLiteral("Done."))}});
         }
-        OpenRouterClient::Request request;
-        request.messages = messages;
-        // The tools stay offered, because a history holding tool calls is
-        // refused by some providers without them; a second recall this turn
-        // is simply not run.
-        request.tools = talkTools(m_mcp->memory() != nullptr);
-        request.who = QStringLiteral("talk %1 recall").arg(turn);
-        request.timeoutMs = kTalkTimeoutMs;
-        request.fastest = true;
-        m_request = m_ai->send(request, [this, turn](const OpenRouterClient::Reply &reply) {
-            onTalkAnswer(turn, reply);
-        });
+        askTalker(turn, messages, QStringLiteral("talk %1 recall").arg(turn));
     };
 
     McpServer *memory = m_mcp->memory();

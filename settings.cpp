@@ -37,15 +37,9 @@ constexpr auto kComposioUserPath = "composio/userId";
 constexpr auto kComposioAppsPath = "composio/apps";
 constexpr auto kComposioSessionPath = "composio/sessionId";
 
-// The model that answers. CHOOSABLE again as of 2026-09-29: the router picks
-// well but it picks slowly and unpredictably, and for a voice assistant a
-// known fast model beats a cleverer unknown one - every second of thinking is a
-// second of silence before the orb starts talking.
-//
-// MiMo 2.6 Flash is the default because it was the quickest of the four to
-// first token in testing. The others are there because they were each good at
-// something: minimax for reasoning, gpt-6-luna for phrasing, deepseek flash for
-// cost. The list is in settingsdialog.cpp; this is only the fallback.
+// The talking model when none is chosen: quick, cheap, and able to do the work
+// as well, so an install with nothing set still does everything. The choices
+// and their timings are in settingsdialog.cpp; this is only the fallback.
 constexpr auto kDefaultModel = "xiaomi/mimo-v2.6-flash";
 constexpr int kDefaultTokens = 1200;
 constexpr int kMinTokens     = 256;
@@ -230,12 +224,6 @@ void setMicSensitivity(int percent)
     QSettings s = store();
     s.setValue(QString::fromLatin1(kSensitivityPath), qBound(0, percent, 100));
     s.sync();
-}
-
-double micOpenThreshold()
-{
-    // 0 -> 0.050 (only a raised voice), 100 -> 0.010 (a whisper across a desk).
-    return 0.050 - 0.040 * (micSensitivity() / 100.0);
 }
 
 double vadThreshold()

@@ -1,7 +1,7 @@
+#include "installer.h"
 #include "livelog.h"
 #include "settings.h"
 #include "ttsengine.h"
-#include "sttpaths.h"
 
 #include <QAudioDevice>
 #include <QAudioOutput>
@@ -19,10 +19,23 @@
 #include <cmath>
 
 namespace {
-// Which of the eleven voices in kokoro-en-v0_19 speaks, and how loudly, are
-// settings now; only the thread count is fixed here.
-constexpr int kThreads = 4;
+
+// One sherpa-onnx run: the Kokoro model, the voice chosen in Settings, and the
+// WAV to write. The live voice gets four threads, the cache two.
+QStringList kokoroArgs(int threads, const QString &wavPath, const QString &text)
+{
+    const QString dir = BurnOS::Models::kokoroDir();
+    return {QStringLiteral("--kokoro-model=%1/model.onnx").arg(dir),
+            QStringLiteral("--kokoro-voices=%1/voices.bin").arg(dir),
+            QStringLiteral("--kokoro-tokens=%1/tokens.txt").arg(dir),
+            QStringLiteral("--kokoro-data-dir=%1/espeak-ng-data").arg(dir),
+            QStringLiteral("--num-threads=%1").arg(threads),
+            QStringLiteral("--sid=%1").arg(BurnOS::Settings::ttsVoice()),
+            QStringLiteral("--output-filename=") + wavPath,
+            text};
 }
+
+} // namespace
 
 TtsEngine::TtsEngine(QObject *parent)
     : QObject(parent)
@@ -55,7 +68,6 @@ bool TtsEngine::speak(const QString &text)
     if (QFileInfo::exists(cached)) {
         m_text = spoken;
         m_busy = true;
-        emit started();
         BurnOS::liveLog(QStringLiteral("kokoro skipped: '%1' was made already")
                             .arg(spoken));
         play(cached);
@@ -67,9 +79,9 @@ bool TtsEngine::speak(const QString &text)
         return false;
     }
 
-    if (!BurnOS::Tts::ready()) {
+    if (!BurnOS::Models::ttsPresent()) {
         emit failed(tr("The Kokoro model is not in %1")
-                        .arg(QDir::toNativeSeparators(BurnOS::Tts::modelDir())));
+                        .arg(QDir::toNativeSeparators(BurnOS::Models::kokoroDir())));
         return false;
     }
 
@@ -105,25 +117,13 @@ bool TtsEngine::speak(const QString &text)
                 });
     }
 
-    const QStringList args{
-        QStringLiteral("--kokoro-model=") + BurnOS::Tts::modelPath(),
-        QStringLiteral("--kokoro-voices=") + BurnOS::Tts::voicesPath(),
-        QStringLiteral("--kokoro-tokens=") + BurnOS::Tts::tokensPath(),
-        QStringLiteral("--kokoro-data-dir=") + BurnOS::Tts::espeakDataDir(),
-        QStringLiteral("--num-threads=%1").arg(kThreads),
-        QStringLiteral("--sid=%1").arg(BurnOS::Settings::ttsVoice()),
-        QStringLiteral("--output-filename=") + m_wavPath,
-        spoken,
-    };
-
     BurnOS::liveLog(QStringLiteral("kokoro synthesising %1 chars with voice %2")
                         .arg(spoken.size())
                         .arg(BurnOS::Settings::ttsVoice()));
 
     m_busy = true;
-    emit started();
     m_proc->setWorkingDirectory(QFileInfo(cliPath()).absolutePath());
-    m_proc->start(cliPath(), args);
+    m_proc->start(cliPath(), kokoroArgs(4, m_wavPath, spoken));
     return true;
 }
 
@@ -161,9 +161,6 @@ void TtsEngine::play(const QString &wavPath)
                     // fills in the gap with a clock.
                     m_lastPosMs = position;
                     m_sincePos.restart();
-                    const qint64 total = m_player->duration();
-                    if (total > 0)
-                        emit progress(qreal(position) / qreal(total));
                 });
 
         // The loudness meter: the orb wants a level every frame, and a voice
@@ -315,7 +312,7 @@ void TtsEngine::warmNext()
 {
     while (!m_toWarm.isEmpty() && QFileInfo::exists(cachePath(m_toWarm.first())))
         m_toWarm.removeFirst();
-    if (m_toWarm.isEmpty() || !QFileInfo::exists(cliPath()) || !BurnOS::Tts::ready())
+    if (m_toWarm.isEmpty() || !QFileInfo::exists(cliPath()) || !BurnOS::Models::ttsPresent())
         return;
 
     const QString phrase = m_toWarm.takeFirst();
@@ -341,21 +338,11 @@ void TtsEngine::warmNext()
         });
     }
 
-    const QStringList args{
-        QStringLiteral("--kokoro-model=") + BurnOS::Tts::modelPath(),
-        QStringLiteral("--kokoro-voices=") + BurnOS::Tts::voicesPath(),
-        QStringLiteral("--kokoro-tokens=") + BurnOS::Tts::tokensPath(),
-        QStringLiteral("--kokoro-data-dir=") + BurnOS::Tts::espeakDataDir(),
-        QStringLiteral("--num-threads=2"),
-        QStringLiteral("--sid=%1").arg(BurnOS::Settings::ttsVoice()),
-        QStringLiteral("--output-filename=") + m_warmTarget + QStringLiteral(".part.wav"),
-        phrase,
-    };
     BurnOS::liveLog(QStringLiteral("voice cache: making '%1' with voice %2")
                         .arg(phrase)
                         .arg(BurnOS::Settings::ttsVoice()));
     m_warm->setWorkingDirectory(QFileInfo(cliPath()).absolutePath());
-    m_warm->start(cliPath(), args);
+    m_warm->start(cliPath(), kokoroArgs(2, m_warmTarget + QStringLiteral(".part.wav"), phrase));
 }
 
 QString TtsEngine::cachePath(const QString &text) const

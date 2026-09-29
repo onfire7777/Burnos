@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 
@@ -92,5 +93,66 @@ private:
     // talking and the working model are judged separately.
     QSet<QString> m_blind;
 };
+
+namespace BurnOS {
+
+// What OpenRouter itself says a model takes in and can be asked to do, from
+// https://openrouter.ai/api/v1/models - fact, not a list kept up by hand.
+struct ModelFacts
+{
+    QString slug;
+    QString name;
+    bool seesImages = false; // architecture.input_modalities holds "image"
+    bool callsTools = false; // supported_parameters holds "tools"
+
+    // THE WORKING MODEL'S BAR. A task operates the machine with tool calls and
+    // checks its work on a screenshot; OpenRouter refuses the whole request to
+    // a model that cannot do both, and the task dies.
+    bool canDoTheJob() const { return seesImages && callsTools; }
+    // THE TALKING MODEL'S BAR, lower: it is never sent a picture, but it starts,
+    // steers and stops tasks with tool calls. A text-only model can talk while a
+    // separate working model does the work.
+    bool canTalk() const { return callsTools; }
+};
+
+// The whole catalogue, fetched once per run and shared by Settings and the
+// window. It exists because a text-only model was once offered for driving the
+// machine, and every turn that checked its own work died with a 404.
+class ModelCatalogue : public QObject
+{
+    Q_OBJECT
+
+public:
+    static ModelCatalogue *instance();
+
+    void load(); // once; calling it again does nothing
+    bool isLoaded() const { return m_loaded; }
+
+    // False for a model it has never heard of - which is NOT the same as one
+    // it knows falls short.
+    bool knows(const QString &slug) const;
+    ModelFacts facts(const QString &slug) const;
+
+    // True unless the catalogue POSITIVELY KNOWS the model falls short. An
+    // unknown slug, and everything while offline, is left alone: being offline
+    // must not take the user's own choice away.
+    bool fitToRun(const QString &slug) const;
+    bool fitToTalk(const QString &slug) const;
+
+    QStringList capable() const; // every model fit to run, sorted
+
+signals:
+    void loaded();
+
+private:
+    explicit ModelCatalogue(QObject *parent = nullptr);
+
+    QNetworkAccessManager *m_net = nullptr;
+    QHash<QString, ModelFacts> m_facts;
+    bool m_loaded = false;
+    bool m_loading = false;
+};
+
+} // namespace BurnOS
 
 #endif // OPENROUTER_H

@@ -9,29 +9,25 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
-# The release this source is. Stamped into Burnos.exe's file properties and
-# written to the live log at startup, so every report says which build it
-# came from. Raised with each release, which is also a git tag (v0.5.0) and a
-# branch (v0.5) to roll back to.
-VERSION = 0.5.0
-DEFINES += BURNOS_VERSION=\\\"$$VERSION\\\"
+# The release this source is. qmake stamps it into Burnos.exe's version
+# resource, Qt reads it back as applicationVersion(), and the live log's first
+# line says it - so every report names its build. Raised with each release,
+# which is also a git tag (v0.6.0) and a branch (v0.6) to roll back to.
+VERSION = 0.6.0
 
 SOURCES += \
     agent.cpp \
     composio.cpp \
     computeruse.cpp \
     installer.cpp \
-    integrationsdialog.cpp \
     main.cpp \
     mainwindow.cpp \
     mcp.cpp \
-    modelcatalogue.cpp \
     openrouter.cpp \
     orbwidget.cpp \
     settings.cpp \
     settingsdialog.cpp \
     sttengine.cpp \
-    sttpaths.cpp \
     ttsengine.cpp
 
 HEADERS += \
@@ -39,17 +35,14 @@ HEADERS += \
     composio.h \
     computeruse.h \
     installer.h \
-    integrationsdialog.h \
     livelog.h \
     mainwindow.h \
     mcp.h \
-    modelcatalogue.h \
     openrouter.h \
     orbwidget.h \
     settings.h \
     settingsdialog.h \
     sttengine.h \
-    sttpaths.h \
     ttsengine.h
 
 # DPAPI, used to encrypt the stored OpenRouter key for the current user.

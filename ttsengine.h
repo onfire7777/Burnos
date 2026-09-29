@@ -23,8 +23,6 @@ public:
     explicit TtsEngine(QObject *parent = nullptr);
     ~TtsEngine() override;
 
-    bool isBusy() const { return m_busy; }
-
     // False means nothing was spoken and failed() has already been emitted.
     bool speak(const QString &text);
     void stop();
@@ -36,11 +34,8 @@ public:
     void prepare(const QStringList &phrases);
 
 signals:
-    void started();
     // Emitted the moment playback begins, carrying the text being spoken.
     void speaking(const QString &text);
-    // Playback position as 0.0 to 1.0.
-    void progress(qreal fraction);
     // How LOUD the voice is right now, 0.0 to 1.0, every 16 ms while it plays
     // and a final 0.0 when it stops. Read off the WAV itself before playback,
     // so it follows the real syllables; the orb breathes to this.

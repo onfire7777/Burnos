@@ -255,3 +255,111 @@ QJsonArray OpenRouterClient::dropImages(const QJsonArray &messages, bool *droppe
     }
     return kept;
 }
+
+// ===========================================================================
+// THE CATALOGUE
+// ===========================================================================
+
+namespace BurnOS {
+
+ModelCatalogue *ModelCatalogue::instance()
+{
+    static ModelCatalogue catalogue;
+    return &catalogue;
+}
+
+ModelCatalogue::ModelCatalogue(QObject *parent)
+    : QObject(parent)
+    , m_net(new QNetworkAccessManager(this))
+{
+}
+
+void ModelCatalogue::load()
+{
+    if (m_loaded || m_loading)
+        return;
+    m_loading = true;
+
+    // Public and keyless, so it can be asked before a key is typed in. Fifteen
+    // seconds is plenty for four hundred models on a slow line, and short
+    // enough that a dead network does not leave Settings "asking" for ever.
+    QNetworkRequest request{QUrl(QStringLiteral("https://openrouter.ai/api/v1/models"))};
+    request.setRawHeader("X-Title", "Burnos");
+    request.setTransferTimeout(15000);
+
+    QNetworkReply *reply = m_net->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        m_loading = false;
+        if (reply->error() != QNetworkReply::NoError) {
+            // Nothing known, so nothing refused.
+            liveLog(QStringLiteral("model catalogue unavailable: %1").arg(reply->errorString()));
+            return;
+        }
+
+        const QJsonArray data = QJsonDocument::fromJson(reply->readAll())
+                                    .object()
+                                    .value(QStringLiteral("data"))
+                                    .toArray();
+        int able = 0;
+        int talkers = 0;
+        for (const QJsonValue &value : data) {
+            const QJsonObject model = value.toObject();
+            ModelFacts f;
+            f.slug = model.value(QStringLiteral("id")).toString();
+            if (f.slug.isEmpty())
+                continue;
+            f.name = model.value(QStringLiteral("name")).toString();
+            f.seesImages = model.value(QStringLiteral("architecture")).toObject()
+                               .value(QStringLiteral("input_modalities")).toArray()
+                               .contains(QStringLiteral("image"));
+            f.callsTools = model.value(QStringLiteral("supported_parameters")).toArray()
+                               .contains(QStringLiteral("tools"));
+            able += f.canDoTheJob();
+            talkers += f.canTalk();
+            m_facts.insert(f.slug, f);
+        }
+
+        m_loaded = !m_facts.isEmpty();
+        liveLog(QStringLiteral("model catalogue: %1 models, %2 can both see the "
+                               "screen and call tools, %3 can at least talk")
+                    .arg(m_facts.size())
+                    .arg(able)
+                    .arg(talkers));
+        if (m_loaded)
+            emit loaded();
+    });
+}
+
+bool ModelCatalogue::knows(const QString &slug) const
+{
+    return m_facts.contains(slug.trimmed());
+}
+
+ModelFacts ModelCatalogue::facts(const QString &slug) const
+{
+    return m_facts.value(slug.trimmed());
+}
+
+bool ModelCatalogue::fitToRun(const QString &slug) const
+{
+    return !knows(slug) || facts(slug).canDoTheJob();
+}
+
+bool ModelCatalogue::fitToTalk(const QString &slug) const
+{
+    return !knows(slug) || facts(slug).canTalk();
+}
+
+QStringList ModelCatalogue::capable() const
+{
+    QStringList slugs;
+    for (auto it = m_facts.cbegin(); it != m_facts.cend(); ++it) {
+        if (it.value().canDoTheJob())
+            slugs.append(it.key());
+    }
+    slugs.sort();
+    return slugs;
+}
+
+} // namespace BurnOS

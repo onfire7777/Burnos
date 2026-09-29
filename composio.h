@@ -78,11 +78,10 @@ class ComposioClient : public QObject
 public:
     explicit ComposioClient(QObject *parent = nullptr);
 
-    // THE ANSWER TO ONE CALLER, already worded for the model. Since v0.4
-    // several background tasks can use the apps at the same moment, and each
-    // one has to get back the answer to its OWN question - so a caller that
-    // passes one of these hears there, and nothing is emitted. The
-    // integrations dialog passes none and listens to the signals as before.
+    // THE ANSWER TO ONE CALLER, already worded for the model. Several tasks can
+    // use the apps at the same moment, and each has to get back the answer to
+    // its OWN question. connectApp alone may be called without one, by the
+    // integrations dialog, which listens to the signals instead.
     using Answer = std::function<void(bool ok, const QString &summary)>;
 
     // True when a key is stored. No key means the app tool is not even offered
@@ -109,16 +108,12 @@ public:
     void disconnectApp(const QString &connectionId);
 
     // Search every app for tools that can do something, described in a full
-    // sentence. The answer on toolsFound() is already worded for the model: the
-    // tools, their arguments, and which of the apps involved still need a sign
-    // in.
-    void searchTools(const QString &useCase, Answer answer = {});
+    // sentence. The answer is already worded for the model: the tools, their
+    // arguments, and which of the apps involved still need a sign in.
+    void searchTools(const QString &useCase, Answer answer);
 
     // Run one tool in the session. `arguments` is the object its schema asks for.
-    void runTool(const QString &toolSlug, const QJsonObject &arguments,
-                 Answer answer = {});
-
-    bool isBusy() const { return m_inFlight > 0; }
+    void runTool(const QString &toolSlug, const QJsonObject &arguments, Answer answer);
 
 signals:
     // The catalogue, or the connected subset. `connectedOnly` says which.
@@ -128,10 +123,6 @@ signals:
     // The app needs no sign in, so there was nothing to connect.
     void noSignInNeeded(const QString &slug);
     void disconnected(const QString &connectionId);
-    // A tool search, worded for the model. Empty with ok when nothing matched.
-    void toolsFound(bool ok, const QString &summary);
-    // What running the tool did, already worded for the model to say out loud.
-    void toolFinished(bool ok, const QString &summary);
     void failed(const QString &reason);
 
 private:
@@ -163,7 +154,6 @@ private:
                        Handler done, bool retried = false);
 
     QNetworkAccessManager *m_net = nullptr;
-    int m_inFlight = 0;
     bool m_creatingSession = false;
     QList<SessionHandler> m_waitingForSession;
 };

@@ -583,8 +583,7 @@ void OrbWidget::drawSetup(QPainter &p, const QPointF &c, qreal unit)
         p.drawArc(ring, start, -70 * 16);
     }
 
-    // Inside the orb, not under it. Nothing is ever painted outside the orb:
-    // the answer goes inside it too, see drawCaption.
+    // Inside the orb, not under it: nothing is ever painted outside the orb.
     QFont caption = font();
     caption.setPointSizeF(8.5);
     caption.setBold(true);
@@ -636,10 +635,10 @@ void OrbWidget::setStatus(const QString &text, qreal fraction)
 void OrbWidget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
-        // Only the orb itself is interactive. The caption strip below it is
-        // empty space, and clicking there must neither drag the window nor arm
-        // anything. Windows is told the same thing in MainWindow::nativeEvent,
-        // so a click out there reaches whatever is behind instead of dying here.
+        // Only the orb itself is interactive. The corners of the square window
+        // are empty space, and clicking there must neither drag the window nor
+        // arm anything. Windows is told the same thing in
+        // MainWindow::nativeEvent, so a click there reaches whatever is behind.
         if (!hitsOrb(event->position())) {
             QWidget::mousePressEvent(event);
             return;

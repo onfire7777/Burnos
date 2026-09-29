@@ -13,6 +13,7 @@
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QLocale>
+#include <QRegularExpression>
 #include <QThreadPool>
 #include <QTimer>
 
@@ -40,7 +41,10 @@ constexpr int kMaxChars = 24000;
 constexpr int kMaxLiveTasks = 3;
 constexpr int kTaskMaxCalls = 60;
 constexpr qint64 kTaskMaxMs = 20 * 60 * 1000;
-constexpr int kTaskRequestMs = 90000;
+// Three minutes of silence, not ninety seconds: since v0.5 a task may run on a
+// substantive reasoning model, which thinks at medium effort and then writes
+// up to the token budget below before a single byte comes back.
+constexpr int kTaskRequestMs = 180000;
 // Room for what a tool call has to carry: a paragraph to type now, a whole
 // file later on.
 constexpr int kTaskMaxTokens = 16000;
@@ -119,8 +123,11 @@ const char kTalkPrompt[] =
     "\n"
     "If the user adds to or changes something a task is still working on, "
     "call steer_task with the change instead of starting another task. If "
-    "they want it stopped, call stop_task. If a task is waiting for an answer "
-    "from the user and they give it, pass the answer on with steer_task.\n"
+    "they plainly ask for it to be stopped or cancelled, call stop_task. An "
+    "exclamation, a sigh or a remark about something else - 'oh no', 'hmm', "
+    "'wait' - never stops work: carry on, or ask in a few words. If a task is "
+    "waiting for an answer from the user and they give it, pass the answer on "
+    "with steer_task.\n"
     "\n"
     "When they ask how something is going, answer from the task list you are "
     "given, in one sentence. Everything else - questions, chat, facts, advice, "
@@ -267,6 +274,21 @@ QString rememberCommand(const QString &said)
     return {};
 }
 
+// Whether the words plainly ask for work to be stopped. stop_task is the one
+// tool that throws work away, so it is only honoured when they do: a lighter
+// talking model once heard "Oh no." - somebody reacting to something else in
+// the room - and stopped a task a second into its work.
+bool meansStop(const QString &said)
+{
+    static const QRegularExpression kStop(
+        QStringLiteral("\\b(stop|cancel|abort|halt|kill|quit|enough|scrap|pause|"
+                       "end (it|that|this|the)|never ?mind|forget (it|about|that)|"
+                       "drop (it|that)|leave it|call it off|don'?t bother|do not bother|"
+                       "don'?t do|do not do|don'?t need|do not need|no longer need)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    return kStop.match(said).hasMatch();
+}
+
 // Given as a number where the model behaved and as "2" where it did not.
 int taskNumber(const QJsonValue &value)
 {
@@ -369,7 +391,9 @@ QJsonArray talkTools(bool memory)
         }));
     list.append(functionTool(
         QStringLiteral("stop_task"),
-        QStringLiteral("Stop a running task."),
+        QStringLiteral("Stop a running task, throwing its work away. ONLY when "
+                       "the user plainly asks for it to be stopped or cancelled - "
+                       "never on an exclamation or an unclear remark."),
         QJsonObject{
             {"type", "object"},
             {"properties", QJsonObject{
@@ -833,6 +857,13 @@ void Task::start()
         });
 }
 
+QString Task::model() const
+{
+    // Read from Settings on every request, like everything else, so a working
+    // model chosen while a task runs is the one its very next step asks.
+    return m_onTalkModel ? Settings::openRouterModel() : Settings::taskModel();
+}
+
 void Task::ask()
 {
     if (!isLive())
@@ -872,6 +903,10 @@ void Task::ask()
         request.tools = taskTools(Settings::hasComposioKey(),
                                   !m_agent->mcp()->readyNames().isEmpty());
     request.who = QStringLiteral("task %1").arg(m_id);
+    // THE WORKING MODEL, never the talking one's fastest-provider rule: a task
+    // wants the best answer from whichever provider OpenRouter judges best,
+    // and nobody is waiting on its first word.
+    request.model = model();
     request.timeoutMs = kTaskRequestMs;
     request.maxTokens = kTaskMaxTokens;
 
@@ -898,6 +933,28 @@ void Task::onAnswer(const OpenRouterClient::Reply &reply)
                         .arg(reply.error.left(160)));
             const QPointer<Task> self(this);
             QTimer::singleShot(1500, this, [self]() {
+                if (self && self->isLive() && !self->m_request)
+                    self->ask();
+            });
+            return;
+        }
+
+        // THE WORKING MODEL IS DOWN, NOT THE TASK. When a separate working
+        // model fails twice running - overloaded, withdrawn, out of credit at
+        // its provider - the task carries on with the talking model rather
+        // than dying with the work half done. Once moved it stays moved:
+        // flipping back and forth would change minds in the middle of a job.
+        const QString failed = model();
+        const QString talking = Settings::openRouterModel();
+        if (!m_onTalkModel && failed != talking) {
+            m_onTalkModel = true;
+            m_retries = 0;
+            liveLog(QStringLiteral("task %1: %2 failed twice (%3), carrying on with "
+                                   "the talking model %4")
+                        .arg(m_id)
+                        .arg(failed, reply.error.left(160), talking));
+            const QPointer<Task> self(this);
+            QTimer::singleShot(0, this, [self]() {
                 if (self && self->isLive() && !self->m_request)
                     self->ask();
             });
@@ -1208,7 +1265,7 @@ void Task::flushShots()
     // results as a user message holding a data URL - the shape the API does
     // accept. A model that cannot see is told so in words instead.
     for (const QByteArray &png : std::as_const(m_shots)) {
-        if (!m_agent->ai()->modelCanSee()) {
+        if (!m_agent->ai()->canSee(model())) {
             m_messages.append(msg(QStringLiteral("user"), OpenRouterClient::blindNote()));
             continue;
         }
@@ -1525,6 +1582,19 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
             }
             continue;
         }
+        // THE SAFETY NET for stop_task: work carries on unless the words
+        // plainly asked for it to stop, and the user hears how to stop it.
+        if (name == QLatin1String("stop_task") && !meansStop(asked)) {
+            liveLog(QStringLiteral("talk %1: stop_task REFUSED - '%2' does not ask "
+                                   "for anything to stop")
+                        .arg(turn)
+                        .arg(asked.left(160)));
+            const QString kept = tr("I've kept it going. Say stop if you want it stopped.");
+            results.insert(callId, kept);
+            if (refusal.isEmpty())
+                refusal = kept;
+            continue;
+        }
         bool ok = false;
         const QString said = runTalkTool(name, args, &ok);
         results.insert(callId, said);
@@ -1811,6 +1881,18 @@ QString Agent::statusReport() const
     const DesktopWindow front = Computer::foreground();
     if (!front.title.isEmpty())
         lines.append(tr("The window in front is '%1'.").arg(front.title));
+
+    // So "which model is doing that?" has a true answer, and the talker never
+    // takes credit for work a stronger model is doing beside it.
+    const QString talking = Settings::openRouterModel();
+    const QString working = Settings::taskModel();
+    lines.append(working == talking
+                     ? tr("You are running on %1, and background tasks run on the "
+                          "same model.").arg(talking)
+                     : tr("You are running on %1, chosen to keep the conversation "
+                          "fast. Background tasks think separately, at the same "
+                          "time, on %2.").arg(talking, working));
+
     const QStringList servers = m_mcp->readyNames();
     if (!servers.isEmpty()) {
         lines.append(tr("Tasks can use the user's MCP servers directly through their "

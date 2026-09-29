@@ -9,9 +9,15 @@
 #include <QFile>
 #include <QStringList>
 
+// Set by BurnOS.pro from its VERSION line; a build without it still runs.
+#ifndef BURNOS_VERSION
+#define BURNOS_VERSION "dev"
+#endif
+
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
+    a.setApplicationVersion(QStringLiteral(BURNOS_VERSION));
 
     // The orb IS the icon. Window, task bar and alt-tab all come out of the
     // very same paint code that draws the orb itself, so the two can never

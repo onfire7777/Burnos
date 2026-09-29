@@ -26,6 +26,13 @@ struct ModelFacts
     // question of one model being weaker than another: OpenRouter refuses the
     // whole request outright, and the turn dies.
     bool canDoTheJob() const { return seesImages && callsTools; }
+
+    // WHAT THE TALKING ASKS OF ONE, which is less. The talker is never sent a
+    // picture - it hands anything that needs the screen to a task - but it does
+    // call tools: to start that task, to steer or stop one, to remember. So a
+    // fast model that only reads text can hold the conversation, PROVIDED a
+    // separate working model does the work.
+    bool canTalk() const { return callsTools; }
 };
 
 // The whole catalogue, fetched once per run.
@@ -58,6 +65,8 @@ public:
     // An unknown slug, and everything at all while the catalogue has not loaded,
     // is left alone: being offline must not take the user's own choice away.
     bool fitToRun(const QString &slug) const;
+    // The same, for the lesser bar of the talking model alone.
+    bool fitToTalk(const QString &slug) const;
 
     // Every model that can do the job, by slug, sorted.
     QStringList capable() const;

@@ -9,6 +9,13 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
+# The release this source is. Stamped into Burnos.exe's file properties and
+# written to the live log at startup, so every report says which build it
+# came from. Raised with each release, which is also a git tag (v0.5.0) and a
+# branch (v0.5) to roll back to.
+VERSION = 0.5.0
+DEFINES += BURNOS_VERSION=\\\"$$VERSION\\\"
+
 SOURCES += \
     agent.cpp \
     composio.cpp \

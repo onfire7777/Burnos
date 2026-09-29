@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 #include <functional>
@@ -17,10 +18,16 @@ class QNetworkReply;
 //
 // Since v0.4 this knows nothing about conversations, tools or turns. The talker
 // and every background task keep their own messages and hand them to send();
-// what lives here is everything they share - the key, the model, the reasoning
-// effort, the timeouts, the log line, and a model that turns out not to accept
-// pictures. Several requests can be in flight at once: the talker's, and one
-// for each task.
+// what lives here is everything they share - the key, the reasoning effort, the
+// timeouts, the log line, and a model that turns out not to accept pictures.
+// Several requests can be in flight at once: the talker's, and one for each
+// task.
+//
+// SINCE v0.5 EACH REQUEST NAMES ITS OWN MODEL. The talker asks a fast one so
+// the conversation keeps its pace, and every task asks the working model,
+// which may be a slower and far stronger one - both at the same moment, over
+// the same connection, neither waiting on the other. A request that names no
+// model goes to the talking model, which is all there was before.
 class OpenRouterClient : public QObject
 {
     Q_OBJECT
@@ -31,6 +38,7 @@ public:
         QJsonArray messages;
         QJsonArray tools;    // none offered when empty
         QString who;         // "talk 3", "task 2" - names it in the log
+        QString model;       // empty is the talking model from Settings
         int timeoutMs = 30000;
         int maxTokens = 0;   // 0 is the answer length from Settings
         // Ask OpenRouter for whichever provider of the model answers FIRST.
@@ -58,9 +66,10 @@ public:
     quint64 send(const Request &request, Done done);
     void cancel(quint64 id);
 
-    // Whether the model chosen right now may be sent a picture. It stops being
-    // true the first time OpenRouter refuses one for that model.
-    bool modelCanSee() const;
+    // Whether this model may be sent a picture. It stops being true the first
+    // time OpenRouter refuses one for it - for that model only, so a working
+    // model that sees is never blinded by a talking model that does not.
+    bool canSee(const QString &model) const;
 
     // What a model that cannot see is told in place of a screenshot.
     static QString blindNote();
@@ -79,8 +88,9 @@ private:
     // whole request with a 404 - "No endpoints found that support image input"
     // - when the chosen model has no endpoint that takes a picture. The first
     // refusal is answered by asking again without the picture, and the model's
-    // name is kept here so it is never sent another one.
-    QString m_blindModel;
+    // name is kept here so it is never sent another one. A set, because the
+    // talking and the working model are judged separately.
+    QSet<QString> m_blind;
 };
 
 #endif // OPENROUTER_H

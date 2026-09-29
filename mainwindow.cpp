@@ -124,6 +124,12 @@ MainWindow::MainWindow(QWidget *parent)
                                  : QStringLiteral("MISSING"))
                         .arg(BurnOS::Settings::micSensitivity())
                         .arg(BurnOS::Settings::micOpenThreshold(), 0, 'f', 4));
+    BurnOS::liveLog(QStringLiteral("Burnos %1").arg(QCoreApplication::applicationVersion()));
+    BurnOS::liveLog(QStringLiteral("models: talking %1, working %2")
+                        .arg(BurnOS::Settings::openRouterModel(),
+                             BurnOS::Settings::hasTaskModel()
+                                 ? BurnOS::Settings::taskModel()
+                                 : QStringLiteral("the same (no separate working model)")));
 
     // No frame, no title bar, no background: only the orb is ever painted,
     // and it stays above every other window.
@@ -420,35 +426,55 @@ void MainWindow::applyOrbSize(int px)
 void MainWindow::checkModelIsUpToTheJob()
 {
     BurnOS::ModelCatalogue *catalogue = BurnOS::ModelCatalogue::instance();
-    const QString chosen = BurnOS::Settings::openRouterModel();
-    if (catalogue->fitToRun(chosen))
-        return;
-
-    const BurnOS::ModelFacts facts = catalogue->facts(chosen);
-    QStringList missing;
-    if (!facts.seesImages)
-        missing.append(tr("see the screen"));
-    if (!facts.callsTools)
-        missing.append(tr("call its tools"));
 
     // The default is chosen to be capable, so it is the safe place to land. If
     // even that has lost a capability since, the first model on the catalogue
     // that can do the job will do: anything is better than one that is going to
     // fail every turn.
-    QString replacement = BurnOS::Settings::defaultOpenRouterModel();
-    if (!catalogue->fitToRun(replacement)) {
+    const auto replacement = [catalogue]() -> QString {
+        const QString fallback = BurnOS::Settings::defaultOpenRouterModel();
+        if (catalogue->fitToRun(fallback))
+            return fallback;
         const QStringList able = catalogue->capable();
-        if (able.isEmpty())
-            return;
-        replacement = able.first();
+        return able.isEmpty() ? QString() : able.first();
+    };
+    const auto missing = [catalogue](const QString &slug, bool mustSee) {
+        const BurnOS::ModelFacts facts = catalogue->facts(slug);
+        QStringList what;
+        if (mustSee && !facts.seesImages)
+            what.append(tr("see the screen"));
+        if (!facts.callsTools)
+            what.append(tr("call its tools"));
+        return what.join(QStringLiteral(" or "));
+    };
+
+    // THE WORKING MODEL FIRST. Every task needs it to see and to call tools,
+    // and whether the talking model must see as well depends on whether there
+    // is a separate working model at all.
+    if (BurnOS::Settings::hasTaskModel()) {
+        const QString working = BurnOS::Settings::taskModel();
+        const QString to = replacement();
+        if (!catalogue->fitToRun(working) && !to.isEmpty()) {
+            BurnOS::Settings::setTaskModel(to);
+            BurnOS::liveLog(QStringLiteral("MODEL CHANGED: the working model %1 cannot "
+                                           "%2, so tasks moved to %3. Settings says why.")
+                                .arg(working, missing(working, true), to));
+        }
     }
 
-    BurnOS::Settings::setOpenRouterModel(replacement);
-    BurnOS::liveLog(QStringLiteral("MODEL CHANGED: %1 cannot %2, so Burnos moved "
-                                   "to %3. Settings says why.")
-                        .arg(chosen,
-                             missing.join(QStringLiteral(" or ")),
-                             replacement));
+    // THE TALKING MODEL: it must always call tools, and must see the screen
+    // too when it is also the one doing the work.
+    const QString talking = BurnOS::Settings::openRouterModel();
+    const bool alsoWorks = !BurnOS::Settings::hasTaskModel();
+    if (alsoWorks ? catalogue->fitToRun(talking) : catalogue->fitToTalk(talking))
+        return;
+    const QString to = replacement();
+    if (to.isEmpty())
+        return;
+    BurnOS::Settings::setOpenRouterModel(to);
+    BurnOS::liveLog(QStringLiteral("MODEL CHANGED: the talking model %1 cannot %2, "
+                                   "so Burnos moved to %3. Settings says why.")
+                        .arg(talking, missing(talking, alsoWorks), to));
 }
 
 void MainWindow::showNotice(const QString &reason)
@@ -480,7 +506,14 @@ void MainWindow::moveEvent(QMoveEvent *event)
 
 void MainWindow::queueSpeech(const QString &text, int turn)
 {
-    const QString words = text.trimmed();
+    // THE VOICE SAYS WORDS, NOT FORMATTING. Every prompt asks for plain
+    // speech, and a stronger working model still writes `fizz.py` in code
+    // quotes or **bold** now and then. The marks come out here, at the one
+    // door every spoken line comes through, whichever model wrote it.
+    QString words = text;
+    words.remove(QLatin1Char('`'));
+    words.remove(QLatin1Char('*'));
+    words = words.trimmed();
     if (words.isEmpty())
         return;
     m_speech.append(Speech{words, turn});

@@ -46,12 +46,11 @@ QString OpenRouterClient::blindNote()
     return QString::fromLatin1(kBlindNote);
 }
 
-bool OpenRouterClient::modelCanSee() const
+bool OpenRouterClient::canSee(const QString &model) const
 {
     // Blindness is recorded against the model's NAME, so choosing a different
     // model in Settings gets its eyes back without restarting the orb.
-    return m_blindModel.isEmpty()
-           || m_blindModel != BurnOS::Settings::openRouterModel();
+    return !m_blind.contains(model);
 }
 
 quint64 OpenRouterClient::send(const Request &request, Done done)
@@ -105,11 +104,14 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
         return;
     }
 
-    const QString model = BurnOS::Settings::openRouterModel();
+    // Read here, at the moment of asking, so a model changed in Settings is the
+    // one the very next request goes to.
+    const QString model = request.model.isEmpty() ? BurnOS::Settings::openRouterModel()
+                                                  : request.model;
 
     // A MODEL THAT HAS ALREADY REFUSED A PICTURE never gets another. The
     // refusal is a 404 on the whole request, not a shrug.
-    if (!modelCanSee()) {
+    if (!canSee(model)) {
         bool dropped = false;
         request.messages = dropImages(request.messages, &dropped);
     }
@@ -186,7 +188,7 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
                 Request again = request;
                 again.messages = dropImages(request.messages, &dropped);
                 if (dropped) {
-                    m_blindModel = model;
+                    m_blind.insert(model);
                     BurnOS::liveLog(QStringLiteral("%1 cannot see images: asking again "
                                                    "without the screenshot, and none "
                                                    "will be sent to it again")

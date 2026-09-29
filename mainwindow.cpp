@@ -3,7 +3,6 @@
 #include "installer.h"
 #include "livelog.h"
 #include "mainwindow.h"
-#include "modelcatalogue.h"
 #include "openrouter.h"
 #include "orbwidget.h"
 #include "settings.h"

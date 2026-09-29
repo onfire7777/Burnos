@@ -21,17 +21,14 @@ SOURCES += \
     composio.cpp \
     computeruse.cpp \
     installer.cpp \
-    integrationsdialog.cpp \
     main.cpp \
     mainwindow.cpp \
     mcp.cpp \
-    modelcatalogue.cpp \
     openrouter.cpp \
     orbwidget.cpp \
     settings.cpp \
     settingsdialog.cpp \
     sttengine.cpp \
-    sttpaths.cpp \
     ttsengine.cpp
 
 HEADERS += \
@@ -39,17 +36,14 @@ HEADERS += \
     composio.h \
     computeruse.h \
     installer.h \
-    integrationsdialog.h \
     livelog.h \
     mainwindow.h \
     mcp.h \
-    modelcatalogue.h \
     openrouter.h \
     orbwidget.h \
     settings.h \
     settingsdialog.h \
     sttengine.h \
-    sttpaths.h \
     ttsengine.h
 
 # DPAPI, used to encrypt the stored OpenRouter key for the current user.

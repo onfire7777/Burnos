@@ -1,7 +1,7 @@
+#include "installer.h"
 #include "livelog.h"
 #include "settings.h"
 #include "sttengine.h"
-#include "sttpaths.h"
 
 #include <QAudioDevice>
 #include <QAudioFormat>
@@ -452,9 +452,9 @@ bool SttEngine::startLive()
     if (m_live)
         return true;
 
-    if (!BurnOS::Stt::modelPresent()) {
+    if (!BurnOS::Models::sttPresent()) {
         emit failed(tr("No model at %1")
-                        .arg(QDir::toNativeSeparators(BurnOS::Stt::modelPath())));
+                        .arg(QDir::toNativeSeparators(BurnOS::Models::sttModel())));
         return false;
     }
 
@@ -469,7 +469,7 @@ bool SttEngine::startLive()
     if (!m_vad) {
         m_vad = std::make_unique<BurnOS::SileroVad>();
         QString why;
-        if (m_vad->load(BurnOS::Stt::vadModelPath(), &why)) {
+        if (m_vad->load(BurnOS::Models::vadModel(), &why)) {
             BurnOS::liveLog(QStringLiteral("voice detector: Silero %1, speech opens at %2")
                                 .arg(m_vad->version())
                                 .arg(BurnOS::Settings::vadThreshold(), 0, 'f', 2));
@@ -991,7 +991,7 @@ void SttEngine::transcribe(const QByteArray &pcm)
     // -ng because there is no GPU here and probing for one costs seconds.
     // -np so stdout carries the transcription and nothing else.
     m_proc->setWorkingDirectory(QFileInfo(cliPath()).absolutePath());
-    m_proc->start(cliPath(), {QStringLiteral("-m"), BurnOS::Stt::modelPath(),
+    m_proc->start(cliPath(), {QStringLiteral("-m"), BurnOS::Models::sttModel(),
                               QStringLiteral("-ng"),
                               QStringLiteral("-np"),
                               QStringLiteral("-f"), m_wavPath});
@@ -1099,7 +1099,7 @@ QByteArray SttEngine::readPcm(const QString &wavPath, QString *error)
 bool SttEngine::probeFile(const QString &wavPath, const QString &outPath, QString *error)
 {
     BurnOS::SileroVad vad;
-    if (!vad.load(BurnOS::Stt::vadModelPath(), error))
+    if (!vad.load(BurnOS::Models::vadModel(), error))
         return false;
 
     const QByteArray pcm = readPcm(wavPath, error);

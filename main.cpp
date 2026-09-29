@@ -1,11 +1,8 @@
 #include "mainwindow.h"
 #include "orbwidget.h"
 #include "sttengine.h"
-#include "sttpaths.h"
 
 #include <QApplication>
-#include <QDebug>
-#include <QDir>
 #include <QFile>
 #include <QStringList>
 
@@ -45,20 +42,6 @@ int main(int argc, char *argv[])
             out.write("FAILED: " + error.toUtf8() + '\n');
         return 1;
     }
-
-    // The speech to text model lives outside the install tree, so make sure
-    // its folder is there before anything tries to load out of it. Neither
-    // case is fatal: the orb still runs without speech.
-    QString ttsError;
-    if (!BurnOS::Tts::ensureDir(&ttsError))
-        qWarning().noquote() << "TTS folder unavailable:" << ttsError;
-
-    QString sttError;
-    if (!BurnOS::Stt::ensureDir(&sttError))
-        qWarning().noquote() << "STT folder unavailable:" << sttError;
-    else if (!BurnOS::Stt::modelPresent())
-        qInfo().noquote() << "STT model missing, expected at"
-                          << QDir::toNativeSeparators(BurnOS::Stt::modelPath());
 
     MainWindow w;
     w.show();

@@ -43,3 +43,6 @@ parakeet-streaming/
 *.bin
 *.gguf
 *.wav
+
+# The agent's own session notes, written into whatever folder it works in.
+SENTRI-MEMORY.md

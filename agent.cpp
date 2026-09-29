@@ -203,10 +203,16 @@ const char kTaskPrompt[] =
     "THAT PICTURE's own pixels from its top left corner. Never click a point "
     "you have not seen.\n"
     "\n"
-    "THE KEYBOARD AND THE MOUSE. press_keys takes any shortcut - 'ctrl+s', "
-    "'ctrl+l', 'alt+tab', 'win+r'. type_text with no control types wherever the "
-    "window's cursor is. Every screenshot outlines the controls with their keys: "
-    "click by key wherever there is one, and by point only where there is not. "
+    "THE KEYBOARD AND THE MOUSE. You work with your OWN pointer and keyboard, in "
+    "the background: your clicks and keys go straight to the window, so they do "
+    "not move the user's mouse or take their keyboard, and they can carry on "
+    "with something else while you work. press_keys takes any shortcut - "
+    "'ctrl+s', 'ctrl+l', 'alt+tab', 'win+r'. type_text with no control types "
+    "wherever the window's cursor is. Every screenshot outlines the controls "
+    "with their keys: click by key wherever there is one, and by point only "
+    "where there is not. hold 'ctrl' or 'shift' on a click to add to a "
+    "selection. If a click or some text will not take, add real true to use the "
+    "physical mouse and keyboard for that one action, as a last resort. "
     "read_text gives you a page's or a document's words far more reliably than "
     "reading them off a picture.\n"
     "\n"
@@ -447,7 +453,10 @@ QJsonObject computerUseTool()
              "a picture. window focuses, maximizes, minimizes, restores or "
              "closes a window. wait_for waits until a window or some text "
              "appears, or for some seconds. clipboard reads it, or sets it to "
-             "text."}}},
+             "text. Every click, keystroke, drag and scroll uses the agent's OWN "
+             "pointer and keyboard in the background, so the user keeps their real "
+             "mouse and keyboard for other things; add real true to force the "
+             "physical devices when something will not take a background action."}}},
         {"name", textParam(QStringLiteral(
              "For launch. What the program is called, as a person would say "
              "it: Microsoft Store, Firefox, Notepad, Spotify, Calculator. Work "
@@ -480,6 +489,16 @@ QJsonObject computerUseTool()
         {"double", QJsonObject{{"type", "boolean"},
                                {"description", "For click and click_at: a double "
                                                "click."}}},
+        {"hold", QJsonObject{{"type", "string"},
+                             {"description", "For click and click_at: a modifier to "
+                                             "hold down during the click - 'ctrl' or "
+                                             "'shift', for adding to a selection."}}},
+        {"real", QJsonObject{{"type", "boolean"},
+                             {"description", "Force the PHYSICAL mouse and keyboard "
+                                             "for this one action, borrowing the "
+                                             "user's own pointer. A last resort, only "
+                                             "when a click or some text plainly did "
+                                             "not land the normal way."}}},
         {"control", textParam(QStringLiteral(
              "The key of a control from the list or the screenshot, exactly as "
              "shown, such as c7 - for click, type_text, scroll, move_mouse and "

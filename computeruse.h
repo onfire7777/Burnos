@@ -56,6 +56,11 @@ struct DeskState
     int shotLeft = 0; // the screen's own top left, for a whole-screen picture
     int shotTop = 0;
     qreal shotScale = 1.0; // picture pixels per window pixel
+    // The agent's OWN pointer, in screen pixels: where its mouse is resting,
+    // apart from the user's physical cursor. -1 until it first points at
+    // something. Moved by the background mouse, never by SetCursorPos.
+    int cursorX = -1;
+    int cursorY = -1;
 };
 
 // What one action did: the plain sentence handed back to the model, a picture

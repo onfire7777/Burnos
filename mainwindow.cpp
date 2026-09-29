@@ -3,6 +3,7 @@
 #include "installer.h"
 #include "livelog.h"
 #include "mainwindow.h"
+#include "modelcatalogue.h"
 #include "openrouter.h"
 #include "orbwidget.h"
 #include "settings.h"
@@ -422,6 +423,14 @@ MainWindow::MainWindow(QWidget *parent)
         showNotice(reason);
     });
 
+    // WHAT A MODEL CAN DO IS A FACT, NOT A GUESS. OpenRouter's own catalogue is
+    // fetched once at startup, and if the model in Settings turns out not to be
+    // able to see the screen or call tools, Burnos moves itself to one that can
+    // rather than failing every turn that checks its own work.
+    connect(BurnOS::ModelCatalogue::instance(), &BurnOS::ModelCatalogue::loaded,
+            this, &MainWindow::checkModelIsUpToTheJob);
+    BurnOS::ModelCatalogue::instance()->load();
+
     // First run: the models are hundreds of megabytes and are not shipped, so
     // fetch whatever is missing before the orb becomes usable.
     m_setup = new ModelInstaller(this);
@@ -541,6 +550,40 @@ void MainWindow::applyOrbSize(int px)
     // runs once more from the stored value.
     if (px <= 0)
         BurnOS::liveLog(QStringLiteral("orb size: %1 px").arg(size));
+}
+
+void MainWindow::checkModelIsUpToTheJob()
+{
+    BurnOS::ModelCatalogue *catalogue = BurnOS::ModelCatalogue::instance();
+    const QString chosen = BurnOS::Settings::openRouterModel();
+    if (catalogue->fitToRun(chosen))
+        return;
+
+    const BurnOS::ModelFacts facts = catalogue->facts(chosen);
+    QStringList missing;
+    if (!facts.seesImages)
+        missing.append(tr("see the screen"));
+    if (!facts.callsTools)
+        missing.append(tr("call its tools"));
+
+    // The default is chosen to be capable, so it is the safe place to land. If
+    // even that has lost a capability since, the first model on the catalogue
+    // that can do the job will do: anything is better than one that is going to
+    // fail every turn.
+    QString replacement = BurnOS::Settings::defaultOpenRouterModel();
+    if (!catalogue->fitToRun(replacement)) {
+        const QStringList able = catalogue->capable();
+        if (able.isEmpty())
+            return;
+        replacement = able.first();
+    }
+
+    BurnOS::Settings::setOpenRouterModel(replacement);
+    BurnOS::liveLog(QStringLiteral("MODEL CHANGED: %1 cannot %2, so Burnos moved "
+                                   "to %3. Settings says why.")
+                        .arg(chosen,
+                             missing.join(QStringLiteral(" or ")),
+                             replacement));
 }
 
 void MainWindow::showNotice(const QString &reason)

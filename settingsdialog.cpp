@@ -1,4 +1,6 @@
 #include "integrationsdialog.h"
+#include "livelog.h"
+#include "modelcatalogue.h"
 #include "settings.h"
 #include "settingsdialog.h"
 
@@ -32,9 +34,18 @@ constexpr int kSaveDelayMs = 400;
 // and not fifty: a combo of every model on OpenRouter is a worse choice than no
 // choice at all.
 //
-// The combo is EDITABLE, so this is a shortlist rather than a limit - any
-// OpenRouter slug can be typed in. The default is whichever settings.cpp says,
-// not whichever is first here.
+// EVERY ONE OF THESE IS CHECKED against OpenRouter's own catalogue as the
+// dialog opens, and any that turns out not to see the screen or not to call
+// tools is taken straight back off the list. This list used to hold minimax
+// m2.7, recommended here for driving the machine, and it takes TEXT ONLY: every
+// turn that took a screenshot to check its own work came back as a 404 and the
+// word Error on the orb. jev-router was on it too, and advertises no tool
+// support at all. A shortlist written by hand cannot know these things, so it
+// is no longer trusted to.
+//
+// The combo is EDITABLE, so this is a shortlist rather than a cage - any
+// OpenRouter slug can be typed in, PROVIDED IT CAN DO THE JOB. The default is
+// whichever settings.cpp says, not whichever is first here.
 struct ModelChoice
 {
     const char *slug;
@@ -45,16 +56,15 @@ constexpr ModelChoice kModels[] = {
     {"xiaomi/mimo-v2.6-flash",
      "Fastest to start talking. The default, and the right answer for ordinary "
      "conversation."},
-    {"minimax/minimax-m2.7",
+    {"anthropic/claude-sonnet-5.5",
      "Reasons the hardest. Best when it has to work out which control to click "
      "or which tool to run."},
     {"openai/gpt-6-luna",
      "Phrases an answer the most naturally out loud."},
+    {"x-ai/grok-4.7",
+     "Reads a screenshot quickly and acts on what it saw."},
     {"deepseek/deepseek-v4.1-flash",
      "Quick and cheap. Fine for questions, weaker at driving the machine."},
-    {"typesafe/jev-router",
-     "Picks a model per question by itself. Clever, but it thinks before it "
-     "chooses, so the orb stays quiet for longer."},
 };
 
 // Same palette as the orb's context menu, or the dialog would look like it
@@ -124,6 +134,18 @@ SettingsDialog::SettingsDialog(QWidget *parent)
                            "OpenRouter model id. Picking one takes effect at "
                            "once; a typed one when you press Enter or click "
                            "away."));
+
+    // A LINE UNDER THE BOX SAYING WHETHER THIS MODEL CAN ACTUALLY DO THE JOB.
+    // Burnos operates the machine with a tool call and checks its own work by
+    // looking at a screenshot, and a model that cannot do both fails every such
+    // turn - the only sign of which used to be the word Error on the orb.
+    m_modelNote = new QLabel(this);
+    m_modelNote->setWordWrap(true);
+    m_modelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+
+    connect(BurnOS::ModelCatalogue::instance(), &BurnOS::ModelCatalogue::loaded,
+            this, &SettingsDialog::applyCatalogue);
+    BurnOS::ModelCatalogue::instance()->load();
 
     m_tokens = new QSpinBox(this);
     m_tokens->setRange(256, 4000);
@@ -250,6 +272,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->setVerticalSpacing(10);
     form->addRow(tr("OpenRouter key"), keyRow);
     form->addRow(tr("Model"), m_model);
+    form->addRow(QString(), m_modelNote);
     form->addRow(tr("Answer length"), m_tokens);
     form->addRow(tr("Integrations"), integrationsRow);
     form->addRow(tr("Microphone sensitivity"), sensitivityRow);
@@ -376,6 +399,13 @@ void SettingsDialog::wireLive()
     }
     connect(m_model, &QComboBox::activated, this,
             [this](int) { saveCredentials(); });
+
+    // The line underneath follows the box as it changes, so the answer to "can
+    // this one do the job" is there BEFORE the choice is committed rather than
+    // after it has broken a turn.
+    connect(m_model, &QComboBox::currentTextChanged, this,
+            [this](const QString &) { refreshModelNote(); });
+    refreshModelNote();
 }
 
 void SettingsDialog::saveSoon()
@@ -398,5 +428,102 @@ void SettingsDialog::saveCredentials()
     // An emptied field removes the key rather than storing an empty one, which
     // is exactly what setOpenRouterKey already does.
     BurnOS::Settings::setOpenRouterKey(m_key->text());
-    BurnOS::Settings::setOpenRouterModel(m_model->currentText());
+
+    // A MODEL THAT CANNOT DO THE JOB IS NOT STORED AT ALL. Sending a screenshot
+    // to a model with no image endpoint does not degrade gracefully: OpenRouter
+    // throws the entire request away, so choosing one here would quietly break
+    // every turn that checks its own work. The field goes back to what was
+    // stored and the line underneath says why.
+    const QString wanted = m_model->currentText().trimmed();
+    if (!wanted.isEmpty()
+        && !BurnOS::ModelCatalogue::instance()->fitToRun(wanted)) {
+        const QString kept = BurnOS::Settings::openRouterModel();
+        BurnOS::liveLog(QStringLiteral("settings REFUSED model %1: it cannot do "
+                                       "what Burnos asks of a model. Still on %2")
+                            .arg(wanted, kept));
+        // Put back with the signals off, or currentTextChanged would overwrite
+        // the explanation below with a cheerful line about the model that is
+        // actually stored.
+        const QSignalBlocker quiet(m_model);
+        m_model->setCurrentText(kept);
+        m_modelNote->setStyleSheet(QStringLiteral("color: #e58a8a;"));
+        m_modelNote->setText(tr("%1 cannot do what Burnos asks of a model, so it "
+                                "was not saved. Still using %2.")
+                                 .arg(wanted, kept));
+        return;
+    }
+
+    BurnOS::Settings::setOpenRouterModel(wanted);
+    refreshModelNote();
+}
+
+void SettingsDialog::applyCatalogue()
+{
+    BurnOS::ModelCatalogue *catalogue = BurnOS::ModelCatalogue::instance();
+    if (!catalogue->isLoaded()) {
+        refreshModelNote();
+        return;
+    }
+
+    // A SHORTLIST IS ONLY EVER A GUESS ABOUT WHAT A MODEL CAN DO. Once the real
+    // catalogue is in, anything on the list that cannot see the screen or call
+    // tools comes off it rather than sitting there for somebody to pick. The
+    // one currently in use is left alone even if it fails - taking it out from
+    // under the user while they are looking at it explains nothing; the line
+    // underneath does that instead.
+    const QString chosen = m_model->currentText();
+    const QSignalBlocker quiet(m_model);
+    for (int i = m_model->count() - 1; i >= 0; --i) {
+        const QString slug = m_model->itemText(i);
+        if (slug != chosen && !catalogue->fitToRun(slug))
+            m_model->removeItem(i);
+    }
+    m_model->setCurrentText(chosen);
+    refreshModelNote();
+}
+
+void SettingsDialog::refreshModelNote()
+{
+    BurnOS::ModelCatalogue *catalogue = BurnOS::ModelCatalogue::instance();
+    const QString slug = m_model->currentText().trimmed();
+
+    if (!catalogue->isLoaded()) {
+        m_modelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+        m_modelNote->setText(tr("Asking OpenRouter what this model can do..."));
+        return;
+    }
+
+    if (slug.isEmpty())
+        return;
+
+    if (!catalogue->knows(slug)) {
+        m_modelNote->setStyleSheet(QStringLiteral("color: #d8b46a;"));
+        m_modelNote->setText(tr("OpenRouter has no model called %1. Check the "
+                                "spelling, or pick one from the list.").arg(slug));
+        return;
+    }
+
+    const BurnOS::ModelFacts facts = catalogue->facts(slug);
+    const QString label = facts.name.isEmpty() ? slug : facts.name;
+
+    if (facts.canDoTheJob()) {
+        m_modelNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+        m_modelNote->setText(tr("%1 can see the screen and use its tools, which "
+                                "is everything Burnos asks of a model.")
+                                 .arg(label));
+        return;
+    }
+
+    QStringList missing;
+    if (!facts.seesImages) {
+        missing.append(tr("cannot see the screen, so it cannot check its own "
+                          "work"));
+    }
+    if (!facts.callsTools) {
+        missing.append(tr("cannot call tools, so it cannot operate this "
+                          "machine"));
+    }
+    m_modelNote->setStyleSheet(QStringLiteral("color: #e58a8a;"));
+    m_modelNote->setText(tr("%1 %2. Burnos will not run on it.")
+                             .arg(label, missing.join(tr(", and it "))));
 }

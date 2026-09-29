@@ -52,6 +52,11 @@ private:
     // Put the orb back where it was last left, clamped onto a screen that
     // still exists. Called once, at startup, after the size is known.
     void restoreOrbPosition();
+    // ONCE OPENROUTER HAS SAID WHAT EACH MODEL CAN DO. A model that cannot see
+    // the screen or cannot call tools cannot do this job at all - the request is
+    // refused outright rather than answered badly - so Burnos moves itself to
+    // one that can instead of failing every turn that checks its own work.
+    void checkModelIsUpToTheJob();
     // Put a failure where the answer goes - inside the orb - and in the log.
     void showNotice(const QString &reason);
     // Feeds the next scripted question in, as if it had just been transcribed.

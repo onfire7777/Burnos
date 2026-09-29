@@ -57,12 +57,22 @@ private:
     // a whole slider drag into one registry write.
     void saveValues();
     void saveSoon();
-    // The two typed fields, committed only when they are finished with.
+    // The two typed fields, committed only when they are finished with. A model
+    // the catalogue says cannot do the job is REFUSED here rather than stored.
     void saveCredentials();
+
+    // Once OpenRouter has said what each model can do: take the ones that
+    // cannot do the job off the list, then write the line underneath.
+    void applyCatalogue();
+    // The line under the model box, in plain words, every time the choice moves.
+    void refreshModelNote();
 
     QLineEdit *m_key = nullptr;
     QCheckBox *m_showKey = nullptr;
     QComboBox *m_model = nullptr;
+    // Says whether the chosen model can see the screen and call tools, which is
+    // the whole of what Burnos needs from one.
+    QLabel *m_modelNote = nullptr;
     QSpinBox *m_tokens = nullptr;
     // Integrations are a page of their own, not a row here: the catalogue runs
     // to fifteen hundred apps and needs a search box. This is the way in.

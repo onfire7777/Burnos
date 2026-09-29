@@ -1,6 +1,4 @@
 #include "computeruse.h"
-
-#include <QUrl>
 #include "livelog.h"
 
 #include <QBuffer>
@@ -23,6 +21,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QTimer>
+#include <QUrl>
 
 #include <algorithm>
 #include <vector>
@@ -332,28 +331,15 @@ IUIAutomationElement *refind(quint64 handle, const DesktopControl &target,
     return best;
 }
 
-// A real mouse click, put back where it was afterwards, for the controls that
-// expose no pattern at all.
-void realClick(int screenX, int screenY)
+// A picture of one window or screen, shrunk to fit. The model answers in the
+// PICTURE's pixels, and `scale` turns a point back into a real one.
+struct WindowShot
 {
-    POINT was{};
-    GetCursorPos(&was);
-    SetCursorPos(screenX, screenY);
-    QThread::msleep(40);
-
-    INPUT down{};
-    down.type = INPUT_MOUSE;
-    down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-    INPUT up{};
-    up.type = INPUT_MOUSE;
-    up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-    SendInput(1, &down, sizeof(INPUT));
-    QThread::msleep(30);
-    SendInput(1, &up, sizeof(INPUT));
-    QThread::msleep(40);
-
-    SetCursorPos(was.x, was.y);
-}
+    QByteArray png;
+    int width = 0;
+    int height = 0;
+    qreal scale = 1.0; // picture pixels per window pixel
+};
 
 // Put a window in front, and make sure it REALLY got there.
 //
@@ -397,105 +383,27 @@ bool bringToFront(HWND top)
     return false;
 }
 
-void typeUnicode(const QString &text)
-{
-    // Per UTF-16 unit rather than per character, on purpose: a surrogate pair
-    // is sent as its two halves and Windows puts them back together.
-    for (int i = 0; i < text.size(); ++i) {
-        INPUT pair[2] = {};
-        pair[0].type = INPUT_KEYBOARD;
-        pair[0].ki.dwFlags = KEYEVENTF_UNICODE;
-        pair[0].ki.wScan = text.at(i).unicode();
-        pair[1] = pair[0];
-        pair[1].ki.dwFlags |= KEYEVENTF_KEYUP;
-        SendInput(2, pair, sizeof(INPUT));
-        // A XAML field runs its own text handling between keystrokes and drops
-        // characters that arrive faster than it can deal with them. Four
-        // milliseconds was enough for Notepad and lost letters in the Store.
-        QThread::msleep(12);
-    }
-}
-
-void pressWithControl(WORD vk)
-{
-    INPUT seq[4] = {};
-    for (INPUT &in : seq)
-        in.type = INPUT_KEYBOARD;
-    seq[0].ki.wVk = VK_CONTROL;
-    seq[1].ki.wVk = vk;
-    seq[2].ki.wVk = vk;
-    seq[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    seq[3].ki.wVk = VK_CONTROL;
-    seq[3].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(4, seq, sizeof(INPUT));
-    QThread::msleep(40);
-}
-
-void pressPlain(WORD vk)
-{
-    INPUT pair[2] = {};
-    pair[0].type = INPUT_KEYBOARD;
-    pair[0].ki.wVk = vk;
-    pair[1] = pair[0];
-    pair[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, pair, sizeof(INPUT));
-    QThread::msleep(30);
-}
-
+// Names that are not programs at all, or not by that name: "settings" must
+// mean the Settings app rather than any shortcut called Settings, and
+// "calculator" is calc.
 struct AppEntry
 {
     const char *key;
     const char *label;
     const char *command;
-    const char *guidance;
 };
 
-// The whole of what the orb may start. Deliberately short.
 const AppEntry kApps[] = {
-    {"firefox",    "Firefox",          "firefox",
-     "the Firefox web browser"},
-    {"chrome",     "Chrome",           "chrome",
-     "the Google Chrome web browser"},
-    {"edge",       "Edge",             "msedge",
-     "the Microsoft Edge web browser"},
-    {"notepad",    "Notepad",          "notepad",
-     "Notepad, for writing plain text"},
-    {"explorer",   "File Explorer",    "explorer",
-     "File Explorer, for browsing files and folders"},
-    {"calculator", "Calculator",       "calc",
-     "the Windows Calculator"},
-    {"terminal",   "Terminal",         "wt",
-     "Windows Terminal, a command line"},
-    {"powershell", "PowerShell",       "powershell",
-     "a PowerShell command line window"},
-    {"settings",   "Windows Settings", "ms-settings:",
-     "the Windows Settings app - the SYSTEM settings, not Burnos's own"},
-    {"taskmgr",    "Task Manager",     "taskmgr",
-     "Task Manager, for looking at running processes"},
-};
-
-struct KeyEntry
-{
-    const char *name;
-    WORD vk;
-};
-
-const KeyEntry kKeys[] = {
-    {"enter",     VK_RETURN},
-    {"escape",    VK_ESCAPE},
-    {"tab",       VK_TAB},
-    {"space",     VK_SPACE},
-    {"backspace", VK_BACK},
-    {"delete",    VK_DELETE},
-    {"up",        VK_UP},
-    {"down",      VK_DOWN},
-    {"left",      VK_LEFT},
-    {"right",     VK_RIGHT},
-    {"home",      VK_HOME},
-    {"end",       VK_END},
-    {"pageup",    VK_PRIOR},
-    {"pagedown",  VK_NEXT},
-    {"f5",        VK_F5},
+    {"firefox", "Firefox", "firefox"},
+    {"chrome", "Chrome", "chrome"},
+    {"edge", "Edge", "msedge"},
+    {"notepad", "Notepad", "notepad"},
+    {"explorer", "File Explorer", "explorer"},
+    {"calculator", "Calculator", "calc"},
+    {"terminal", "Terminal", "wt"},
+    {"powershell", "PowerShell", "powershell"},
+    {"settings", "Windows Settings", "ms-settings:"},
+    {"taskmgr", "Task Manager", "taskmgr"},
 };
 
 // ShellExecute on one string. Anything over 32 is success; the value itself is
@@ -736,60 +644,20 @@ QString DesktopControl::describe() const
 
 namespace BurnOS {
 namespace Computer {
+namespace {
 
-QStringList knownApps()
+// Defined further down with the actions that use them most; click and fill
+// need them here.
+void clickScreen(int x, int y, const QString &button, int clicks, bool stay);
+bool sendKeys(const QString &keys, QString *error);
+void typeHere(const QString &text);
+
+QList<DesktopWindow> windows()
 {
-    QStringList keys;
-    for (const AppEntry &a : kApps)
-        keys.append(QString::fromLatin1(a.key));
-    return keys;
-}
-
-QString appLabel(const QString &appKey)
-{
-    for (const AppEntry &a : kApps) {
-        if (appKey == QLatin1String(a.key))
-            return QString::fromLatin1(a.label);
-    }
-    return appKey;
-}
-
-QString appGuidance(const QString &appKey)
-{
-    for (const AppEntry &a : kApps) {
-        if (appKey == QLatin1String(a.key))
-            return QString::fromLatin1(a.guidance);
-    }
-    return appKey;
-}
-
-bool launch(const QString &appKey, QString *error)
-{
-    for (const AppEntry &a : kApps) {
-        if (appKey != QLatin1String(a.key))
-            continue;
-
-        // ShellExecute, not QProcess: it resolves App Paths, so "firefox" finds
-        // Firefox wherever it was installed, and it handles ms-settings: too.
-        const QString command = QString::fromLatin1(a.command);
-        const HINSTANCE rc = ShellExecuteW(
-            nullptr, L"open",
-            reinterpret_cast<const wchar_t *>(command.utf16()),
-            nullptr, nullptr, SW_SHOWNORMAL);
-
-        // ShellExecute returns a fake HINSTANCE; anything above 32 is success.
-        if (reinterpret_cast<INT_PTR>(rc) <= 32) {
-            if (error)
-                *error = QObject::tr("%1 would not start.").arg(appLabel(appKey));
-            return false;
-        }
-        liveLog(QStringLiteral("computer use: launched %1").arg(appLabel(appKey)));
-        return true;
-    }
-
-    if (error)
-        *error = QObject::tr("I am not allowed to open that.");
-    return false;
+    QList<DesktopWindow> out;
+    EnumBag bag{&out};
+    EnumWindows(collectWindow, reinterpret_cast<LPARAM>(&bag));
+    return out;
 }
 
 bool launchAnything(const QString &spokenName, QString *opened, QString *error)
@@ -807,10 +675,16 @@ bool launchAnything(const QString &spokenName, QString *opened, QString *error)
     for (const AppEntry &a : kApps) {
         if (wanted.compare(QLatin1String(a.key), Qt::CaseInsensitive) == 0
             || wanted.compare(QLatin1String(a.label), Qt::CaseInsensitive) == 0) {
-            if (!launch(QString::fromLatin1(a.key), error))
+            // ShellExecute resolves App Paths, so "firefox" finds Firefox
+            // wherever it was installed, and it opens ms-settings: too.
+            if (!shellOpen(QString::fromLatin1(a.command))) {
+                if (error)
+                    *error = QObject::tr("%1 would not start.").arg(QLatin1String(a.label));
                 return false;
+            }
             if (opened)
-                *opened = appLabel(QString::fromLatin1(a.key));
+                *opened = QString::fromLatin1(a.label);
+            liveLog(QStringLiteral("computer use: launched %1").arg(QLatin1String(a.label)));
             return true;
         }
     }
@@ -920,120 +794,6 @@ bool openUrl(const QString &url, QString *opened, QString *error)
     return true;
 }
 
-bool runCommand(const QString &command, QString *output, QString *error)
-{
-    const QString line = command.trimmed();
-    if (line.isEmpty()) {
-        if (error)
-            *error = QObject::tr("No command was given.");
-        return false;
-    }
-
-    liveLog(QStringLiteral("computer use: cmd /c %1").arg(line.left(200)));
-
-    // No parent, and it deletes itself when it finishes, because a command that
-    // outlives the wait below has to be allowed to carry on running.
-    // `start` hands the program to Windows and the shell returns at once - but
-    // the child inherits our output pipe and holds it open, so waiting on it
-    // would block for as long as the program lives. Let it go instead.
-    if (line.startsWith(QStringLiteral("start "), Qt::CaseInsensitive)) {
-        QProcess launcher;
-        launcher.setProgram(QStringLiteral("cmd.exe"));
-        launcher.setNativeArguments(QStringLiteral("/s /c \"%1\"").arg(line));
-        if (!launcher.startDetached()) {
-            if (error)
-                *error = QObject::tr("cmd would not start.");
-            return false;
-        }
-        if (output)
-            *output = QObject::tr("Started.");
-        return true;
-    }
-
-    auto *proc = new QProcess;
-    QObject::connect(proc, &QProcess::finished, proc, &QObject::deleteLater);
-    proc->setProcessChannelMode(QProcess::MergedChannels);
-
-    // NATIVE ARGUMENTS, not a QStringList. QProcess quotes each argument for
-    // itself, and cmd has its own quoting rules on top; between them a command
-    // like powershell -c "..." came back with the quotes eaten and PowerShell
-    // simply echoed the text instead of running it. /s plus one pair of outer
-    // quotes tells cmd to take everything between them verbatim.
-    proc->setProgram(QStringLiteral("cmd.exe"));
-    proc->setNativeArguments(QStringLiteral("/s /c \"%1\"").arg(line));
-    proc->start();
-
-    if (!proc->waitForStarted(4000)) {
-        if (error)
-            *error = QObject::tr("cmd would not start.");
-        proc->deleteLater();
-        return false;
-    }
-
-    // Most of what gets asked for here finishes at once - `start` returns the
-    // moment it has handed the program to Windows. Anything still going after
-    // six seconds is left to run rather than killed.
-    if (!proc->waitForFinished(6000)) {
-        if (output)
-            *output = QObject::tr("Started, and still running.");
-        return true;
-    }
-
-    const int code = proc->exitCode();
-    QString printed = QString::fromLocal8Bit(proc->readAll()).trimmed();
-    if (printed.size() > 2000)
-        printed = printed.left(2000) + QStringLiteral("... (cut short)");
-
-    liveLog(QStringLiteral("computer use: cmd exit %1, %2 chars of output")
-                .arg(code)
-                .arg(printed.size()));
-
-    if (output) {
-        if (printed.isEmpty()) {
-            *output = code == 0
-                          ? QObject::tr("Done. It printed nothing.")
-                          : QObject::tr("It exited with code %1 and printed nothing.").arg(code);
-        } else if (code == 0) {
-            *output = printed;
-        } else {
-            *output = QObject::tr("Exit code %1. %2").arg(code).arg(printed);
-        }
-    }
-    return true;
-}
-
-QStringList knownKeys()
-{
-    QStringList names;
-    for (const KeyEntry &k : kKeys)
-        names.append(QString::fromLatin1(k.name));
-    return names;
-}
-
-bool pressKey(const QString &keyName, QString *error)
-{
-    for (const KeyEntry &k : kKeys) {
-        if (keyName != QLatin1String(k.name))
-            continue;
-
-        INPUT down{};
-        down.type = INPUT_KEYBOARD;
-        down.ki.wVk = k.vk;
-        INPUT up = down;
-        up.ki.dwFlags = KEYEVENTF_KEYUP;
-        SendInput(1, &down, sizeof(INPUT));
-        QThread::msleep(25);
-        SendInput(1, &up, sizeof(INPUT));
-
-        liveLog(QStringLiteral("computer use: pressed %1").arg(keyName));
-        return true;
-    }
-
-    if (error)
-        *error = QObject::tr("I cannot press that key.");
-    return false;
-}
-
 DesktopWindow findWindow(const QString &titlePart)
 {
     const QString needle = titlePart.trimmed();
@@ -1046,109 +806,7 @@ DesktopWindow findWindow(const QString &titlePart)
     return {};
 }
 
-WindowShot capture(quint64 handle)
-{
-    WindowShot shot;
-    HWND hwnd = reinterpret_cast<HWND>(handle);
-    if (!hwnd || !IsWindow(hwnd))
-        return shot;
-
-    RECT r{};
-    if (!GetWindowRect(hwnd, &r))
-        return shot;
-    const int w = r.right - r.left;
-    const int h = r.bottom - r.top;
-    if (w <= 0 || h <= 0)
-        return shot;
-
-    HDC screen = GetDC(nullptr);
-    HDC mem = CreateCompatibleDC(screen);
-
-    BITMAPINFO bi{};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h; // negative so the rows come out top down
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-
-    void *bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HGDIOBJ previous = SelectObject(mem, bmp);
-
-    // 2 is PW_RENDERFULLCONTENT, which is what a modern composed window needs.
-    // Older windows answer 0 and ignore the flag, so try both.
-    BOOL ok = PrintWindow(hwnd, mem, 2);
-    if (!ok)
-        ok = PrintWindow(hwnd, mem, 0);
-
-    if (ok && bits) {
-        const QImage raw(reinterpret_cast<const uchar *>(bits), w, h, w * 4,
-                         QImage::Format_RGB32);
-        QImage image = raw.copy(); // the DIB goes away in a moment
-
-        // A full screen picture is several megabytes once base64 encoded, and
-        // the model reads it perfectly well at a third of that.
-        constexpr int kLongestSide = 1280;
-        const int longest = qMax(image.width(), image.height());
-        if (longest > kLongestSide) {
-            shot.scale = qreal(kLongestSide) / qreal(longest);
-            image = image.scaled(int(image.width() * shot.scale),
-                                 int(image.height() * shot.scale),
-                                 Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        }
-
-        QBuffer buffer(&shot.png);
-        buffer.open(QIODevice::WriteOnly);
-        image.save(&buffer, "PNG");
-        shot.width = image.width();
-        shot.height = image.height();
-    }
-
-    SelectObject(mem, previous);
-    DeleteObject(bmp);
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
-
-    if (shot.isNull())
-        liveLog(QStringLiteral("computer use: that window would not be captured"));
-    return shot;
-}
-
-bool clickAt(quint64 handle, int windowX, int windowY, QString *error)
-{
-    HWND hwnd = reinterpret_cast<HWND>(handle);
-    RECT r{};
-    if (!hwnd || !IsWindow(hwnd) || !GetWindowRect(hwnd, &r)) {
-        if (error)
-            *error = QObject::tr("That window is not there any more.");
-        return false;
-    }
-
-    const int x = r.left + windowX;
-    const int y = r.top + windowY;
-    if (x < r.left || x > r.right || y < r.top || y > r.bottom) {
-        if (error)
-            *error = QObject::tr("That point is outside the window.");
-        return false;
-    }
-
-    SetForegroundWindow(hwnd);
-    QThread::msleep(80);
-    realClick(x, y);
-    liveLog(QStringLiteral("computer use: clicked %1,%2 in the window")
-                .arg(windowX)
-                .arg(windowY));
-    return true;
-}
-
-QList<DesktopWindow> windows()
-{
-    QList<DesktopWindow> out;
-    EnumBag bag{&out};
-    EnumWindows(collectWindow, reinterpret_cast<LPARAM>(&bag));
-    return out;
-}
+} // namespace
 
 DesktopWindow foreground()
 {
@@ -1165,7 +823,9 @@ DesktopWindow foreground()
     return w;
 }
 
-QList<DesktopControl> controls(quint64 handle, int limit)
+namespace {
+
+QList<DesktopControl> controls(quint64 handle, int limit = 50)
 {
     QList<DesktopControl> out;
     IUIAutomation *ui = automation();
@@ -1329,7 +989,7 @@ bool click(quint64 handle, const DesktopControl &control, QString *error)
 
     SetForegroundWindow(reinterpret_cast<HWND>(handle));
     QThread::msleep(80);
-    realClick(control.x + control.w / 2, control.y + control.h / 2);
+    clickScreen(control.x + control.w / 2, control.y + control.h / 2, QStringLiteral("left"), 1, false);
     liveLog(QStringLiteral("computer use: clicked %1 with the mouse")
                 .arg(control.describe()));
     return true;
@@ -1437,7 +1097,7 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
         // SetFocus refused, or there was no element at all. Click the middle of
         // where the control was: a real click is what gives a XAML field its
         // caret, and a focus call that reports success without one is common.
-        realClick(control.x + control.w / 2, control.y + control.h / 2);
+        clickScreen(control.x + control.w / 2, control.y + control.h / 2, QStringLiteral("left"), 1, false);
         QThread::msleep(120);
         focused = true;
     }
@@ -1453,11 +1113,10 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
     // and delete blind is how you empty a document that merely looked like a
     // text box.
     if (readable && !before.isEmpty()) {
-        pressWithControl('A');
-        pressPlain(VK_DELETE);
+        sendKeys(QStringLiteral("ctrl+a delete"), nullptr);
     }
 
-    typeUnicode(text);
+    typeHere(text);
     QThread::msleep(80);
 
     if (took()) {
@@ -1501,8 +1160,6 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
 // event loops, while a program started.
 // ---------------------------------------------------------------------------
 
-namespace {
-
 // Sleep in short slices, letting go the moment the task is stopped. False if
 // it was.
 bool pauseFor(int ms, const std::atomic_bool &cancelled)
@@ -1513,224 +1170,6 @@ bool pauseFor(int ms, const std::atomic_bool &cancelled)
         QThread::msleep(ulong(qMin(50, ms - waited)));
     }
     return !cancelled.load();
-}
-
-// The first actions Burnos ever had - launch, open_url, list_windows,
-// list_controls, a left click on a named control, typing into one - and the
-// hidden run_command, kept for a model that still reaches for it. Everything
-// newer is in act() below, which hands anything it does not handle to this.
-QString actBasic(const QVariantMap &args, DeskState &state,
-                 const std::atomic_bool &cancelled)
-{
-    const QString action = args.value(QStringLiteral("action")).toString();
-    QString error;
-
-    const auto namedControl = [&args, &state]() -> DesktopControl {
-        const QString wanted = args.value(QStringLiteral("control")).toString().trimmed();
-        for (const DesktopControl &c : std::as_const(state.offered)) {
-            if (c.key.compare(wanted, Qt::CaseInsensitive) == 0)
-                return c;
-        }
-        return {};
-    };
-
-    // THE LIST OF CONTROLS IS FROM BEFORE THE LAST CHANGE, and a step that
-    // opens something moves the screen on underneath it. When the model names
-    // a key that is no longer there, re-read what is in front and hand the NEW
-    // list back, instead of aiming at whatever the old key pointed to.
-    //
-    // THE TASK'S OWN WINDOW, never simply whatever is in front. With several
-    // tasks at work the window in front may well be another task's, and
-    // re-reading that handed one task the other's controls - the calculator
-    // task found itself holding the browser's list. Only when its own window
-    // has gone does it fall back to the one in front.
-    const auto listAgain = [&state]() -> QString {
-        DesktopWindow again;
-        const HWND own = reinterpret_cast<HWND>(state.target.handle);
-        if (own && IsWindow(own)) {
-            wchar_t title[512] = {};
-            const int length = GetWindowTextW(own, title, 511);
-            again.handle = state.target.handle;
-            again.title = length > 0 ? QString::fromWCharArray(title, length)
-                                     : state.target.title;
-        } else {
-            again = foreground();
-        }
-        return QObject::tr("Failed: that control is not on screen any more - the "
-                           "screen has changed since the list you were given. %1")
-            .arg(describeControls(again, state));
-    };
-
-    if (action == QLatin1String("launch")) {
-        const QString name = args.value(QStringLiteral("name")).toString().trimmed();
-        if (name.isEmpty())
-            return QObject::tr("Failed: no program was named.");
-
-        // What is already open, so the new window can be told from the rest.
-        QSet<quint64> before;
-        for (const DesktopWindow &w : windows())
-            before.insert(w.handle);
-
-        QString opened;
-        if (!launchAnything(name, &opened, &error))
-            return QObject::tr("Failed: %1").arg(error);
-        if (opened.isEmpty())
-            opened = name;
-
-        // WAIT FOR THE WINDOW. The next move is nearly always to type into what
-        // was just opened, and a program takes a second or two to put a window
-        // up - handing back now would hand back whatever was in front BEFORE.
-        DesktopWindow fresh;
-        QElapsedTimer clock;
-        clock.start();
-        while (fresh.isNull() && clock.elapsed() < 9000) {
-            if (!pauseFor(150, cancelled))
-                return QObject::tr("Stopped.");
-            for (const DesktopWindow &w : windows()) {
-                if (!before.contains(w.handle)) {
-                    fresh = w;
-                    break;
-                }
-            }
-        }
-
-        // NO NEW WINDOW can mean it was already open: Settings, and many
-        // single-window apps, bring back the window they already had. Look for
-        // it by name before sending the model off to hunt for it.
-        if (fresh.isNull()) {
-            for (const DesktopWindow &w : windows()) {
-                if (w.title.contains(opened, Qt::CaseInsensitive)
-                    || w.title.contains(name, Qt::CaseInsensitive)) {
-                    fresh = w;
-                    bringToFront(reinterpret_cast<HWND>(w.handle));
-                    break;
-                }
-            }
-        }
-        if (fresh.isNull()) {
-            return QObject::tr("%1 was started but it has not put a window up yet. "
-                               "Use list_windows in a moment to see whether it came up.")
-                .arg(opened);
-        }
-
-        // A XAML app reports almost nothing for its first second on screen, so
-        // reading its controls the instant the window exists finds an empty
-        // shell. Let it finish drawing itself.
-        if (!pauseFor(900, cancelled))
-            return QObject::tr("Stopped.");
-        return QObject::tr("Opened %1. %2").arg(opened, describeControls(fresh, state));
-    }
-
-    if (action == QLatin1String("open_url")) {
-        const QString url = args.value(QStringLiteral("url")).toString().trimmed();
-
-        // Every window's title beforehand. Windows often will not let the
-        // browser come to the front for a page handed to it, so the window in
-        // front afterwards is NOT the page - the task was once given Notepad's
-        // controls for a GitHub page. The page's window is the one whose title
-        // changed to it.
-        QHash<quint64, QString> titles;
-        for (const DesktopWindow &w : windows())
-            titles.insert(w.handle, w.title);
-
-        QString opened;
-        if (!openUrl(url, &opened, &error))
-            return QObject::tr("Failed: %1").arg(error);
-
-        // A page takes a moment to come up and the next move is to look at
-        // it, so the controls handed back have to be the NEW ones.
-        if (!pauseFor(2600, cancelled))
-            return QObject::tr("Stopped.");
-
-        // The words a page's title is likely to carry: the site and the path.
-        const QUrl parsed = QUrl::fromUserInput(url);
-        QStringList words = parsed.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
-        QString site = parsed.host();
-        if (site.startsWith(QStringLiteral("www.")))
-            site = site.mid(4);
-        words.append(site.section(QLatin1Char('.'), 0, 0));
-
-        DesktopWindow front;
-        int best = 0;
-        for (const DesktopWindow &w : windows()) {
-            const bool changed = !titles.contains(w.handle) || titles.value(w.handle) != w.title;
-            wchar_t cls[128] = {};
-            GetClassNameW(reinterpret_cast<HWND>(w.handle), cls, 127);
-            const bool browser = wcscmp(cls, L"Chrome_WidgetWin_1") == 0
-                                 || wcscmp(cls, L"MozillaWindowClass") == 0;
-            int score = (changed ? 2 : 0) + (browser ? 1 : 0);
-            for (const QString &word : std::as_const(words)) {
-                if (word.size() >= 4 && w.title.contains(word, Qt::CaseInsensitive)) {
-                    score += 3;
-                    break;
-                }
-            }
-            if (browser && score > best && score >= 3) {
-                best = score;
-                front = w;
-            }
-        }
-        if (front.isNull())
-            front = foreground();
-        else
-            bringToFront(reinterpret_cast<HWND>(front.handle));
-        if (front.isNull())
-            return QObject::tr("Opened %1 in the user's own browser.").arg(opened);
-        return QObject::tr("Opened %1 in the browser the user already had open, so "
-                           "they are signed in there as themselves. %2")
-            .arg(opened, describeControls(front, state));
-    }
-
-    if (action == QLatin1String("run_command")) {
-        const QString command = args.value(QStringLiteral("command")).toString().trimmed();
-        QString printed;
-        if (runCommand(command, &printed, &error))
-            return printed;
-        return QObject::tr("Failed: %1").arg(error);
-    }
-
-    if (action == QLatin1String("list_windows")) {
-        const QList<DesktopWindow> open = windows();
-        if (open.isEmpty())
-            return QObject::tr("Nothing is open.");
-        QStringList titles;
-        for (const DesktopWindow &w : open)
-            titles.append(w.title);
-        return QObject::tr("%1 windows are open: %2")
-            .arg(open.size())
-            .arg(titles.join(QStringLiteral("; ")));
-    }
-
-    if (action == QLatin1String("list_controls")) {
-        const QString wanted = args.value(QStringLiteral("window")).toString().trimmed();
-        const DesktopWindow target = wanted.isEmpty() ? foreground() : findWindow(wanted);
-        if (target.isNull())
-            return QObject::tr("Failed: I could not find that window.");
-        return describeControls(target, state);
-    }
-
-    if (action == QLatin1String("click")) {
-        const DesktopControl target = namedControl();
-        if (target.key.isEmpty())
-            return listAgain();
-        if (click(state.target.handle, target, &error))
-            return QObject::tr("Clicked %1.").arg(target.name.isEmpty() ? target.type : target.name);
-        return QObject::tr("Failed: %1").arg(error);
-    }
-
-    if (action == QLatin1String("type_text")) {
-        const QString text = args.value(QStringLiteral("text")).toString();
-        const DesktopControl target = namedControl();
-        if (text.isEmpty())
-            return QObject::tr("Failed: no text was given.");
-        if (target.key.isEmpty())
-            return listAgain();
-        if (fill(state.target.handle, target, text, &error))
-            return QObject::tr("Typed it in.");
-        return QObject::tr("Failed: %1").arg(error);
-    }
-
-    return QObject::tr("Failed: %1 is not something I can do.").arg(action);
 }
 
 // ---------------------------------------------------------------------------
@@ -1946,11 +1385,11 @@ void typeHere(const QString &text)
         if (c == QLatin1Char('\r'))
             continue;
         if (c == QLatin1Char('\n')) {
-            pressPlain(VK_RETURN);
+            sendChord(QStringLiteral("enter"), nullptr);
             continue;
         }
         if (c == QLatin1Char('\t')) {
-            pressPlain(VK_TAB);
+            sendChord(QStringLiteral("tab"), nullptr);
             continue;
         }
         INPUT pair[2] = {};
@@ -2147,43 +1586,44 @@ QString readText(HWND top, const DesktopControl *only, int maxChars)
 // SEEING: a window or the whole screen, with the controls marked on it.
 // ---------------------------------------------------------------------------
 
-QImage grabWindowImage(HWND hwnd, QRect *where)
+// A 32 bit picture `w` by `h`, drawn by `draw` into a DIB section. The height
+// goes in negative so the rows come out top down.
+QImage grabInto(int w, int h, const std::function<bool(HDC mem, HDC screen)> &draw)
 {
-    RECT r{};
-    if (!hwnd || !IsWindow(hwnd) || !GetWindowRect(hwnd, &r))
-        return {};
-    const int w = r.right - r.left;
-    const int h = r.bottom - r.top;
-    if (w <= 0 || h <= 0)
-        return {};
-    *where = QRect(r.left, r.top, w, h);
-
     HDC screen = GetDC(nullptr);
     HDC mem = CreateCompatibleDC(screen);
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h; // negative so the rows come out top down
+    bi.bmiHeader.biHeight = -h;
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
     void *bits = nullptr;
     HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     HGDIOBJ previous = SelectObject(mem, bmp);
-
-    // 2 is PW_RENDERFULLCONTENT, which a modern composed window needs.
-    BOOL ok = PrintWindow(hwnd, mem, 2);
-    if (!ok)
-        ok = PrintWindow(hwnd, mem, 0);
     QImage image;
-    if (ok && bits)
+    if (draw(mem, screen) && bits)
         image = QImage(static_cast<const uchar *>(bits), w, h, w * 4, QImage::Format_RGB32).copy();
-
     SelectObject(mem, previous);
     DeleteObject(bmp);
     DeleteDC(mem);
     ReleaseDC(nullptr, screen);
     return image;
+}
+
+QImage grabWindowImage(HWND hwnd, QRect *where)
+{
+    RECT r{};
+    if (!hwnd || !IsWindow(hwnd) || !GetWindowRect(hwnd, &r) || r.right <= r.left
+        || r.bottom <= r.top)
+        return {};
+    *where = QRect(r.left, r.top, r.right - r.left, r.bottom - r.top);
+    // 2 is PW_RENDERFULLCONTENT, which a modern composed window needs; an old
+    // one ignores it and wants 0.
+    return grabInto(where->width(), where->height(), [hwnd](HDC mem, HDC) {
+        return PrintWindow(hwnd, mem, 2) || PrintWindow(hwnd, mem, 0);
+    });
 }
 
 // The monitor a window is on, as the user sees it - menus, tooltips and
@@ -2200,35 +1640,14 @@ QImage grabScreenImage(HWND onScreenOf, QRect *where)
     info.cbSize = sizeof(info);
     if (!GetMonitorInfoW(monitor, &info))
         return {};
-    const int x = info.rcMonitor.left;
-    const int y = info.rcMonitor.top;
-    const int w = info.rcMonitor.right - info.rcMonitor.left;
-    const int h = info.rcMonitor.bottom - info.rcMonitor.top;
-    if (w <= 0 || h <= 0)
+    const RECT &m = info.rcMonitor;
+    *where = QRect(m.left, m.top, m.right - m.left, m.bottom - m.top);
+    if (where->isEmpty())
         return {};
-    *where = QRect(x, y, w, h);
-
-    HDC screen = GetDC(nullptr);
-    HDC mem = CreateCompatibleDC(screen);
-    BITMAPINFO bi{};
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = w;
-    bi.bmiHeader.biHeight = -h;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-    void *bits = nullptr;
-    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HGDIOBJ previous = SelectObject(mem, bmp);
-    const BOOL ok = BitBlt(mem, 0, 0, w, h, screen, x, y, SRCCOPY | CAPTUREBLT);
-    QImage image;
-    if (ok && bits)
-        image = QImage(static_cast<const uchar *>(bits), w, h, w * 4, QImage::Format_RGB32).copy();
-    SelectObject(mem, previous);
-    DeleteObject(bmp);
-    DeleteDC(mem);
-    ReleaseDC(nullptr, screen);
-    return image;
+    return grabInto(where->width(), where->height(), [where](HDC mem, HDC screen) {
+        return BitBlt(mem, 0, 0, where->width(), where->height(), screen, where->left(),
+                      where->top(), SRCCOPY | CAPTUREBLT) != FALSE;
+    });
 }
 
 // Shrunk to fit, with every control of the list outlined and its key drawn on
@@ -2320,10 +1739,9 @@ DesktopWindow stillThere(const DesktopWindow &w)
     return out;
 }
 
-// The newer computer_use actions; the first ones Burnos ever had fall through
-// to actBasic.
-QString actMore(const QVariantMap &args, DeskState &state,
-                const std::atomic_bool &cancelled, QByteArray *png)
+// One computer_use action, by name.
+QString carryOut(const QVariantMap &args, DeskState &state,
+                 const std::atomic_bool &cancelled, QByteArray *png)
 {
     const QString action = args.value(QStringLiteral("action")).toString();
     QString error;
@@ -2351,6 +1769,16 @@ QString actMore(const QVariantMap &args, DeskState &state,
                 return c;
         }
         return {};
+    };
+    // THE LIST OF CONTROLS IS FROM BEFORE THE LAST CHANGE. When the model names
+    // a key that is no longer there, the NEW list goes back instead of a click
+    // at whatever the old key pointed to - read from the task's OWN window, or
+    // one task ends up holding another's controls.
+    const auto listAgain = [&]() -> QString {
+        const DesktopWindow own = stillThere(state.target);
+        return QObject::tr("Failed: that control is not on screen any more - the "
+                           "screen has changed since the list you were given. %1")
+            .arg(describeControls(own.isNull() ? foreground() : own, state));
     };
     const auto pointOf = [&](const char *xName, const char *yName, QPoint *out) {
         return pictureToScreen(state, args.value(QLatin1String(xName)).toInt(),
@@ -2625,7 +2053,168 @@ QString actMore(const QVariantMap &args, DeskState &state,
         return QObject::tr("The clipboard holds:\n%1").arg(text);
     }
 
-    return actBasic(args, state, cancelled);
+    if (action == QLatin1String("launch")) {
+        const QString name = args.value(QStringLiteral("name")).toString().trimmed();
+        if (name.isEmpty())
+            return QObject::tr("Failed: no program was named.");
+
+        // What is already open, so the new window can be told from the rest.
+        QSet<quint64> before;
+        for (const DesktopWindow &w : windows())
+            before.insert(w.handle);
+
+        QString opened;
+        if (!launchAnything(name, &opened, &error))
+            return QObject::tr("Failed: %1").arg(error);
+        if (opened.isEmpty())
+            opened = name;
+
+        // WAIT FOR THE WINDOW. The next move is nearly always to type into what
+        // was just opened, and a program takes a second or two to put a window
+        // up - handing back now would hand back whatever was in front BEFORE.
+        DesktopWindow fresh;
+        QElapsedTimer clock;
+        clock.start();
+        while (fresh.isNull() && clock.elapsed() < 9000) {
+            if (!pauseFor(150, cancelled))
+                return QObject::tr("Stopped.");
+            for (const DesktopWindow &w : windows()) {
+                if (!before.contains(w.handle)) {
+                    fresh = w;
+                    break;
+                }
+            }
+        }
+
+        // NO NEW WINDOW can mean it was already open: Settings, and many
+        // single-window apps, bring back the window they already had. Look for
+        // it by name before sending the model off to hunt for it.
+        if (fresh.isNull()) {
+            for (const DesktopWindow &w : windows()) {
+                if (w.title.contains(opened, Qt::CaseInsensitive)
+                    || w.title.contains(name, Qt::CaseInsensitive)) {
+                    fresh = w;
+                    bringToFront(reinterpret_cast<HWND>(w.handle));
+                    break;
+                }
+            }
+        }
+        if (fresh.isNull()) {
+            return QObject::tr("%1 was started but it has not put a window up yet. "
+                               "Use list_windows in a moment to see whether it came up.")
+                .arg(opened);
+        }
+
+        // A XAML app reports almost nothing for its first second on screen, so
+        // reading its controls the instant the window exists finds an empty
+        // shell. Let it finish drawing itself.
+        if (!pauseFor(900, cancelled))
+            return QObject::tr("Stopped.");
+        return QObject::tr("Opened %1. %2").arg(opened, describeControls(fresh, state));
+    }
+
+    if (action == QLatin1String("open_url")) {
+        const QString url = args.value(QStringLiteral("url")).toString().trimmed();
+
+        // Every window's title beforehand. Windows often will not let the
+        // browser come to the front for a page handed to it, so the window in
+        // front afterwards is NOT the page - the task was once given Notepad's
+        // controls for a GitHub page. The page's window is the one whose title
+        // changed to it.
+        QHash<quint64, QString> titles;
+        for (const DesktopWindow &w : windows())
+            titles.insert(w.handle, w.title);
+
+        QString opened;
+        if (!openUrl(url, &opened, &error))
+            return QObject::tr("Failed: %1").arg(error);
+
+        // A page takes a moment to come up and the next move is to look at
+        // it, so the controls handed back have to be the NEW ones.
+        if (!pauseFor(2600, cancelled))
+            return QObject::tr("Stopped.");
+
+        // The words a page's title is likely to carry: the site and the path.
+        const QUrl parsed = QUrl::fromUserInput(url);
+        QStringList words = parsed.path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        QString site = parsed.host();
+        if (site.startsWith(QStringLiteral("www.")))
+            site = site.mid(4);
+        words.append(site.section(QLatin1Char('.'), 0, 0));
+
+        DesktopWindow front;
+        int best = 0;
+        for (const DesktopWindow &w : windows()) {
+            const bool changed = !titles.contains(w.handle) || titles.value(w.handle) != w.title;
+            wchar_t cls[128] = {};
+            GetClassNameW(reinterpret_cast<HWND>(w.handle), cls, 127);
+            const bool browser = wcscmp(cls, L"Chrome_WidgetWin_1") == 0
+                                 || wcscmp(cls, L"MozillaWindowClass") == 0;
+            int score = (changed ? 2 : 0) + (browser ? 1 : 0);
+            for (const QString &word : std::as_const(words)) {
+                if (word.size() >= 4 && w.title.contains(word, Qt::CaseInsensitive)) {
+                    score += 3;
+                    break;
+                }
+            }
+            if (browser && score > best && score >= 3) {
+                best = score;
+                front = w;
+            }
+        }
+        if (front.isNull())
+            front = foreground();
+        else
+            bringToFront(reinterpret_cast<HWND>(front.handle));
+        if (front.isNull())
+            return QObject::tr("Opened %1 in the user's own browser.").arg(opened);
+        return QObject::tr("Opened %1 in the browser the user already had open, so "
+                           "they are signed in there as themselves. %2")
+            .arg(opened, describeControls(front, state));
+    }
+
+    if (action == QLatin1String("list_windows")) {
+        const QList<DesktopWindow> open = windows();
+        if (open.isEmpty())
+            return QObject::tr("Nothing is open.");
+        QStringList titles;
+        for (const DesktopWindow &w : open)
+            titles.append(w.title);
+        return QObject::tr("%1 windows are open: %2")
+            .arg(open.size())
+            .arg(titles.join(QStringLiteral("; ")));
+    }
+
+    if (action == QLatin1String("list_controls")) {
+        const QString wanted = args.value(QStringLiteral("window")).toString().trimmed();
+        const DesktopWindow target = wanted.isEmpty() ? foreground() : findWindow(wanted);
+        if (target.isNull())
+            return QObject::tr("Failed: I could not find that window.");
+        return describeControls(target, state);
+    }
+
+    if (action == QLatin1String("click")) {
+        const DesktopControl target = controlNamed();
+        if (target.key.isEmpty())
+            return listAgain();
+        if (click(state.target.handle, target, &error))
+            return QObject::tr("Clicked %1.").arg(target.name.isEmpty() ? target.type : target.name);
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    if (action == QLatin1String("type_text")) {
+        const QString text = args.value(QStringLiteral("text")).toString();
+        const DesktopControl target = controlNamed();
+        if (text.isEmpty())
+            return QObject::tr("Failed: no text was given.");
+        if (target.key.isEmpty())
+            return listAgain();
+        if (fill(state.target.handle, target, text, &error))
+            return QObject::tr("Typed it in.");
+        return QObject::tr("Failed: %1").arg(error);
+    }
+
+    return QObject::tr("Failed: %1 is not something I can do.").arg(action);
 }
 
 // A click or a key that opened a new window - a Save dialog, a confirmation,
@@ -2663,7 +2252,7 @@ QString act(const QVariantMap &args, DeskState &state,
         for (const DesktopWindow &w : windows())
             before.insert(w.handle);
     }
-    QString result = actMore(args, state, cancelled, png);
+    QString result = carryOut(args, state, cancelled, png);
     if (mayOpen && !result.startsWith(QStringLiteral("Failed"))
         && !result.startsWith(QStringLiteral("Stopped")))
         result += newWindowNote(before, state, cancelled);

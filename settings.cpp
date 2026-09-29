@@ -33,6 +33,7 @@ constexpr auto kOrbPosPath  = "ui/orbPosition";
 constexpr auto kComposioKeyPath  = "composio/key";
 constexpr auto kComposioUserPath = "composio/userId";
 constexpr auto kComposioAppsPath = "composio/apps";
+constexpr auto kComposioSessionPath = "composio/sessionId";
 
 // The model that answers. CHOOSABLE again as of 2026-09-29: the router picks
 // well but it picks slowly and unpredictably, and for a voice assistant a
@@ -297,6 +298,10 @@ void setComposioKey(const QString &key)
     QSettings s = store();
     const QString trimmed = key.trimmed();
 
+    // A session belongs to the project its key came from, so a new key means
+    // a new session, made on first use.
+    s.remove(QString::fromLatin1(kComposioSessionPath));
+
     if (trimmed.isEmpty()) {
         s.remove(QString::fromLatin1(kComposioKeyPath));
     } else {
@@ -342,6 +347,21 @@ void setComposioApps(const QStringList &slugs)
         s.remove(QString::fromLatin1(kComposioAppsPath));
     else
         s.setValue(QString::fromLatin1(kComposioAppsPath), slugs);
+    s.sync();
+}
+
+QString composioSessionId()
+{
+    return store().value(QString::fromLatin1(kComposioSessionPath)).toString();
+}
+
+void setComposioSessionId(const QString &id)
+{
+    QSettings s = store();
+    if (id.isEmpty())
+        s.remove(QString::fromLatin1(kComposioSessionPath));
+    else
+        s.setValue(QString::fromLatin1(kComposioSessionPath), id);
     s.sync();
 }
 

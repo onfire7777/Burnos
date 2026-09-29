@@ -46,6 +46,9 @@ constexpr int kMaxPolls = 30;
 constexpr int kSlugRole = Qt::UserRole;
 constexpr int kConnectionRole = Qt::UserRole + 1;
 constexpr int kConnectedRole = Qt::UserRole + 2;
+// Set for an app with nothing to sign in to. It has no Connect, because it
+// already works: the session runs its tools as they are.
+constexpr int kNoAuthRole = Qt::UserRole + 3;
 
 } // namespace
 
@@ -66,7 +69,9 @@ IntegrationsDialog::IntegrationsDialog(QWidget *parent)
         tr("Connect the apps you want Burnos to use. Signing in happens in your "
            "browser and Burnos never sees the password - Composio holds the "
            "connection and refreshes it. Ask for things out loud afterwards: "
-           "\"email Sarah the notes\", \"post that in Slack\"."),
+           "\"email Sarah the notes\", \"post that in Slack\". Apps that need "
+           "no sign in work straight away, and asking for one that is not "
+           "connected yet opens its sign in for you."),
         this);
     blurb->setWordWrap(true);
     blurb->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
@@ -180,6 +185,7 @@ IntegrationsDialog::IntegrationsDialog(QWidget *parent)
                     }
                 } else {
                     m_catalogue = apps;
+                    m_catalogueLoaded = true;
                     for (const ComposioApp &app : apps) {
                         if (!app.name.isEmpty())
                             m_names.insert(app.slug, app.name);
@@ -215,6 +221,11 @@ IntegrationsDialog::IntegrationsDialog(QWidget *parent)
     connect(m_composio, &ComposioClient::disconnected, this, [this](const QString &) {
         say(tr("Disconnected."));
         m_composio->refreshConnections();
+    });
+
+    connect(m_composio, &ComposioClient::noSignInNeeded, this, [this](const QString &slug) {
+        say(tr("%1 needs no sign in - Burnos can already use it. Just ask for it "
+               "out loud.").arg(displayName(slug)));
     });
 
     connect(m_composio, &ComposioClient::failed, this, [this](const QString &reason) {
@@ -285,8 +296,10 @@ void IntegrationsDialog::repaintList()
             label += tr("   - connected");
         else if (link.isPending())
             label += tr("   - waiting for sign in");
+        else if (app.builtIn)
+            label += tr("   - built in, always on");
         else if (app.noAuth)
-            label += tr("   - no sign in needed");
+            label += tr("   - ready, no sign in needed");
         else if (!app.managedAuth)
             label += tr("   - needs its own credentials");
 
@@ -294,6 +307,7 @@ void IntegrationsDialog::repaintList()
         item->setData(kSlugRole, app.slug);
         item->setData(kConnectionRole, link.connectionId);
         item->setData(kConnectedRole, connected);
+        item->setData(kNoAuthRole, app.noAuth || app.builtIn);
         if (!app.description.isEmpty())
             item->setToolTip(app.description);
         if (connected)
@@ -313,8 +327,15 @@ void IntegrationsDialog::repaintList()
     for (const ComposioApp &app : std::as_const(m_catalogue))
         addRow(app, m_connected.value(app.slug).isConnected());
 
-    if (m_list->count() == 0 && ComposioClient::isConfigured())
-        say(tr("Nothing matched. Try the app's own name - Gmail rather than email."));
+    // Only once a search has really come back empty. The connections answer
+    // usually lands first, on a list with nothing in it yet, and the message
+    // from that moment used to sit on under a full catalogue.
+    const QString nothing =
+        tr("Nothing matched. Try the app's own name - Gmail rather than email.");
+    if (m_list->count() == 0 && m_catalogueLoaded && ComposioClient::isConfigured())
+        say(nothing);
+    else if (m_status->text() == nothing)
+        say(QString());
 
     if (!keep.isEmpty()) {
         for (int i = 0; i < m_list->count(); ++i) {
@@ -331,7 +352,8 @@ void IntegrationsDialog::selectionChanged()
 {
     QListWidgetItem *item = m_list->currentItem();
     const bool connected = item && item->data(kConnectedRole).toBool();
-    m_connect->setEnabled(item && !connected);
+    const bool noAuth = item && item->data(kNoAuthRole).toBool();
+    m_connect->setEnabled(item && !connected && !noAuth);
     m_disconnect->setEnabled(connected
                              && !item->data(kConnectionRole).toString().isEmpty());
 }
@@ -342,6 +364,13 @@ void IntegrationsDialog::connectSelected()
     if (!item)
         return;
     const QString slug = item->data(kSlugRole).toString();
+    // Nothing to sign in to: say so instead of asking Composio for a sign in it
+    // would refuse, which is the error this row used to show.
+    if (item->data(kNoAuthRole).toBool()) {
+        say(tr("%1 needs no sign in - Burnos can already use it. Just ask for it "
+               "out loud.").arg(displayName(slug)));
+        return;
+    }
     say(tr("Opening the sign in for %1.").arg(displayName(slug)));
     m_composio->connectApp(slug);
 }

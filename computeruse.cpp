@@ -1,4 +1,6 @@
 #include "computeruse.h"
+
+#include <QUrl>
 #include "livelog.h"
 
 #include <QBuffer>
@@ -846,6 +848,56 @@ bool launchAnything(const QString &spokenName, QString *opened, QString *error)
     liveLog(QStringLiteral("computer use: nothing on this machine matches \"%1\"")
                 .arg(wanted));
     return false;
+}
+
+bool openUrl(const QString &url, QString *opened, QString *error)
+{
+    QString wanted = url.trimmed();
+    if (wanted.isEmpty()) {
+        if (error)
+            *error = QObject::tr("I did not catch which page to open.");
+        return false;
+    }
+
+    // Spoken addresses arrive bare - "github.com", never "https://github.com" -
+    // and the shell only treats a string as a web address once it has a scheme.
+    // Without this Windows would take it for a file name and quietly fail.
+    if (!wanted.contains(QStringLiteral("://")))
+        wanted.prepend(QStringLiteral("https://"));
+
+    // ONLY http and https ever reach ShellExecute. Every other scheme on this
+    // machine is a protocol handler, and a misheard sentence must not be able
+    // to fire one.
+    const QUrl parsed(wanted, QUrl::StrictMode);
+    if (!parsed.isValid() || parsed.host().isEmpty()
+        || (parsed.scheme() != QLatin1String("http")
+            && parsed.scheme() != QLatin1String("https"))) {
+        if (error) {
+            *error = QObject::tr("%1 is not a web address I can open.")
+                         .arg(url.trimmed());
+        }
+        return false;
+    }
+
+    // THE SHELL, NOT A BROWSER BY NAME. Windows gives the address to whichever
+    // browser is already running as the user, so the page loads in the profile
+    // they are signed in on rather than in a fresh window that knows nobody.
+    const QString full = parsed.toString(QUrl::FullyEncoded);
+    const HINSTANCE rc = ShellExecuteW(
+        nullptr, L"open",
+        reinterpret_cast<const wchar_t *>(full.utf16()),
+        nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(rc) <= 32) {
+        if (error)
+            *error = QObject::tr("Windows would not open %1.").arg(parsed.host());
+        return false;
+    }
+
+    if (opened)
+        *opened = full;
+    liveLog(QStringLiteral("computer use: handed %1 to the default browser")
+                .arg(full));
+    return true;
 }
 
 bool runCommand(const QString &command, QString *output, QString *error)

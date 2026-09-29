@@ -7,8 +7,9 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 class QNetworkAccessManager;
-class QNetworkReply;
 
 // One app Composio can reach: Gmail, Slack, Notion, GitHub and about fifteen
 // hundred more. `slug` is the id every other call takes; `name` is the only
@@ -19,8 +20,13 @@ struct ComposioApp
     QString name;
     QString description;
 
-    // Usable with no sign in at all - a handful of public data toolkits are.
+    // Usable with no sign in at all: web search, Hacker News, weather and the
+    // like. There is nothing to connect, so there is no Connect for them - the
+    // session runs their tools as they are.
     bool noAuth = false;
+    // Composio's own toolkit, whose tools ARE the session: search, execute,
+    // manage connections. Part of every session and never connected.
+    bool builtIn = false;
     // Composio owns the OAuth app for this toolkit, so connecting needs nothing
     // from the user but a sign in. Where this is false the user has to bring
     // their own client id or an API key, which is a job for Composio's own
@@ -44,21 +50,6 @@ struct ComposioApp
     }
 };
 
-// One thing an app can actually do: SLACK_SEND_MESSAGE, GMAIL_SEND_EMAIL.
-// This is what the model is shown and what it names to run something.
-struct ComposioTool
-{
-    QString slug;
-    QString name;
-    QString description;
-    QString appSlug;
-    QStringList required;    // arguments the call will not work without
-    QJsonObject properties;  // the input schema's properties, for the model
-
-    // One line for the model. Short on purpose: ten of these travel together.
-    QString describe() const;
-};
-
 // Everything Burnos does with Composio, which is the whole of its reach into
 // other people's services.
 //
@@ -66,12 +57,20 @@ struct ComposioTool
 // covers what has a window on it. Sending an email, posting to Slack, filing a
 // Notion page or opening a GitHub issue are all HTTP APIs with their own OAuth
 // dance, and writing fifteen hundred of those is not a project. Composio holds
-// the credentials, refreshes the tokens and exposes every app as a flat list of
-// named tools, so the orb needs exactly two verbs: find a tool, run a tool.
+// the credentials, refreshes the tokens and runs the tools.
+//
+// ONE SESSION PER INSTALL, which is Composio's current model (REST v3.1). The
+// session is made once for this install's user, kept in settings and reused
+// for good - Composio keeps sessions on the server and never expires them - and
+// tool search, tool runs and sign in links all go through it. Burnos is its own
+// harness: the OpenRouter model plans, and the session supplies the catalogue,
+// the credentials and the execution underneath it. It is also what makes an
+// app with no sign in work at all: the old direct path tried to build a sign in
+// for one and Composio refused with Auth_Config_NoAuthApp.
 //
 // EVERY CALL IS ASYNCHRONOUS and answers on a signal. Nothing here blocks, and
-// nothing here is cached beyond the life of one request: the key is read out of
-// settings at the moment it is used, exactly like the OpenRouter key.
+// the key is read out of settings at the moment it is used, exactly like the
+// OpenRouter key.
 class ComposioClient : public QObject
 {
     Q_OBJECT
@@ -79,37 +78,36 @@ class ComposioClient : public QObject
 public:
     explicit ComposioClient(QObject *parent = nullptr);
 
-    // True when a key is stored. No key means the integration tool is not even
-    // offered to the model, rather than offered and then failing.
+    // True when a key is stored. No key means the app tool is not even offered
+    // to the model, rather than offered and then failing.
     static bool isConfigured();
 
     // The app catalogue. An empty query is the popular ones, in usage order,
     // which is what the dialog shows before anybody types.
     void searchApps(const QString &query, int limit = 40);
 
-    // What this install has already connected. Answers on appsReady() too, with
-    // only the connected apps in it, so the dialog can show them without a
-    // second lookup.
+    // What this install has connected. Answers on appsReady() with only the
+    // connected apps in it, and writes their slugs into settings so the model
+    // can be told without a network round trip at the top of every question.
     void refreshConnections();
 
-    // Start the sign in for one app. Composio needs an auth config first, so
-    // this reuses one if the project already has it and creates a managed one
-    // if it does not, then opens the hosted sign in page in the user's browser.
-    // The connection finishes OUT OF BAND, in that browser - which is why the
-    // dialog polls afterwards rather than waiting on a reply.
+    // Open the sign in page for one app in the user's own browser, through the
+    // session's link endpoint. The connection finishes OUT OF BAND, in that
+    // browser, which is why the dialog polls afterwards rather than waiting on
+    // a reply. An app that needs no sign in answers on noSignInNeeded().
     void connectApp(const QString &slug);
 
     // Revoke and forget one connection. The account itself is untouched; what
     // goes away is Composio's permission to act on it.
     void disconnectApp(const QString &connectionId);
 
-    // Tools matching a plain language query, restricted to the apps given -
-    // which are the connected ones, because a tool for an app nobody has signed
-    // into can only fail.
-    void searchTools(const QString &query, const QStringList &appSlugs,
-                     int limit = 8);
+    // Search every app for tools that can do something, described in a full
+    // sentence. The answer on toolsFound() is already worded for the model: the
+    // tools, their arguments, and which of the apps involved still need a sign
+    // in.
+    void searchTools(const QString &useCase);
 
-    // Run one tool. `arguments` is the object the tool's own schema asks for.
+    // Run one tool in the session. `arguments` is the object its schema asks for.
     void runTool(const QString &toolSlug, const QJsonObject &arguments);
 
     bool isBusy() const { return m_inFlight > 0; }
@@ -119,29 +117,47 @@ signals:
     void appsReady(const QList<ComposioApp> &apps, bool connectedOnly);
     // The browser has been sent to the sign in page for this app.
     void linkOpened(const QString &slug);
+    // The app needs no sign in, so there was nothing to connect.
+    void noSignInNeeded(const QString &slug);
     void disconnected(const QString &connectionId);
-    void toolsReady(const QList<ComposioTool> &tools);
+    // A tool search, worded for the model. Empty with ok when nothing matched.
+    void toolsFound(bool ok, const QString &summary);
     // What running the tool did, already worded for the model to say out loud.
     void toolFinished(bool ok, const QString &summary);
     void failed(const QString &reason);
 
 private:
-    // One request against the v3 API, with the key and the JSON headers on it.
-    // Returns nullptr and emits failed() when there is no key stored.
-    QNetworkReply *send(const QByteArray &verb, const QString &path,
-                        const QJsonObject &body = QJsonObject());
+    struct Reply
+    {
+        bool ok = false;
+        int status = 0;          // HTTP status, 0 when nothing came back
+        QJsonObject root;
+        QString error;           // Composio's own words, when it gave any
+        QString errorSlug;       // such as ToolRouterV2_NoActiveConnection
+    };
+    using Handler = std::function<void(const Reply &)>;
+    using SessionHandler =
+        std::function<void(const QString &sessionId, const QString &error)>;
 
-    // The reply's JSON, or nothing at all plus a failed() when the request
-    // itself went wrong. Every handler starts with this.
-    bool readJson(QNetworkReply *reply, QJsonObject *out, const QString &what);
+    // One request against the v3.1 API, with the key and the JSON headers on
+    // it. `what` names it in the log. `done` is always called, exactly once.
+    void call(const QByteArray &verb, const QString &path, const QJsonObject &body,
+              const QString &what, Handler done);
 
-    // Step two and three of connectApp(), split out because the auth config
-    // either already exists or has to be made first.
-    void createAuthConfig(const QString &slug);
-    void createLink(const QString &slug, const QString &authConfigId);
+    // The session id, made first if this install has none yet. Several callers
+    // asking at once share the one creation request.
+    void withSession(SessionHandler then);
+
+    // A request under /tool_router/session/<id>. A session deleted on the
+    // Composio side is made again once and the request retried.
+    void callInSession(const QByteArray &verb, const QString &subPath,
+                       const QJsonObject &body, const QString &what,
+                       Handler done, bool retried = false);
 
     QNetworkAccessManager *m_net = nullptr;
     int m_inFlight = 0;
+    bool m_creatingSession = false;
+    QList<SessionHandler> m_waitingForSession;
 };
 
 #endif // COMPOSIO_H

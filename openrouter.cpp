@@ -22,6 +22,19 @@ constexpr auto kUrl = "https://openrouter.ai/api/v1/chat/completions";
 constexpr int kMaxMessages = 24;   // twelve exchanges
 constexpr int kMaxChars    = 24000;
 
+// HOW LONG THE ORB MAY SIT ON THINKING. One request gets thirty seconds, which
+// is many times what a model with its reasoning capped needs; a whole turn,
+// tool calls and all, gets ninety. Past either one the turn is given up and
+// the user is told, instead of the orb looking busy long after anything useful
+// could still come back. It was sixty seconds a request with no limit on the
+// turn, so eight tool calls could keep it thinking for minutes.
+constexpr int kRequestTimeoutMs = 30000;
+constexpr qint64 kTurnBudgetMs  = 90000;
+
+// MEDIUM, ALWAYS, whichever model is chosen. The user's call on 2026-09-28,
+// and deliberately NOT a setting, so it cannot drift per model or per install.
+constexpr auto kReasoningEffort = "medium";
+
 // The answer is SPOKEN, and the voice is synthesised locally at roughly real
 // time, so every extra word is another second the user waits before hearing
 // anything. Brevity is not taste here, it is the difference between a
@@ -51,6 +64,16 @@ constexpr auto kSystemPrompt =
     "finds them. Never tell the user you have no access to their computer. "
     "Never claim to have done something you have not actually done through the "
     "tool.\n"
+    "\n"
+    "TO OPEN A WEBSITE, USE open_url AND NOTHING ELSE. Give it the address - "
+    "github.com, gmail.com - and Windows hands it to the browser the user "
+    "already has open, on the profile they are signed in on, so their account "
+    "is there waiting for them. NEVER open a website by launching a browser and "
+    "typing the address into the address bar: that can start a fresh window on "
+    "a profile they have never signed in on, and the page then loads signed "
+    "out, which is not what they asked for. Only if they name a particular "
+    "browser should you launch that one and type the address in, and then say "
+    "it may not be signed in.\n"
     "\n"
     "AFTER ANYTHING THAT CHANGES THE SCREEN, the list of controls you were "
     "given is out of date. launch hands you the new window's controls itself; "
@@ -95,13 +118,26 @@ constexpr auto kSystemPrompt =
     "literally. Write numbers, units and abbreviations the way they should be "
     "said out loud.";
 
-// The app_action tool: everything beyond this machine. Offered ONLY when the
-// user has actually connected something, because a tool for an empty account
-// can do nothing but waste a turn failing.
+// WHAT THE MODEL IS TOLD INSTEAD OF A PICTURE when it cannot be sent one.
+// Some models on OpenRouter have no endpoint that accepts an image at all, and
+// the whole request is refused with a 404 rather than the picture simply being
+// ignored - which killed turns that had otherwise gone perfectly.
+constexpr auto kBlindNote =
+    "The screenshot was taken, but the model you are running as cannot look at "
+    "pictures, so there is nothing here for you to see. Do not ask for another "
+    "one. Judge what happened from the window title and from list_controls "
+    "instead, and if you still cannot tell, say plainly that you could not "
+    "check rather than claiming it worked.";
+
+// The app_action tool: everything beyond this machine. Offered whenever a
+// Composio key is stored: every app is reachable through the session, the ones
+// with no sign in work at once, and one that needs a sign in is connected on
+// the spot with connect_app.
 //
-// TWO VERBS, and the order matters. Composio has tens of thousands of tools and
-// their slugs cannot be guessed, so the model searches for one in plain words,
-// gets back real slugs with the arguments each needs, and only then runs one.
+// THREE VERBS, and the order matters. Composio has tens of thousands of tools
+// and their slugs cannot be guessed, so the model searches for one in plain
+// words, gets back real slugs with the arguments each needs, and only then runs
+// one. connect_app is for an app the search reported as not connected.
 QJsonObject appActionTool()
 {
     const QJsonObject parameters{
@@ -110,7 +146,8 @@ QJsonObject appActionTool()
             {QStringLiteral("action"), QJsonObject{
                 {QStringLiteral("type"), QStringLiteral("string")},
                 {QStringLiteral("enum"), QJsonArray{
-                    QStringLiteral("find_tools"), QStringLiteral("run_tool")}},
+                    QStringLiteral("find_tools"), QStringLiteral("run_tool"),
+                    QStringLiteral("connect_app")}},
                 {QStringLiteral("description"),
                  QStringLiteral("find_tools searches the connected apps for "
                                 "something that can do what the user asked and "
@@ -118,14 +155,22 @@ QJsonObject appActionTool()
                                 "arguments each one needs. run_tool carries one "
                                 "of them out. ALWAYS find_tools first: tool "
                                 "slugs cannot be guessed and an invented one "
-                                "simply fails.")}}},
+                                "simply fails. connect_app opens the sign in "
+                                "page for an app find_tools reported as NOT "
+                                "CONNECTED.")}}},
             {QStringLiteral("query"), QJsonObject{
                 {QStringLiteral("type"), QStringLiteral("string")},
                 {QStringLiteral("description"),
-                 QStringLiteral("For find_tools. What you want to do, in a few "
-                                "plain words: send an email, post a message to "
+                 QStringLiteral("For find_tools. What you want to do, as one full "
+                                "sentence naming the app: send an email with Gmail, post a message to "
                                 "a channel, create a calendar event, open an "
                                 "issue.")}}},
+            {QStringLiteral("app"), QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("string")},
+                {QStringLiteral("description"),
+                 QStringLiteral("For connect_app. The app's slug exactly as "
+                                "find_tools named it, such as gmail or "
+                                "googlecalendar.")}}},
             {QStringLiteral("tool"), QJsonObject{
                 {QStringLiteral("type"), QStringLiteral("string")},
                 {QStringLiteral("description"),
@@ -151,7 +196,7 @@ QJsonObject appActionTool()
         {QStringLiteral("function"), QJsonObject{
             {QStringLiteral("name"), QStringLiteral("app_action")},
             {QStringLiteral("description"),
-             QStringLiteral("Do something in one of the user's connected apps - "
+             QStringLiteral("Do something in one of the user's online apps - "
                             "send an email, post to a chat channel, add a "
                             "calendar event, write a page, open an issue, look "
                             "something up in one of their accounts.")},
@@ -160,11 +205,11 @@ QJsonObject appActionTool()
     };
 }
 
-// The tools offered this turn. computer_use always; app_action as well once at
-// least one app is connected. A single function with an action rather than one
+// The tools offered this turn. computer_use always; app_action as well whenever
+// a Composio key is stored. A single function with an action rather than one
 // function per verb, because the model picks an action far more reliably than it
 // picks between a dozen near identical function names.
-QJsonArray tools(const QStringList &apps)
+QJsonArray tools(bool online)
 {
     const QJsonObject parameters{
         {QStringLiteral("type"), QStringLiteral("object")},
@@ -172,7 +217,8 @@ QJsonArray tools(const QStringList &apps)
             {QStringLiteral("action"), QJsonObject{
                 {QStringLiteral("type"), QStringLiteral("string")},
                 {QStringLiteral("enum"), QJsonArray{
-                    QStringLiteral("launch"), QStringLiteral("run_command"),
+                    QStringLiteral("launch"), QStringLiteral("open_url"),
+                    QStringLiteral("run_command"),
                     QStringLiteral("list_windows"), QStringLiteral("list_controls"),
                     QStringLiteral("screenshot"), QStringLiteral("click"),
                     QStringLiteral("click_at"), QStringLiteral("press_key"),
@@ -181,7 +227,10 @@ QJsonArray tools(const QStringList &apps)
                  QStringLiteral("launch OPENS A PROGRAM BY ITS NAME and is the only "
                                 "way you should open one - it finds Store apps, which "
                                 "have no command line at all, and it tells you the new "
-                                "window's controls once it is up. run_command runs a "
+                                "window's controls once it is up. open_url OPENS A "
+                                "WEB PAGE in the browser the user already has, on "
+                                "the profile they are signed in on, and is the only "
+                                "way you should open a website. run_command runs a "
                                 "Windows command line and gives you back what it "
                                 "printed; use it for commands, NOT for opening "
                                 "programs. list_windows says what is open. "
@@ -200,6 +249,12 @@ QJsonArray tools(const QStringList &apps)
                                 "Spotify, Calculator. Work out the real name from what "
                                 "the user said - 'my browser' is whichever browser is "
                                 "installed - and give that, not a command line.")}}},
+            {QStringLiteral("url"), QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("string")},
+                {QStringLiteral("description"),
+                 QStringLiteral("For open_url. The web address itself, such as "
+                                "github.com or https://mail.google.com. Give the "
+                                "site, not a search for it.")}}},
             {QStringLiteral("window"), QJsonObject{
                 {QStringLiteral("type"), QStringLiteral("string")},
                 {QStringLiteral("description"),
@@ -262,7 +317,7 @@ QJsonArray tools(const QStringList &apps)
         }},
     });
 
-    if (!apps.isEmpty())
+    if (online)
         list.append(appActionTool());
 
     return list;
@@ -294,6 +349,7 @@ bool OpenRouterClient::ask(const QString &prompt, const QString &screenContext)
     m_awaitingTool = false;
     m_callId.clear();
 
+    m_turnClock.start();
     m_turn = QJsonArray();
     m_turn.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
                               {QStringLiteral("content"), m_pending}});
@@ -314,7 +370,18 @@ void OpenRouterClient::finishTool(const QString &result, const QByteArray &png)
     });
     m_callId.clear();
 
-    if (!png.isEmpty()) {
+    // A MODEL THAT HAS ALREADY REFUSED A PICTURE never gets another one. The
+    // refusal is a 404 on the whole request, not a shrug, so attaching a second
+    // screenshot would throw the turn away again. It is told in words instead,
+    // and it still has the window title and list_controls to judge by.
+    const bool sending = !png.isEmpty() && modelCanSee();
+    if (!png.isEmpty() && !sending) {
+        m_turn.append(QJsonObject{
+            {QStringLiteral("role"), QStringLiteral("user")},
+            {QStringLiteral("content"), QString::fromLatin1(kBlindNote)}});
+    }
+
+    if (sending) {
         // A tool message cannot carry an image, so the picture arrives straight
         // afterwards as a user message with a data URL in it. Images are never
         // folded into the history: only the question and the spoken answer are,
@@ -336,8 +403,12 @@ void OpenRouterClient::finishTool(const QString &result, const QByteArray &png)
                         .arg(result.left(120))
                         .arg(png.isEmpty()
                                  ? QString()
-                                 : QStringLiteral(" (+ %1 KB screenshot)")
-                                       .arg(png.size() / 1024)));
+                                 : sending
+                                       ? QStringLiteral(" (+ %1 KB screenshot)")
+                                             .arg(png.size() / 1024)
+                                       : QStringLiteral(" (screenshot NOT sent: "
+                                                        "%1 cannot see)")
+                                             .arg(BurnOS::Settings::openRouterModel())));
     post();
 }
 
@@ -351,10 +422,25 @@ bool OpenRouterClient::post()
         return false;
     }
 
+    // THE TURN HAS A DEADLINE, not only each request in it. Every tool result
+    // starts another request, and a model that keeps reaching for tools could
+    // otherwise hold the orb on Thinking for as long as it liked.
+    if (m_turnClock.isValid() && m_turnClock.elapsed() >= kTurnBudgetMs) {
+        BurnOS::liveLog(QStringLiteral("turn STOPPED: no answer after %1 s")
+                            .arg(m_turnClock.elapsed() / 1000));
+        emit failed(tr("That was taking too long, so I stopped. Please ask again."));
+        endTurn();
+        return false;
+    }
+
     // Which apps the user has connected, read back at the moment it is used
     // like every other setting. Empty means the app_action tool is not offered
     // at all, so the model cannot promise something it has no way to do.
-    const QStringList apps = BurnOS::Settings::hasComposioKey()
+    // Online apps are offered whenever there is a Composio key: every app is
+    // reachable through the session, those with no sign in work at once, and
+    // one that needs a sign in is connected on the spot with connect_app.
+    const bool online = BurnOS::Settings::hasComposioKey();
+    const QStringList apps = online
                                  ? BurnOS::Settings::composioApps()
                                  : QStringList();
 
@@ -368,18 +454,23 @@ bool OpenRouterClient::post()
     // searches for the right one first. This is a system message rather than
     // part of the prompt above because the list is whatever the user set up in
     // Manage integrations and it changes without a rebuild.
-    if (!apps.isEmpty()) {
+    if (online) {
         messages.append(QJsonObject{
             {QStringLiteral("role"), QStringLiteral("system")},
             {QStringLiteral("content"),
-             tr("THESE APPS ARE CONNECTED and you can act in them through the "
-                "app_action tool: %1. Nothing else is connected, so never offer "
-                "to use an app that is not on this list - say it has to be "
-                "connected in Settings, under Manage integrations. Call "
-                "find_tools first and then run_tool with a slug that search "
-                "actually gave you back; never invent a tool name. Say what you "
-                "did in one short sentence, not the raw result.")
-                 .arg(apps.join(QStringLiteral(", ")))}});
+             tr("YOU CAN ACT IN THE USER'S ONLINE APPS through the app_action tool: "
+                "email, calendars, chat, documents, code hosting, web search and "
+                "about fifteen hundred more. Connected right now: %1. Apps that "
+                "need no sign in, such as web search, news and Hacker News, work "
+                "straight away. Always call find_tools first, describing the task "
+                "and the app in a full sentence, then run_tool with a slug that "
+                "search actually gave you back; never invent a tool name. When "
+                "find_tools says an app is NOT CONNECTED, call connect_app with "
+                "that app: it opens the sign in page in the user's browser, and "
+                "you tell them to finish signing in there and ask again. Never "
+                "send them to Settings for something connect_app can do. Say "
+                "what you did in one short sentence, not the raw result.")
+                 .arg(apps.isEmpty() ? tr("none yet") : apps.join(QStringLiteral(", ")))}});
     }
 
     if (!m_context.isEmpty()) {
@@ -391,27 +482,40 @@ bool OpenRouterClient::post()
     for (const QJsonValue &turn : std::as_const(m_turn))
         messages.append(turn);
 
-    const QJsonObject body{
+    QJsonObject body{
         {QStringLiteral("model"), BurnOS::Settings::openRouterModel()},
         {QStringLiteral("messages"), messages},
         // A reasoning model spends tokens thinking before it writes anything,
         // so a small budget comes back with an empty content field.
         {QStringLiteral("max_tokens"), BurnOS::Settings::replyTokens()},
-        {QStringLiteral("tools"), tools(apps)},
+        {QStringLiteral("tools"), tools(online)},
     };
+
+    // HOW HARD IT THINKS IS SET, on every request and for every model. Left
+    // out, each model decides for itself: MiMo 2.6 Flash spent twenty seconds
+    // reasoning before one tool call, then did it again after every tool
+    // result, with nothing on the orb but Thinking the whole time.
+    const QString effort = QString::fromLatin1(kReasoningEffort);
+    body.insert(QStringLiteral("reasoning"),
+                QJsonObject{{QStringLiteral("effort"), effort}});
 
     QNetworkRequest request{QUrl(QString::fromLatin1(kUrl))};
     request.setHeader(QNetworkRequest::ContentTypeHeader,
                       QStringLiteral("application/json"));
     request.setRawHeader("Authorization", "Bearer " + key.toUtf8());
     request.setRawHeader("X-Title", "Burnos");
-    request.setTransferTimeout(60000);
+    // Never longer than what is left of the turn, and never so short that a
+    // request is doomed before it starts.
+    const qint64 left = kTurnBudgetMs - m_turnClock.elapsed();
+    request.setTransferTimeout(
+        int(qBound(qint64(5000), left, qint64(kRequestTimeoutMs))));
 
-    BurnOS::liveLog(QStringLiteral("asking %1, budget %2 tokens, %3 turn(s) of context: %4")
+    BurnOS::liveLog(QStringLiteral("asking %1, reasoning %5, budget %2 tokens, %3 turn(s) of context: %4")
                         .arg(BurnOS::Settings::openRouterModel())
                         .arg(BurnOS::Settings::replyTokens())
                         .arg(turnsRemembered())
-                        .arg(m_pending.left(120)));
+                        .arg(m_pending.left(120))
+                        .arg(effort));
 
     QElapsedTimer clock;
     clock.start();
@@ -433,6 +537,31 @@ bool OpenRouterClient::post()
             BurnOS::liveLog(QStringLiteral("openrouter FAILED after %1 ms: %2")
                                 .arg(clock.elapsed())
                                 .arg(reply->errorString()));
+            // A timeout surfaces as a bare "Operation canceled", which means
+            // nothing to someone who only asked a question.
+            if (reply->error() == QNetworkReply::OperationCanceledError) {
+                emit failed(tr("The model took too long to answer, so I stopped waiting."));
+                endTurn();
+                return;
+            }
+            // A BLIND MODEL MUST NOT KILL THE TURN. OpenRouter throws the whole
+            // request away with a 404 when the chosen model has no endpoint
+            // that accepts an image, so a turn that opened the app, took a
+            // screenshot to check its own work and was one step from answering
+            // ended as nothing but the word Error on the orb. Take the picture
+            // back out, ask again, and never send this model another.
+            if (detail.contains(QStringLiteral("support image input"))
+                && dropImages()) {
+                m_blindModel = BurnOS::Settings::openRouterModel();
+                BurnOS::liveLog(
+                    QStringLiteral("%1 cannot see images: asking again without "
+                                   "the screenshot, and none will be sent to it "
+                                   "again")
+                        .arg(m_blindModel));
+                post();
+                return;
+            }
+
             emit failed(detail.isEmpty() ? reply->errorString()
                                          : tr("%1 - %2").arg(reply->errorString(), detail));
             endTurn();
@@ -440,6 +569,12 @@ bool OpenRouterClient::post()
         }
 
         const QJsonObject root = QJsonDocument::fromJson(raw).object();
+
+        // Logged with every answer, so a slow turn can be told apart from a
+        // slow network: thousands of these means the model thought at length.
+        const int thought = root.value(QStringLiteral("usage")).toObject()
+                                .value(QStringLiteral("completion_tokens_details")).toObject()
+                                .value(QStringLiteral("reasoning_tokens")).toInt();
         const QJsonArray choices = root.value(QStringLiteral("choices")).toArray();
         if (choices.isEmpty()) {
             BurnOS::liveLog(QStringLiteral("openrouter returned no choices after %1 ms")
@@ -468,10 +603,11 @@ bool OpenRouterClient::post()
                     .object().toVariantMap();
 
             m_awaitingTool = true;
-            BurnOS::liveLog(QStringLiteral("model called %1 in %2 ms: %3")
+            BurnOS::liveLog(QStringLiteral("model called %1 in %2 ms, %4 reasoning tokens: %3")
                                 .arg(fn.value(QStringLiteral("name")).toString())
                                 .arg(clock.elapsed())
-                                .arg(fn.value(QStringLiteral("arguments")).toString().left(160)));
+                                .arg(fn.value(QStringLiteral("arguments")).toString().left(160))
+                                .arg(thought));
             emit toolRequested(fn.value(QStringLiteral("name")).toString(), args);
             return;
         }
@@ -499,15 +635,45 @@ bool OpenRouterClient::post()
         endTurn();
         trimHistory();
 
-        BurnOS::liveLog(QStringLiteral("openrouter replied in %1 ms, %2 chars, %3 turn(s) kept: %4")
+        BurnOS::liveLog(QStringLiteral("openrouter replied in %1 ms, %5 reasoning tokens, %2 chars, %3 turn(s) kept: %4")
                             .arg(clock.elapsed())
                             .arg(text.size())
                             .arg(turnsRemembered())
-                            .arg(text.simplified().left(160)));
+                            .arg(text.simplified().left(160))
+                            .arg(thought));
         emit replied(text);
     });
 
     return true;
+}
+
+bool OpenRouterClient::modelCanSee() const
+{
+    // Blindness is recorded against the model's NAME, so choosing a different
+    // model in Settings gets its eyes back without restarting the orb.
+    return m_blindModel.isEmpty()
+           || m_blindModel != BurnOS::Settings::openRouterModel();
+}
+
+bool OpenRouterClient::dropImages()
+{
+    bool dropped = false;
+    QJsonArray kept;
+    for (const QJsonValue &value : std::as_const(m_turn)) {
+        const QJsonObject message = value.toObject();
+        // A picture is the only thing ever sent as content PARTS rather than as
+        // plain text, so that alone identifies one without unpacking it.
+        if (message.value(QStringLiteral("content")).isArray()) {
+            dropped = true;
+            kept.append(QJsonObject{
+                {QStringLiteral("role"), QStringLiteral("user")},
+                {QStringLiteral("content"), QString::fromLatin1(kBlindNote)}});
+            continue;
+        }
+        kept.append(message);
+    }
+    m_turn = kept;
+    return dropped;
 }
 
 void OpenRouterClient::endTurn()
@@ -517,6 +683,7 @@ void OpenRouterClient::endTurn()
     m_context.clear();
     m_callId.clear();
     m_awaitingTool = false;
+    m_turnClock.invalidate();
 }
 
 void OpenRouterClient::remember(const QString &role, const QString &text)

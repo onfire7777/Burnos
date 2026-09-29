@@ -234,26 +234,40 @@ MainWindow::MainWindow(QWidget *parent)
     // the conversation.
     m_composio = new ComposioClient(this);
 
-    connect(m_composio, &ComposioClient::toolsReady, this,
-            [this](const QList<ComposioTool> &tools) {
+    connect(m_composio, &ComposioClient::toolsFound, this,
+            [this](bool ok, const QString &summary) {
                 if (m_abort || !m_ai->isAwaitingTool())
                     return;
-                if (tools.isEmpty()) {
-                    m_ai->finishTool(tr("Nothing in the connected apps can do "
-                                        "that. Tell the user briefly that the app "
-                                        "they want has not been connected, and "
-                                        "that it is done in Settings under Manage "
-                                        "integrations."));
+                if (ok && summary.isEmpty()) {
+                    m_ai->finishTool(tr("Nothing Composio can reach does that. "
+                                        "Tell the user so in one short sentence."));
                     return;
                 }
-                QStringList lines;
-                for (const ComposioTool &tool : tools)
-                    lines.append(tool.describe());
-                m_ai->finishTool(tr("These can do it. Pick ONE, then call "
-                                    "run_tool with its slug exactly as written "
-                                    "here and every argument it needs:\n%1")
-                                     .arg(lines.join(QLatin1Char('\n'))));
+                BurnOS::liveLog(QStringLiteral("app action search %1: %2")
+                                    .arg(ok ? QStringLiteral("answered")
+                                            : QStringLiteral("failed"),
+                                         summary.simplified().left(160)));
+                m_ai->finishTool(summary);
             });
+
+    // A sign in the model asked for. The page is open in the browser now, and
+    // the turn ends there: the sign in itself finishes in the browser, and the
+    // next question finds the app connected.
+    connect(m_composio, &ComposioClient::linkOpened, this, [this](const QString &slug) {
+        if (m_abort || !m_ai->isAwaitingTool())
+            return;
+        m_ai->finishTool(tr("The sign in page for %1 is open in the user's web "
+                            "browser now. Tell them in one short sentence to "
+                            "finish signing in there and then ask again. Do not "
+                            "call any more tools for this question.").arg(slug));
+    });
+
+    connect(m_composio, &ComposioClient::noSignInNeeded, this, [this](const QString &slug) {
+        if (m_abort || !m_ai->isAwaitingTool())
+            return;
+        m_ai->finishTool(tr("%1 needs no sign in and can be used right away. Carry "
+                            "on with find_tools and run_tool.").arg(slug));
+    });
 
     connect(m_composio, &ComposioClient::toolFinished, this,
             [this](bool ok, const QString &summary) {
@@ -496,12 +510,16 @@ void MainWindow::restoreOrbPosition()
                         .arg(topLeft.y()));
 }
 
-void MainWindow::applyOrbSize()
+void MainWindow::applyOrbSize(int px)
 {
     // THE WINDOW IS THE ORB, and it never changes size. The answer is said one
     // word at a time in the middle of the orb, where the hint words go, so an
     // answer needs no more room than the orb already has.
-    const int size = BurnOS::Settings::orbSize();
+    // WHILE THE SLIDER IS MOVING the size arrives here directly, because the
+    // registry is deliberately a moment behind: a drag would otherwise write
+    // to it on every frame. Every other caller passes nothing and gets the
+    // stored size.
+    const int size = px > 0 ? px : BurnOS::Settings::orbSize();
 
     // Grown and shrunk about the same CENTRE, so changing the size in the
     // dialog does not throw the orb across the desktop.
@@ -518,7 +536,11 @@ void MainWindow::applyOrbSize()
     }
     move(topLeft);
 
-    BurnOS::liveLog(QStringLiteral("orb size: %1 px").arg(size));
+    // Not on every frame of a drag: that is a hundred lines of log for one
+    // decision. The size settled on is logged when the dialog closes and this
+    // runs once more from the stored value.
+    if (px <= 0)
+        BurnOS::liveLog(QStringLiteral("orb size: %1 px").arg(size));
 }
 
 void MainWindow::showNotice(const QString &reason)
@@ -635,34 +657,25 @@ void MainWindow::runAppAction(const QVariantMap &args)
     const QString action = args.value(QStringLiteral("action")).toString();
 
     if (!ComposioClient::isConfigured()) {
-        m_ai->finishTool(tr("No apps are connected, so that cannot be done. Tell "
-                            "the user to open Settings and use Manage "
-                            "integrations to connect the app first."));
-        return;
-    }
-
-    // Only the connected apps are searched. A tool belonging to an app nobody 
-    // has signed into can do nothing but fail with an authentication error, and 
-    // offering one is how the model ends up promising to send mail through an 
-    // account it has no key for.
-    const QStringList apps = BurnOS::Settings::composioApps();
-    if (apps.isEmpty()) {
-        m_ai->finishTool(tr("There is a Composio key but no app is connected yet. "
-                            "Tell the user to connect the app in Settings, under "
+        m_ai->finishTool(tr("Online apps are not set up: there is no Composio "
+                            "key. Tell the user to add one in Settings, under "
                             "Manage integrations."));
         return;
     }
 
+    // EVERY APP IS SEARCHED, not only the connected ones. The session says in
+    // its answer which apps are connected, an app with no sign in runs as it
+    // is, and one that needs a sign in gets connect_app - which is how "email
+    // Sarah" can work on the first day without a trip to Settings first.
     if (action == QStringLiteral("find_tools")) {
         const QString query = args.value(QStringLiteral("query")).toString().trimmed();
         if (query.isEmpty()) {
-            m_ai->finishTool(tr("find_tools needs a query saying in a few words "
-                                "what you are trying to do."));
+            m_ai->finishTool(tr("find_tools needs a query saying in a sentence "
+                                "what you are trying to do and in which app."));
             return;
         }
-        BurnOS::liveLog(QStringLiteral("app action: searching %1 for \"%2\"")
-                            .arg(apps.join(QStringLiteral(", ")), query));
-        m_composio->searchTools(query, apps);
+        BurnOS::liveLog(QStringLiteral("app action: searching for \"%1\"").arg(query));
+        m_composio->searchTools(query);
         return;
     }
 
@@ -691,11 +704,24 @@ void MainWindow::runAppAction(const QVariantMap &args)
         return;
     }
 
+    if (action == QStringLiteral("connect_app")) {
+        const QString app =
+            args.value(QStringLiteral("app")).toString().trimmed().toLower();
+        if (app.isEmpty()) {
+            m_ai->finishTool(tr("connect_app needs app: the slug of the app to "
+                                "connect, as find_tools named it, such as gmail."));
+            return;
+        }
+        BurnOS::liveLog(QStringLiteral("app action: opening the sign in for %1").arg(app));
+        m_composio->connectApp(app);
+        return;
+    }
+
     m_ai->finishTool(tr("\"%1\" is not something app_action does. Use find_tools "
-                        "to look for a tool, then run_tool to carry it out.")
+                        "to look for a tool, run_tool to carry it out, or "
+                        "connect_app to sign in to an app.")
                          .arg(action));
 }
-
 QString MainWindow::describeControls(const DesktopWindow &target)
 {
     m_target = target;
@@ -794,6 +820,31 @@ QString MainWindow::runComputerUse(const QVariantMap &args, QByteArray *png)
         QThread::msleep(900);
         QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 20);
         return tr("Opened %1. %2").arg(opened, describeControls(fresh));
+    }
+
+    if (action == QLatin1String("open_url")) {
+        const QString url = args.value(QStringLiteral("url")).toString().trimmed();
+        QString opened;
+        if (!BurnOS::Computer::openUrl(url, &opened, &error))
+            return tr("Failed: %1").arg(error);
+
+        // A page takes a moment to come up and the model's next move is to look
+        // at what it opened, so the controls handed back have to be the NEW
+        // ones. Events keep being served through the wait, or the orb freezes
+        // while it happens.
+        QElapsedTimer clock;
+        clock.start();
+        while (!m_abort && clock.elapsed() < 2600) {
+            QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 20);
+            QThread::msleep(150);
+        }
+
+        const DesktopWindow front = BurnOS::Computer::foreground();
+        if (front.isNull())
+            return tr("Opened %1 in the user's own browser.").arg(opened);
+        return tr("Opened %1 in the browser the user already had open, so they "
+                  "are signed in there as themselves. %2")
+            .arg(opened, describeControls(front));
     }
 
     if (action == QLatin1String("run_command")) {
@@ -966,10 +1017,28 @@ void MainWindow::openSettings()
     m_orb->stopSpeaking();
 
     SettingsDialog dialog(this);
+
+    // LIVE, while it is open. There is no Save button on that dialog: every
+    // setting is written down as it is changed, and the two that live on this
+    // window rather than in an engine arrive here as they change, so the orb
+    // grows under the slider instead of after the dialog closes.
+    connect(&dialog, &SettingsDialog::orbSizeChanged,
+            this, [this](int px) { applyOrbSize(px); });
+    connect(&dialog, &SettingsDialog::alwaysOnTopChanged, this, [this, &dialog]() {
+        applyAlwaysOnTop();
+        // Putting the flag back raises the orb, which would otherwise come up
+        // over the very dialog that asked for it.
+        if (dialog.isVisible()) {
+            dialog.raise();
+            dialog.activateWindow();
+        }
+    });
+
     dialog.exec();
 
+    // Both are already as the user left them; these are the reconciliation,
+    // and applyOrbSize with no size is what finally logs the one it settled on.
     applyAlwaysOnTop();
-    // The orb may have been made bigger or smaller while the dialog was open.
     applyOrbSize();
     // An app may have been connected or dropped in Manage integrations, and
     // what the model is told it can reach comes from that list.

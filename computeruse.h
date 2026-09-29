@@ -70,6 +70,18 @@ bool launch(const QString &appKey, QString *error);
 // command line for it does not exist to be found.
 bool launchAnything(const QString &spokenName, QString *opened, QString *error);
 
+// Open a web address in the browser the user ALREADY HAS, on the profile they
+// are signed in on.
+//
+// This is what "open GitHub" kept getting wrong. Launching a browser by name
+// starts it fresh out of the apps folder, which can come up on a profile the
+// user has never signed in on, and typing the address in by hand then loads the
+// site with none of their cookies - so GitHub appeared signed out even though
+// they are signed in. Handing the address to the shell instead lets Windows
+// give it to the browser already running, in the session that has their
+// account in it.
+bool openUrl(const QString &url, QString *opened, QString *error);
+
 // Run a command line through cmd.exe and hand back whatever it printed.
 //
 // This is the general way in, and it is how a program gets opened too:

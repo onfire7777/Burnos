@@ -13,12 +13,19 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QStringList>
+#include <QTimer>
 #include <QVBoxLayout>
 
 namespace {
 
 // kokoro-en-v0_19 ships eleven speakers, numbered 0 to 10.
 constexpr int kVoiceCount = 11;
+
+// How long after the last change the numbers are written down. Long enough
+// that a whole slider drag is one registry write instead of a hundred, short
+// enough that nobody can close the dialog in the gap - and closing it writes
+// them anyway.
+constexpr int kSaveDelayMs = 400;
 
 // The models worth offering, in the order they are shown. Each earned its
 // place by actually being used for a while, which is why the list is five long
@@ -85,6 +92,9 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     m_key = new QLineEdit(this);
     m_key->setEchoMode(QLineEdit::Password);
     m_key->setPlaceholderText(QStringLiteral("sk-or-v1-..."));
+    m_key->setToolTip(tr("Saved when you press Enter or click away, not on "
+                         "every keystroke - half a key is no use to anyone. "
+                         "Stored encrypted for this Windows user only."));
 
     m_showKey = new QCheckBox(tr("Show"), this);
     connect(m_showKey, &QCheckBox::toggled, this, [this](bool on) {
@@ -111,21 +121,25 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     m_model->setToolTip(tr("Which model answers. Every one of these works; they "
                            "trade speed against how well they reason. Hover a "
                            "choice to see what it is good at, or type any other "
-                           "OpenRouter model id."));
+                           "OpenRouter model id. Picking one takes effect at "
+                           "once; a typed one when you press Enter or click "
+                           "away."));
 
     m_tokens = new QSpinBox(this);
     m_tokens->setRange(256, 4000);
     m_tokens->setSingleStep(100);
     m_tokens->setSuffix(tr(" tokens"));
+    // Without this the box reports every digit as it is typed, so 1200 on the
+    // way to 2000 is briefly 2, then 20, then 200 - and each one would be
+    // saved and clamped to the minimum.
+    m_tokens->setKeyboardTracking(false);
     m_tokens->setToolTip(tr("A reasoning model spends part of this budget "
                             "thinking, so a small value can come back empty."));
 
     // A dialog of its own, opened from here. It holds a second credential and a
     // searchable catalogue of about fifteen hundred apps, neither of which fits
-    // in a form of eight rows - and unlike everything else on this page it is
-    // saved as you go, not on Save, because nothing in it works until the key is
-    // stored. Cancelling here therefore does NOT undo a connection made there,
-    // which is the honest behaviour: the app really was connected.
+    // in a form of eight rows. Like this page, everything in it takes effect as
+    // you go.
     m_integrations = new QPushButton(tr("Manage integrations..."), this);
     m_integrations->setToolTip(tr("Connect Gmail, Slack, Notion, GitHub and "
                                   "about fifteen hundred other apps, so you can "
@@ -188,6 +202,8 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         m_voice->addItem(i == 0 ? tr("Voice 1 (default)")
                                 : tr("Voice %1").arg(i + 1));
     }
+    m_voice->setToolTip(tr("Which of the eleven Kokoro speakers answers. The "
+                           "next thing said uses it."));
 
     m_volume = new QSlider(Qt::Horizontal, this);
     m_volume->setRange(0, 100);
@@ -213,7 +229,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     m_orbSize->setPageStep(20);
     m_orbSize->setToolTip(tr("How big the orb sits on the desktop. A bigger orb "
                              "is easier to hit and shows the words it is "
-                             "saying in larger type."));
+                             "saying in larger type. It resizes as you drag."));
 
     m_orbSizeValue = new QLabel(this);
     m_orbSizeValue->setMinimumWidth(44);
@@ -243,22 +259,49 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->addRow(tr("Orb size"), orbSizeRow);
     form->addRow(QString(), m_onTop);
 
-    auto *buttons = new QDialogButtonBox(
-        QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
-    connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
-        save();
-        accept();
-    });
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    // A note where the Save button used to be, because a form with no Save
+    // button looks like a form you have not finished with.
+    auto *note = new QLabel(tr("Every change here takes effect straight away "
+                               "and is remembered."), this);
+    note->setWordWrap(true);
+    note->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+
+    // Close, not Save and Cancel: there is nothing left to save by the time you
+    // reach it, and nothing to cancel either - a Cancel that silently undid the
+    // size you just watched the orb take would be a lie.
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
+
+    auto *footer = new QHBoxLayout;
+    footer->setContentsMargins(0, 0, 0, 0);
+    footer->addWidget(note, 1);
+    footer->addWidget(buttons);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(18, 18, 18, 14);
     root->setSpacing(14);
     root->addLayout(form);
     root->addStretch(1);
-    root->addWidget(buttons);
+    root->addLayout(footer);
 
+    m_save = new QTimer(this);
+    m_save->setSingleShot(true);
+    m_save->setInterval(kSaveDelayMs);
+    connect(m_save, &QTimer::timeout, this, &SettingsDialog::saveValues);
+
+    // LAST, and in this order. Filling the form in moves every widget, which is
+    // indistinguishable from a person moving it, so nothing is listening yet.
     load();
+    wireLive();
+
+    // Whichever way the dialog goes away - Close, Escape, or the cross in the
+    // corner - the last few hundred milliseconds of changes and both typed
+    // fields are committed. finished() is the one signal all three end at.
+    connect(this, &QDialog::finished, this, [this](int) {
+        m_save->stop();
+        saveValues();
+        saveCredentials();
+    });
 }
 
 void SettingsDialog::load()
@@ -295,17 +338,65 @@ void SettingsDialog::load()
     m_onTop->setChecked(BurnOS::Settings::alwaysOnTop());
 }
 
-void SettingsDialog::save()
+void SettingsDialog::wireLive()
 {
-    // An emptied field removes the key rather than storing an empty one, which
-    // is exactly what setOpenRouterKey already does.
-    BurnOS::Settings::setOpenRouterKey(m_key->text());
-    BurnOS::Settings::setOpenRouterModel(m_model->currentText());
+    // The sliders and the spin box. Each is read back at the moment it is used
+    // by whichever engine wants it, so writing one down is the whole of
+    // applying it - there is nothing to notify.
+    connect(m_sensitivity, &QSlider::valueChanged, this, &SettingsDialog::saveSoon);
+    connect(m_hangover, &QSlider::valueChanged, this, &SettingsDialog::saveSoon);
+    connect(m_volume, &QSlider::valueChanged, this, &SettingsDialog::saveSoon);
+    connect(m_tokens, &QSpinBox::valueChanged, this, &SettingsDialog::saveSoon);
+    connect(m_voice, &QComboBox::currentIndexChanged, this, &SettingsDialog::saveSoon);
+
+    // The orb resizes NOW, under the slider, and the value is written down a
+    // moment later. The size travels with the signal because the registry has
+    // not caught up yet and must not be asked to on every frame.
+    connect(m_orbSize, &QSlider::valueChanged, this, [this](int px) {
+        emit orbSizeChanged(px);
+        saveSoon();
+    });
+
+    // Written down BEFORE it is emitted: putting a window flag back reads the
+    // stored value, so the store has to be right first. One tick is one write,
+    // so there is nothing here to collapse.
+    connect(m_onTop, &QCheckBox::toggled, this, [this](bool on) {
+        BurnOS::Settings::setAlwaysOnTop(on);
+        emit alwaysOnTopChanged();
+    });
+
+    // The two typed fields. A key or a model id is only worth storing once it
+    // is whole, so these wait for Enter, for the focus to leave, or for the
+    // dialog to close. Picking a model off the list is already whole.
+    connect(m_key, &QLineEdit::editingFinished, this,
+            &SettingsDialog::saveCredentials);
+    if (QLineEdit *edit = m_model->lineEdit()) {
+        connect(edit, &QLineEdit::editingFinished, this,
+                &SettingsDialog::saveCredentials);
+    }
+    connect(m_model, &QComboBox::activated, this,
+            [this](int) { saveCredentials(); });
+}
+
+void SettingsDialog::saveSoon()
+{
+    m_save->start();
+}
+
+void SettingsDialog::saveValues()
+{
     BurnOS::Settings::setReplyTokens(m_tokens->value());
     BurnOS::Settings::setMicSensitivity(m_sensitivity->value());
     BurnOS::Settings::setHangoverMs(m_hangover->value());
     BurnOS::Settings::setTtsVoice(m_voice->currentIndex());
     BurnOS::Settings::setTtsVolume(m_volume->value());
     BurnOS::Settings::setOrbSize(m_orbSize->value());
-    BurnOS::Settings::setAlwaysOnTop(m_onTop->isChecked());
+}
+
+void SettingsDialog::saveCredentials()
+{
+    // An emptied field removes the key rather than storing an empty one, which
+    // is exactly what setOpenRouterKey already does.
+    BurnOS::Settings::setOpenRouterKey(m_key->text());
+    BurnOS::Settings::setOpenRouterModel(m_model->currentText());
 }

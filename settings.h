@@ -94,6 +94,14 @@ QString composioUserId();
 QStringList composioApps();
 void setComposioApps(const QStringList &slugs);
 
+// The Composio session this install works in. One per user, made on first use
+// and then reused for good, because Composio keeps sessions on the server and
+// never expires them; every tool search, tool run and sign in link goes
+// through it. Forgotten whenever the key changes, since a session belongs to
+// the project the key came from.
+QString composioSessionId();
+void setComposioSessionId(const QString &id);
+
 } // namespace Settings
 } // namespace BurnOS
 

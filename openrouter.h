@@ -1,6 +1,7 @@
 #ifndef OPENROUTER_H
 #define OPENROUTER_H
 
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QObject>
 #include <QString>
@@ -64,6 +65,14 @@ signals:
 
 private:
     bool post();
+
+    // Whether the model chosen right now can be sent a picture at all.
+    bool modelCanSee() const;
+
+    // Take every picture back out of the turn in flight, leaving a line of
+    // words in its place. True if there was one to take out.
+    bool dropImages();
+
     void remember(const QString &role, const QString &text);
     void trimHistory();
     void endTurn();
@@ -85,6 +94,20 @@ private:
     QString m_pending;
     QString m_context;
     QString m_callId;
+
+    // Started when a question is asked. Every tool result begins another
+    // request, so this is what stops one question from holding the orb on
+    // Thinking for as long as the model keeps reaching for tools.
+    QElapsedTimer m_turnClock;
+
+    // A MODEL THAT CANNOT SEE MUST NOT KILL THE TURN. OpenRouter refuses the
+    // whole request with a 404 - "No endpoints found that support image input"
+    // - when the chosen model has no endpoint that takes a picture, so a turn
+    // that had done everything right, opened the app and taken a screenshot to
+    // check its own work, came back as nothing but Error on the orb. The first
+    // refusal is answered by asking again without the picture; the model's name
+    // is kept here so it is never sent another one.
+    QString m_blindModel;
 };
 
 #endif // OPENROUTER_H

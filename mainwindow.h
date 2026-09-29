@@ -45,7 +45,10 @@ private:
     // Where the orb is on screen, which is this window's frame exactly.
     // Read the stored orb size and size the orb AND the window from it. Called
     // once at startup and again every time the settings dialog closes.
-    void applyOrbSize();
+    // px is the size the settings slider is showing right now, a moment ahead
+    // of what has been written down. Anything else passes nothing and gets the
+    // stored size.
+    void applyOrbSize(int px = -1);
     // Put the orb back where it was last left, clamped onto a screen that
     // still exists. Called once, at startup, after the size is known.
     void restoreOrbPosition();
@@ -63,7 +66,7 @@ private:
     // computer_use, which happens here and now, or app_action, which is a
     // network call and finishes later on a ComposioClient signal.
     void onToolRequested(const QString &function, const QVariantMap &args);
-    // Search for or run a tool in one of the user's connected apps. Returns at
+    // Search for, run, or sign in to one of the user's online apps. Returns at
     // once - the turn carries on from the handlers wired up in the constructor,
     // because Composio answers over the network.
     void runAppAction(const QVariantMap &args);

@@ -76,6 +76,9 @@ private:
     QHash<QString, ComposioApp> m_connected;   // by slug
     // Slug to proper name, learned from every catalogue result that goes past.
     QHash<QString, QString> m_names;
+    // True once the catalogue has answered at least once, so "nothing matched"
+    // is only ever said about a search that really came back empty.
+    bool m_catalogueLoaded = false;
 };
 
 #endif // INTEGRATIONSDIALOG_H

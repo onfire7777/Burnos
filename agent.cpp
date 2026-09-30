@@ -115,7 +115,10 @@ const char kTalkPrompt[] =
     "Write a task's instruction as a complete brief for a capable assistant "
     "who has NOT heard this conversation: exactly what to do, with every "
     "detail it needs - names, what 'it' or 'that' refers to, where to save "
-    "things, which window, site or account. Give it a title of a few words.\n"
+    "things, which window, site or account. Give it a title of a few words. "
+    "In a brief, text to type, numbers, names and addresses are written "
+    "EXACTLY as they are written down - 0.8, not zero point eight - because "
+    "the task types what you give it.\n"
     "\n"
     "In the SAME reply as any tool call, say a short acknowledgement out loud. "
     "'On it.' is best; add a few words only when they confirm something the "
@@ -456,7 +459,9 @@ QJsonObject computerUseTool()
              "list_controls re-reads what a window offers - filter narrows it to "
              "the controls named with a word. screenshot SHOWS YOU a window - or "
              "the whole screen with screen true - with every control outlined and "
-             "its key drawn on it. click presses a named control (button right "
+             "its key drawn on it; given x, y, to_x and to_y it ZOOMS IN on that "
+             "part of your last picture, for text too small to read. click "
+             "presses a named control (button right "
              "or double true for those). click_at clicks a point you picked out "
              "of the last screenshot. type_text types into a named control, or "
              "with no control wherever the window's cursor is. press_keys "
@@ -495,8 +500,10 @@ QJsonObject computerUseTool()
         {"y", numberParam(QStringLiteral(
              "How far DOWN the last screenshot the point is, in that picture's "
              "own pixels."))},
-        {"to_x", numberParam(QStringLiteral("For drag: where to drop, across."))},
-        {"to_y", numberParam(QStringLiteral("For drag: where to drop, down."))},
+        {"to_x", numberParam(QStringLiteral("For drag: where to drop, across. For a "
+                                           "screenshot zoom: the far corner."))},
+        {"to_y", numberParam(QStringLiteral("For drag: where to drop, down. For a "
+                                           "screenshot zoom: the far corner."))},
         {"button", QJsonObject{{"type", "string"},
                                {"enum", QJsonArray{"left", "right", "middle"}},
                                {"description", "For click and click_at. Left if "

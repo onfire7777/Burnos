@@ -147,6 +147,16 @@ HWND uiaHost(HWND top)
     return bag.found ? bag.found : top;
 }
 
+// Whether a window's content is WinUI 3 - the Windows App SDK's island, as in
+// the new Notepad and Terminal - which hears shortcuts from the real keyboard
+// and from nothing else.
+bool hostsWinUi(HWND top)
+{
+    ChildByClass bag{L"Microsoft.UI.Content.DesktopChildSiteBridge", nullptr};
+    EnumChildWindows(top, findChildByClass, reinterpret_cast<LPARAM>(&bag));
+    return bag.found != nullptr;
+}
+
 // Whether this element offers a value that can be WRITTEN. A read only value
 // pattern is common and SetValue on one fails with access denied.
 bool supportsValueWrite(IUIAutomationElement *e)
@@ -1557,9 +1567,47 @@ HWND childAtPoint(HWND top, POINT screen)
     return cur ? cur : top;
 }
 
+// The window of the first document, else the first field, that UI Automation
+// finds in a top window - null when it is windowless or the top window itself.
+HWND fieldWindow(HWND top)
+{
+    IUIAutomation *ui = automation();
+    IUIAutomationElement *root = nullptr;
+    if (!ui || FAILED(ui->ElementFromHandle(top, &root)) || !root)
+        return nullptr;
+    HWND found = nullptr;
+    for (const CONTROLTYPEID type : {UIA_DocumentControlTypeId, UIA_EditControlTypeId}) {
+        VARIANT v;
+        VariantInit(&v);
+        v.vt = VT_I4;
+        v.lVal = type;
+        IUIAutomationCondition *kind = nullptr;
+        IUIAutomationElement *e = nullptr;
+        if (SUCCEEDED(ui->CreatePropertyCondition(UIA_ControlTypePropertyId, v, &kind)) && kind) {
+            root->FindFirst(TreeScope_Descendants, kind, &e);
+            kind->Release();
+        }
+        if (!e)
+            continue;
+        UIA_HWND own = nullptr;
+        e->get_CurrentNativeWindowHandle(&own);
+        e->Release();
+        if (own && reinterpret_cast<HWND>(own) != top) {
+            found = reinterpret_cast<HWND>(own);
+            break;
+        }
+    }
+    root->Release();
+    return found;
+}
+
 // The window that really holds the keyboard focus inside a top window - a
 // packaged app's CoreWindow, a browser's render widget - so typed keys reach
-// what is actually listening rather than the outer frame.
+// what is actually listening rather than the outer frame. A window in the
+// BACKGROUND may have no focus to ask for - the new Notepad's thread reports
+// none - and its frame drops text posted to it, so then it is the window of
+// its document or field. Posted there, it types in order, proven with the
+// Notepad behind another window.
 HWND focusInside(HWND top)
 {
     const DWORD tid = GetWindowThreadProcessId(top, nullptr);
@@ -1567,6 +1615,8 @@ HWND focusInside(HWND top)
     info.cbSize = sizeof(info);
     if (GetGUIThreadInfo(tid, &info) && info.hwndFocus)
         return info.hwndFocus;
+    if (const HWND field = fieldWindow(top))
+        return field;
     const HWND host = uiaHost(top);
     return host ? host : top;
 }
@@ -1607,6 +1657,17 @@ void withHeldMods(HWND target, const QList<WORD> &mods,
     }
     SetKeyboardState(state);
     act();
+    // HELD UNTIL THE WINDOW HAS READ THE KEYS. They are only queued when
+    // PostMessage returns, and letting go of the modifiers there and then made
+    // a posted ctrl+a arrive as a bare 'a' - typed into a Save dialog's file
+    // name. A message SENT to a thread is delivered before it takes its next
+    // queued one, so each answered WM_NULL means it has taken at least one
+    // more of the keys; a chord and the character it makes are at most eight.
+    for (int i = 0; i < 10; ++i) {
+        DWORD_PTR answer = 0;
+        if (!SendMessageTimeoutW(target, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 150, &answer))
+            break;
+    }
     SetKeyboardState(saved);
     if (attached)
         AttachThreadInput(ours, theirs, FALSE);
@@ -2467,7 +2528,22 @@ QString carryOut(const QVariantMap &args, DeskState &state,
     };
 
     if (action == QLatin1String("screenshot")) {
-        const bool whole = args.value(QStringLiteral("screen")).toBool();
+        // ZOOM: x, y, to_x and to_y pick out part of the LAST picture to see
+        // again in full detail, fresh from the same window or screen. On this
+        // PC's 5120 pixel wide monitor a maximized window shrinks four times to
+        // fit a picture, and its text is a blur - which is how a task missed a
+        // Save dialog that was right there.
+        const bool zoom = args.contains(QStringLiteral("x")) && args.contains(QStringLiteral("to_x"));
+        QRect part;
+        if (zoom) {
+            QPoint from;
+            QPoint to;
+            if (!pointOf("x", "y", &from) || !pointOf("to_x", "to_y", &to))
+                return QObject::tr("Failed: %1").arg(error);
+            part = QRect(from, to).normalized();
+        }
+        const quint64 zoomWindow = zoom ? state.shotWindow : 0;
+        const bool whole = args.value(QStringLiteral("screen")).toBool() || (zoom && !zoomWindow);
         QRect where;
         QImage image;
         DesktopWindow target;
@@ -2475,41 +2551,68 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         if (whole) {
             image = grabScreenImage(reinterpret_cast<HWND>(windowMeant().handle), &where);
         } else {
-            target = windowMeant();
+            DesktopWindow pictured;
+            pictured.handle = zoomWindow;
+            target = zoomWindow ? stillThere(pictured) : windowMeant();
             if (target.isNull())
                 return QObject::tr("Failed: I could not find that window.");
             image = grabWindowImage(reinterpret_cast<HWND>(target.handle), &where);
         }
         if (image.isNull())
             return QObject::tr("Failed: that would not be captured.");
-        // The controls of what is pictured, read again so their keys can be
-        // drawn on it and clicked by name.
-        if (!whole)
+        if (zoom) {
+            const QRect inside = part.intersected(where);
+            if (inside.width() < 8 || inside.height() < 8) {
+                return QObject::tr("Failed: that part is not in the picture - give x, y, "
+                                   "to_x and to_y inside your last screenshot.");
+            }
+            image = image.copy(inside.translated(-where.topLeft()));
+            where = inside;
+        } else if (!whole) {
+            // The controls of what is pictured, read again so their keys can be
+            // drawn on it and clicked by name.
             list = describeControls(target, state);
+        }
         const WindowShot shot = finishShot(image, where, state.offered);
-        state.shotWindow = whole ? 0 : target.handle;
-        state.shotScreen = whole;
+        state.shotWindow = (whole || zoom) ? 0 : target.handle;
+        state.shotScreen = whole || zoom;
         state.shotLeft = where.left();
         state.shotTop = where.top();
         state.shotScale = shot.scale;
         if (png)
             *png = shot.png;
+        // Shrunk to under half, small text cannot be read: say so, rather than
+        // leave the model squinting at a blur and guessing.
+        const QString blur = shot.scale >= 0.5
+                                 ? QString()
+                                 : QObject::tr(" It is shrunk to fit, so small text in it "
+                                               "cannot be read: to read or aim at something "
+                                               "small, zoom in with screenshot and x, y, "
+                                               "to_x and to_y around it.");
+        if (zoom) {
+            return QObject::tr("Zoomed in on that part, %1 by %2 pixels. Click a point in "
+                               "it with click_at, in THIS picture's pixels.%3")
+                .arg(shot.width)
+                .arg(shot.height)
+                .arg(blur);
+        }
         if (whole) {
             return QObject::tr("Screenshot of the whole screen your window is on, %1 "
                                "by %2 pixels. The controls of the window you are "
                                "working in are outlined with their keys; click any "
-                               "other point with click_at, in this picture's pixels.")
+                               "other point with click_at, in this picture's pixels.%3")
                 .arg(shot.width)
-                .arg(shot.height);
+                .arg(shot.height)
+                .arg(blur);
         }
         return QObject::tr("Screenshot of '%1', %2 by %3 pixels. Each control is "
                            "outlined in the picture with its key: click one with "
                            "click and that key, or any other point with click_at "
-                           "in this picture's pixels. %4")
+                           "in this picture's pixels.%4 %5")
             .arg(target.title)
             .arg(shot.width)
             .arg(shot.height)
-            .arg(list);
+            .arg(blur, list);
     }
 
     if (action == QLatin1String("click_at")) {
@@ -2605,13 +2708,24 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         const DesktopWindow into = windowMeant();
         if (!into.isNull())
             state.target = into;
-        if (real || into.isNull()) {
+        // A SHORTCUT FOR A WINUI 3 APP needs the real keyboard. The new Notepad
+        // takes posted text, but a posted ctrl+s does nothing however the
+        // modifiers are made to look held - posted to its editor, its frame and
+        // every input site it has - so a task pressed it twice and saw nothing.
+        static const QRegularExpression kChord(QStringLiteral("\\b(ctrl|control|alt|win|windows)\\+"));
+        const bool winUiChord = !real && !into.isNull() && kChord.match(keys).hasMatch()
+                                && hostsWinUi(reinterpret_cast<HWND>(into.handle));
+        if (real || winUiChord || into.isNull()) {
             if (!into.isNull())
                 bringToFront(reinterpret_cast<HWND>(into.handle));
             if (!sendKeys(keys, &error))
                 return QObject::tr("Failed: %1").arg(error);
         } else if (!bgKeys(reinterpret_cast<HWND>(into.handle), keys, &error)) {
             return QObject::tr("Failed: %1").arg(error);
+        }
+        if (winUiChord) {
+            return QObject::tr("Pressed %1 with the real keyboard, because this app "
+                               "hears shortcuts from nothing else.").arg(keys);
         }
         return QObject::tr("Pressed %1.").arg(keys);
     }

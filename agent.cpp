@@ -115,7 +115,10 @@ const char kTalkPrompt[] =
     "Write a task's instruction as a complete brief for a capable assistant "
     "who has NOT heard this conversation: exactly what to do, with every "
     "detail it needs - names, what 'it' or 'that' refers to, where to save "
-    "things, which window, site or account. Give it a title of a few words.\n"
+    "things, which window, site or account. Give it a title of a few words. "
+    "In a brief, text to type, numbers, names and addresses are written "
+    "EXACTLY as they are written down - 0.8, not zero point eight - because "
+    "the task types what you give it.\n"
     "\n"
     "In the SAME reply as any tool call, say a short acknowledgement out loud. "
     "'On it.' is best; add a few words only when they confirm something the "
@@ -179,6 +182,18 @@ const char kTaskPrompt[] =
     "fresh window on a profile they have never signed in on. Only if they "
     "named a particular browser should you launch that one and type the "
     "address in.\n"
+    "\n"
+    "MUSIC: to play a song, an artist, an album or a playlist, use computer_use "
+    "play_music with text set to what to play and NOTHING ELSE - no launching "
+    "Spotify, no searching or clicking in it. It searches Spotify on this PC, "
+    "presses play on the best match and checks that it really is playing, so "
+    "its answer is the proof and needs no screenshot; say what is playing in "
+    "your report. If it fails, play it another way: with app_action when "
+    "Spotify is connected in the user's online apps, otherwise on YouTube - "
+    "open_url youtube.com/results?search_query= with the words, then click the "
+    "first video. To pause, resume or skip, "
+    "press_keys 'playpause', 'nexttrack' or 'prevtrack', and for the volume "
+    "'volumeup', 'volumedown' or 'mute': they reach the player wherever it is.\n"
     "\n"
     "AFTER ANYTHING THAT CHANGES THE SCREEN, the list of controls you were "
     "given is out of date. launch hands you the new window's controls itself; "
@@ -428,7 +443,7 @@ QJsonObject computerUseTool()
     const QJsonObject properties{
         {"action", QJsonObject{
             {"type", "string"},
-            {"enum", QJsonArray{"launch", "open_url", "list_windows", "list_controls",
+            {"enum", QJsonArray{"launch", "open_url", "play_music", "list_windows", "list_controls",
                                 "screenshot", "click", "click_at", "type_text",
                                 "press_keys", "scroll", "drag", "move_mouse",
                                 "read_text", "window", "wait_for", "clipboard"}},
@@ -438,10 +453,15 @@ QJsonObject computerUseTool()
              "and it tells you the new window's controls once it is up. "
              "open_url OPENS A WEB PAGE in the browser the user already has, on "
              "the profile they are signed in on, and is the only way you should "
-             "open a website. list_windows says what is open. list_controls "
-             "re-reads what a window offers. screenshot SHOWS YOU a window - or "
+             "open a website. play_music PLAYS MUSIC: text is what to play and it "
+             "searches Spotify on this PC, presses play on the best match and "
+             "checks that it really is playing. list_windows says what is open. "
+             "list_controls re-reads what a window offers - filter narrows it to "
+             "the controls named with a word. screenshot SHOWS YOU a window - or "
              "the whole screen with screen true - with every control outlined and "
-             "its key drawn on it. click presses a named control (button right "
+             "its key drawn on it; given x, y, to_x and to_y it ZOOMS IN on that "
+             "part of your last picture, for text too small to read. click "
+             "presses a named control (button right "
              "or double true for those). click_at clicks a point you picked out "
              "of the last screenshot. type_text types into a named control, or "
              "with no control wherever the window's cursor is. press_keys "
@@ -480,8 +500,10 @@ QJsonObject computerUseTool()
         {"y", numberParam(QStringLiteral(
              "How far DOWN the last screenshot the point is, in that picture's "
              "own pixels."))},
-        {"to_x", numberParam(QStringLiteral("For drag: where to drop, across."))},
-        {"to_y", numberParam(QStringLiteral("For drag: where to drop, down."))},
+        {"to_x", numberParam(QStringLiteral("For drag: where to drop, across. For a "
+                                           "screenshot zoom: the far corner."))},
+        {"to_y", numberParam(QStringLiteral("For drag: where to drop, down. For a "
+                                           "screenshot zoom: the far corner."))},
         {"button", QJsonObject{{"type", "string"},
                                {"enum", QJsonArray{"left", "right", "middle"}},
                                {"description", "For click and click_at. Left if "
@@ -509,8 +531,16 @@ QJsonObject computerUseTool()
              "'ctrl+a delete', 'alt+f4', 'win+r', 'shift+tab', 'pagedown'. Any "
              "single character, f1 to f24, enter, escape, tab, space, "
              "backspace, delete, insert, home, end, pageup, pagedown, arrows, "
-             "ctrl, alt, shift, win, volumeup, volumedown, mute, playpause."))},
+             "ctrl, alt, shift, win, volumeup, volumedown, mute, playpause, "
+             "nexttrack, prevtrack."))},
+        {"filter", textParam(QStringLiteral(
+             "For list_controls: only the controls whose name holds these words, "
+             "such as play or save - how to find one control among hundreds in "
+             "a big app or a web page."))},
         {"text", textParam(QStringLiteral(
+             "For play_music: what to play as the user said it - a song, an "
+             "artist, an album or a playlist, with the artist if they named one - "
+             "never the words play or Spotify. "
              "For type_text: exactly the words to type - a new line is Enter. "
              "For wait_for: the words to wait for. For clipboard: what to put "
              "on it; leave it out to read the clipboard instead."))},
@@ -794,6 +824,8 @@ QString describeStep(const QString &function, const QVariantMap &args)
         return QStringLiteral("opening %1").arg(args.value(QStringLiteral("name")).toString());
     if (action == QLatin1String("open_url"))
         return QStringLiteral("opening %1").arg(args.value(QStringLiteral("url")).toString());
+    if (action == QLatin1String("play_music"))
+        return QStringLiteral("playing %1").arg(args.value(QStringLiteral("text")).toString());
     if (action == QLatin1String("screenshot"))
         return QStringLiteral("looking at the screen");
     if (action == QLatin1String("list_windows") || action == QLatin1String("list_controls"))

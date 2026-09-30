@@ -81,8 +81,10 @@ namespace BurnOS::Computer {
 DesktopWindow foreground();
 
 // One window's controls, worded for the model, and remembered in `state` as
-// what their keys refer to.
-QString describeControls(const DesktopWindow &target, DeskState &state);
+// what their keys refer to - only those whose name holds every word of
+// `filter`, when one is given.
+QString describeControls(const DesktopWindow &target, DeskState &state,
+                         const QString &filter = QString());
 
 // Carry out one computer_use action - the model's arguments as they came - and
 // say in plain words what happened. BLOCKING, and meant to be: it runs on the

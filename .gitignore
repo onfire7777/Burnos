@@ -39,6 +39,11 @@ qrc_*.cpp
 # they are hundreds of megabytes. They must never be committed.
 models/
 parakeet-streaming/
+
+# The memory server and its SQLite store, a folder beside Burnos.exe: a
+# Python venv (or a standalone mneme-mcp.exe) and the user's own memories.
+# Neither is source - see mcp.h.
+mnemosyne/
 *.onnx
 *.bin
 *.gguf

@@ -4,6 +4,7 @@
 #include "computeruse.h"
 #include "openrouter.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
@@ -168,7 +169,8 @@ signals:
 
 private:
     void talk(const QString &said);
-    void sendTalk(int turn, const QString &said, const QString &memories);
+    void sendTalk(int turn, const QString &said, const QString &memories,
+                  const QJsonArray &recent);
     // One question to the talking model - fast provider, the talker's tools -
     // answered on onTalkAnswer.
     void askTalker(int turn, const QJsonArray &messages, const QString &who);
@@ -186,9 +188,13 @@ private:
     QString statusReport() const;
     void onTaskFinished(int id);
     void onTaskAsked(int id, const QString &question);
-    void remember(const QString &role, const QString &text);
-    void forget(const QString &asked, const QString &answer);
-    void trimHistory();
+    // Into the memory - every word, the moment it is said. `role` is user or
+    // assistant, `at` when it was said. It goes to the ledger (long-term) and
+    // into working memory (short-term), the second citing the first.
+    void store(const QString &role, const QString &text,
+               const QDateTime &at = QDateTime::currentDateTimeUtc());
+    // Stores what was said while the memory was not up.
+    void flushBacklog();
     void pruneTasks();
     void updateWorking();
     Task *task(int id) const;
@@ -204,9 +210,17 @@ private:
     QJsonArray m_talkSent;
     int m_recalledTurn = 0;
 
-    // What was SAID, both ways, oldest first: the user's words, the talker's
-    // answers and the news the tasks brought back. Never the tool plumbing.
-    QJsonArray m_history;
+    // THERE IS NO CONVERSATION KEPT HERE. What was said lives in the memory
+    // and is read back from it before every answer. This is only what could
+    // not be stored yet because the memory was not up - stored, in the order
+    // it was said, the moment it is - and it is never shown to a model.
+    struct Unstored
+    {
+        QString role;
+        QString text;
+        QDateTime at;
+    };
+    QList<Unstored> m_backlog;
 
     QList<QPointer<Task>> m_tasks;
     int m_nextTask = 0;

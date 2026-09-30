@@ -420,6 +420,24 @@ bool shellOpen(const QString &what)
     return reinterpret_cast<INT_PTR>(rc) > 32;
 }
 
+// The program behind a window, as a bare lowercase name - "spotify" for
+// Spotify.exe. A title says what a window SHOWS - the song playing, the open
+// document - and not which program it is.
+QString programOf(HWND hwnd)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process)
+        return {};
+    wchar_t path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+    const bool ok = QueryFullProcessImageNameW(process, 0, path, &size);
+    CloseHandle(process);
+    return ok ? QFileInfo(QString::fromWCharArray(path, int(size))).completeBaseName().toLower()
+              : QString();
+}
+
 // Spacing and punctuation thrown away, so "Microsoft Store" and "microsoft
 // store" and "MicrosoftStore" are all the same word.
 QString squash(const QString &s)
@@ -832,7 +850,45 @@ DesktopWindow foreground()
 
 namespace {
 
-QList<DesktopControl> controls(quint64 handle, int limit = 50)
+// CHROMIUM BUILDS ITS TREE THE FIRST TIME SOMETHING ASKS. Spotify, Discord,
+// VS Code and every Chrome based browser answer the first look with a bare
+// frame of some 25 elements and fill in the rest over the next seconds - cold,
+// Spotify went from 25 to 921 in three. A task shown that frame was told the
+// window offered nothing and fell back on clicking pixels. So the first look
+// at such a window waits until its tree is big and has stopped growing.
+// ponytail: once per window handle; a window that drops its tree after a long
+// idle would need this count check on every look.
+void wakeTree(IUIAutomation *ui, IUIAutomationElement *root, HWND top)
+{
+    static QSet<quint64> woken; // the hands thread only
+    wchar_t cls[64] = {};
+    GetClassNameW(top, cls, 63);
+    if (wcscmp(cls, L"Chrome_WidgetWin_1") != 0 || woken.contains(quint64(top)))
+        return;
+    woken.insert(quint64(top));
+    IUIAutomationCondition *all = nullptr;
+    ui->CreateTrueCondition(&all);
+    int last = 0;
+    int count = 0;
+    for (int waited = 0; all && waited < 4000; waited += 250) {
+        IUIAutomationElementArray *found = nullptr;
+        count = 0;
+        if (SUCCEEDED(root->FindAll(TreeScope_Descendants, all, &found)) && found) {
+            found->get_Length(&count);
+            found->Release();
+        }
+        if (count >= 100 && count <= last + last / 10)
+            break;
+        last = count;
+        QThread::msleep(250);
+    }
+    if (all)
+        all->Release();
+    liveLog(QStringLiteral("computer use: woke a Chromium window's accessibility tree, %1 elements")
+                .arg(count));
+}
+
+QList<DesktopControl> controls(quint64 handle, int limit = 50, const QString &filter = QString())
 {
     QList<DesktopControl> out;
     IUIAutomation *ui = automation();
@@ -842,6 +898,8 @@ QList<DesktopControl> controls(quint64 handle, int limit = 50)
     IUIAutomationElement *root = nullptr;
     if (FAILED(ui->ElementFromHandle(reinterpret_cast<HWND>(handle), &root)) || !root)
         return out;
+    wakeTree(ui, root, reinterpret_cast<HWND>(handle));
+    const QStringList filterWords = filter.toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
 
     IUIAutomationCondition *all = nullptr;
     ui->CreateTrueCondition(&all);
@@ -877,6 +935,16 @@ QList<DesktopControl> controls(quint64 handle, int limit = 50)
 
             // Something has to be sayable about it or it cannot be chosen.
             if (name.isEmpty() && id.isEmpty()) {
+                e->Release();
+                continue;
+            }
+
+            // Narrowed by the model: every word of the filter somewhere in the
+            // name or the id. Fifty controls in document order are a web app's
+            // side bar; the result it is after comes long after them.
+            const QString sayable = (name + QLatin1Char(' ') + id).toLower();
+            if (!std::all_of(filterWords.cbegin(), filterWords.cend(),
+                             [&](const QString &w) { return sayable.contains(w); })) {
                 e->Release();
                 continue;
             }
@@ -1047,16 +1115,28 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
 
     // NOTHING HERE IS TRUSTED WITHOUT READING IT BACK. Every route below can
     // return S_OK and change nothing, so each one is checked before the next
-    // is skipped.
+    // is skipped. What is looked for is the text without its line breaks: a
+    // field keeps CR LF where the model sent LF, and Enter in a one line box
+    // sends it rather than landing in it.
+    QString expect = text;
+    expect.remove(QLatin1Char('\r'));
+    // TEXT WITH ENTER IN IT IS KEYSTROKES. A value written in one go presses no
+    // Enter, and once Enter has been pressed the field may have sent and
+    // emptied itself: typing it again because the field no longer held the
+    // text - which this used to do - sends it a second and a third time.
+    const bool submits = expect.contains(QLatin1Char('\n'));
+    expect.remove(QLatin1Char('\n'));
     const auto took = [&]() -> bool {
         bool stillReadable = false;
-        const QString now = readValue(e, &stillReadable);
-        return stillReadable && now.contains(text);
+        QString now = readValue(e, &stillReadable);
+        now.remove(QLatin1Char('\r'));
+        now.remove(QLatin1Char('\n'));
+        return stillReadable && now.contains(expect);
     };
 
     // 1. The value pattern. Fastest, and it disturbs neither the caret nor the
     //    mouse, so it is worth trying first where the field offers one.
-    if (e && supportsValueWrite(e)) {
+    if (e && !submits && supportsValueWrite(e)) {
         IUnknown *pattern = nullptr;
         if (SUCCEEDED(e->GetCurrentPattern(UIA_ValuePatternId, &pattern)) && pattern) {
             auto *value = static_cast<IUIAutomationValuePattern *>(pattern);
@@ -1080,7 +1160,7 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
 
     // 2. The old accessibility pattern. Some XAML fields answer this one when
     //    they quietly ignore a value pattern write.
-    if (e) {
+    if (e && !submits) {
         IUnknown *pattern = nullptr;
         if (SUCCEEDED(e->GetCurrentPattern(UIA_LegacyIAccessiblePatternId, &pattern))
             && pattern) {
@@ -1117,7 +1197,7 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
             bgKeys(top, QStringLiteral("ctrl+a delete"), nullptr);
         bgType(top, text);
         QThread::msleep(80);
-        if (took()) {
+        if (took() || submits) {
             liveLog(QStringLiteral("computer use: typed into %1 in the background")
                         .arg(control.describe()));
             if (e)
@@ -1159,7 +1239,7 @@ bool fill(quint64 handle, const DesktopControl &control, const QString &text,
     typeHere(text);
     QThread::msleep(80);
 
-    if (took()) {
+    if (took() || submits) {
         liveLog(QStringLiteral("computer use: typed into %1 with the real keyboard")
                     .arg(control.describe()));
         if (e)
@@ -1783,6 +1863,8 @@ QString readText(HWND top, const DesktopControl *only, int maxChars)
     }
     if (!root)
         return {};
+    if (!only)
+        wakeTree(ui, root, top);
 
     QString text = rangeText(root, maxChars);
 
@@ -2021,6 +2103,300 @@ DesktopWindow stillThere(const DesktopWindow &w)
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// MUSIC, THE ONE WAY THAT HOLDS.
+//
+// Playing a song by looking at Spotify and clicking is what failed: a light
+// model clicked the search bar three times, never typed, and said it had
+// searched. None of that is needed. A spotify:search: link puts Spotify -
+// running or not - on the results for the words, and every result there is a
+// UI Automation button, "Play <title>" (the top result's is a bare "Play", its
+// title in the link just before it). The title holding most of the words asked
+// for is pressed through Invoke, and Spotify's window title - "Artist - Title"
+// while it plays, "Spotify Premium" while it does not - says whether it really
+// is playing. Proven 2026-09-29: playing 250 ms after the press, and from
+// Spotify not running to its results in under five seconds.
+// ponytail: English Spotify only - the search box and the results are found
+// by their English names; another language needs its own two names.
+// ---------------------------------------------------------------------------
+
+// Spotify's main window: the visible one Spotify.exe owns.
+DesktopWindow spotifyWindow()
+{
+    for (const DesktopWindow &w : windows()) {
+        if (programOf(reinterpret_cast<HWND>(w.handle)) == QLatin1String("spotify"))
+            return w;
+    }
+    return {};
+}
+
+// What Spotify is doing, as a sentence for the model - empty with no window.
+QString spotifyNow()
+{
+    const DesktopWindow w = spotifyWindow();
+    if (w.isNull())
+        return {};
+    if (w.title.startsWith(QLatin1String("Spotify"), Qt::CaseInsensitive))
+        return QObject::tr("Spotify is paused.");
+    return QObject::tr("Spotify is playing %1.").arg(w.title);
+}
+
+// A title or a request as bare lowercase words, to match one against the other.
+QStringList wordsOf(const QString &s)
+{
+    static const QRegularExpression kGaps(QStringLiteral("[^\\p{L}\\p{N}]+"));
+    return s.toLower().split(kGaps, Qt::SkipEmptyParts);
+}
+
+IUIAutomationElement *findNamed(IUIAutomation *ui, IUIAutomationElement *root,
+                                const QString &name)
+{
+    VARIANT v;
+    VariantInit(&v);
+    v.vt = VT_BSTR;
+    v.bstrVal = SysAllocStringLen(reinterpret_cast<const OLECHAR *>(name.utf16()),
+                                  UINT(name.size()));
+    IUIAutomationCondition *named = nullptr;
+    IUIAutomationElement *found = nullptr;
+    if (SUCCEEDED(ui->CreatePropertyCondition(UIA_NamePropertyId, v, &named)) && named) {
+        root->FindFirst(TreeScope_Descendants, named, &found);
+        named->Release();
+    }
+    VariantClear(&v);
+    return found;
+}
+
+// One result on Spotify's search page: what its button plays, and the button.
+struct SpotifyResult
+{
+    QString title;
+    bool playing = false; // its button says Pause: this is what plays now
+    IUIAutomationElement *button = nullptr;
+};
+
+void release(QList<SpotifyResult> &results)
+{
+    for (const SpotifyResult &r : std::as_const(results)) {
+        if (r.button)
+            r.button->Release();
+    }
+    results.clear();
+}
+
+// The first twelve results on Spotify's search page, in Spotify's own order;
+// in `box` the words its search box holds, and in `none` whether the page says
+// it found nothing for them.
+QList<SpotifyResult> spotifyResults(IUIAutomation *ui, HWND spotify, QStringList *box,
+                                    bool *none)
+{
+    QList<SpotifyResult> out;
+    box->clear();
+    *none = false;
+    IUIAutomationElement *root = nullptr;
+    if (FAILED(ui->ElementFromHandle(spotify, &root)) || !root)
+        return out;
+    QString searched;
+    if (IUIAutomationElement *field = findNamed(ui, root, QStringLiteral("What do you want to play?"))) {
+        bool readable = false;
+        searched = readValue(field, &readable).simplified();
+        *box = wordsOf(searched);
+        field->Release();
+    }
+    IUIAutomationElement *grid = findNamed(ui, root, QStringLiteral("Search results"));
+    if (!grid && !searched.isEmpty()) {
+        if (IUIAutomationElement *nothing = findNamed(
+                ui, root, QStringLiteral("No results found for \"%1\"").arg(searched))) {
+            *none = true;
+            nothing->Release();
+        }
+    }
+    root->Release();
+    if (!grid)
+        return out;
+
+    IUIAutomationCondition *all = nullptr;
+    IUIAutomationElementArray *found = nullptr;
+    ui->CreateTrueCondition(&all);
+    if (all) {
+        grid->FindAll(TreeScope_Descendants, all, &found);
+        all->Release();
+    }
+    grid->Release();
+    if (!found)
+        return out;
+
+    int count = 0;
+    found->get_Length(&count);
+    QString link; // the last title link passed, for the top result's bare Play
+    for (int i = 0; i < count && out.size() < 12; ++i) {
+        IUIAutomationElement *e = nullptr;
+        if (FAILED(found->GetElement(i, &e)) || !e)
+            continue;
+        CONTROLTYPEID type = 0;
+        e->get_CurrentControlType(&type);
+        BSTR raw = nullptr;
+        e->get_CurrentName(&raw);
+        const QString name = fromBstr(raw).simplified();
+        SpotifyResult r;
+        if (type == UIA_HyperlinkControlTypeId) {
+            link = name;
+        } else if (type == UIA_ButtonControlTypeId) {
+            for (const QString &verb : {QStringLiteral("Play"), QStringLiteral("Pause")}) {
+                if (name == verb)
+                    r.title = link;
+                else if (name.startsWith(verb + QLatin1Char(' ')))
+                    r.title = name.mid(verb.size() + 1);
+                if (!r.title.isEmpty()) {
+                    r.playing = verb == QLatin1String("Pause");
+                    break;
+                }
+            }
+        }
+        if (r.title.isEmpty()) {
+            e->Release();
+            continue;
+        }
+        r.button = e;
+        out.append(r);
+    }
+    found->Release();
+    return out;
+}
+
+QString playOnSpotify(const QString &request, const std::atomic_bool &cancelled)
+{
+    IUIAutomation *ui = automation();
+    const QStringList asked = wordsOf(request);
+    if (!ui || asked.isEmpty())
+        return QObject::tr("Failed: give text - the song, artist, album or playlist to play.");
+    QStringList keywords = asked;
+    keywords.removeAll(QStringLiteral("by"));
+
+    // WHAT IS ON THE PAGE NOW belongs to the last search, unless that was this
+    // one. Spotify puts the new words in its box at once, but the old results
+    // stay up a moment longer - long enough, the first time this ran, to press
+    // play on Johnny Cash instead of the song asked for.
+    QStringList stale;
+    if (const DesktopWindow before = spotifyWindow(); !before.isNull()) {
+        QStringList box;
+        bool none = false;
+        QList<SpotifyResult> old =
+            spotifyResults(ui, reinterpret_cast<HWND>(before.handle), &box, &none);
+        if (box != asked) {
+            for (const SpotifyResult &r : std::as_const(old))
+                stale.append(r.title);
+        }
+        release(old);
+    }
+
+    // The results for those words - Spotify starts first if it has to. No
+    // handler for the link means Spotify is not installed.
+    if (!shellOpen(QStringLiteral("spotify:search:")
+                   + QString::fromLatin1(QUrl::toPercentEncoding(request.simplified())))) {
+        return QObject::tr("Failed: Spotify is not installed on this PC. If Spotify is "
+                           "connected in the user's online apps, play it with "
+                           "app_action; otherwise open a music site with open_url.");
+    }
+    liveLog(QStringLiteral("computer use: asked Spotify to search for \"%1\"").arg(request));
+
+    QStringList seen;
+    int nothing = 0;
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < 25000) {
+        if (!pauseFor(400, cancelled))
+            return QObject::tr("Stopped.");
+        const DesktopWindow player = spotifyWindow();
+        if (player.isNull())
+            continue;
+        QStringList box;
+        bool none = false;
+        QList<SpotifyResult> results =
+            spotifyResults(ui, reinterpret_cast<HWND>(player.handle), &box, &none);
+        // SPOTIFY SAYS IT FOUND NOTHING - seen twice running, so a page still
+        // loading is not taken for it, and then said at once rather than after
+        // 25 seconds. It is not always the words: on 2026-09-29 Spotify's own
+        // search answered this for everything, Amazing Grace included, through
+        // two restarts.
+        nothing = (box == asked && none) ? nothing + 1 : 0;
+        if (nothing >= 2) {
+            return QObject::tr("Failed: Spotify says No results found for \"%1\". If that "
+                               "is what was asked for, Spotify's own search is failing "
+                               "right now - play it another way: app_action if Spotify is "
+                               "connected in the user's online apps, otherwise find it on "
+                               "YouTube with open_url and play it there.")
+                .arg(request.simplified());
+        }
+        QStringList titles;
+        for (const SpotifyResult &r : std::as_const(results))
+            titles.append(r.title);
+        // Pressed only once the box holds these words, the same results have
+        // been seen twice running - a list still arriving must not be pressed
+        // half drawn - and they are not the last search's, unless six seconds
+        // say this search really does find the same.
+        if (box != asked || titles.isEmpty() || titles != seen
+            || (titles == stale && clock.elapsed() < 6000)) {
+            seen = titles;
+            release(results);
+            continue;
+        }
+
+        // THE BEST MATCH: the title holding the most of the words asked for,
+        // the earliest on a tie - which keeps Spotify's own ranking, and its
+        // top result when nothing matches better.
+        int best = 0;
+        int bestScore = -1;
+        for (int i = 0; i < results.size(); ++i) {
+            const QStringList has = wordsOf(results.at(i).title);
+            int score = 0;
+            for (const QString &w : std::as_const(keywords))
+                score += has.contains(w) ? 1 : 0;
+            if (score > bestScore) {
+                best = i;
+                bestScore = score;
+            }
+        }
+        const QString pick = titles.at(best);
+        titles.removeAt(best);
+        const QString others = titles.mid(0, 5).join(QStringLiteral("; "));
+        if (results.at(best).playing) {
+            release(results);
+            return QObject::tr("%1 was playing already. %2").arg(pick, spotifyNow());
+        }
+        bool pressed = false;
+        IUnknown *pattern = nullptr;
+        if (SUCCEEDED(results.at(best).button->GetCurrentPattern(UIA_InvokePatternId, &pattern))
+            && pattern) {
+            pressed = SUCCEEDED(static_cast<IUIAutomationInvokePattern *>(pattern)->Invoke());
+            pattern->Release();
+        }
+        release(results);
+        if (!pressed) {
+            return QObject::tr("Failed: Spotify found %1 but would not press play on it. "
+                               "Take a screenshot of Spotify.").arg(pick);
+        }
+        liveLog(QStringLiteral("computer use: pressed play on \"%1\" in Spotify").arg(pick));
+
+        // CHECKED, NOT ASSUMED: the window title turns into the song once it
+        // really plays.
+        for (int waited = 0; waited < 6000; waited += 250) {
+            if (!pauseFor(250, cancelled))
+                return QObject::tr("Stopped.");
+            const DesktopWindow now = spotifyWindow();
+            if (!now.isNull() && now.title != player.title
+                && !now.title.startsWith(QLatin1String("Spotify"), Qt::CaseInsensitive)) {
+                return QObject::tr("Playing %1 in Spotify - checked, it is playing. Other "
+                                   "results for that search: %2.").arg(now.title, others);
+            }
+        }
+        return QObject::tr("Failed: I pressed play on %1 in Spotify but it does not show "
+                           "as playing. %2 Take a screenshot of Spotify to see why.")
+            .arg(pick, spotifyNow());
+    }
+    return QObject::tr("Failed: Spotify showed no results for \"%1\" within 25 seconds. "
+                       "Take a screenshot of Spotify to see why.").arg(request);
+}
+
 // One computer_use action, by name.
 QString carryOut(const QVariantMap &args, DeskState &state,
                  const std::atomic_bool &cancelled, QByteArray *png)
@@ -2208,6 +2584,20 @@ QString carryOut(const QVariantMap &args, DeskState &state,
                                  .toLower();
         if (keys.isEmpty())
             return QObject::tr("Failed: no keys were given.");
+        // MEDIA AND VOLUME KEYS BELONG TO NO WINDOW. A player hears them through
+        // Windows' own media controls, never as a message posted to its window,
+        // so they always go through the keyboard queue - which moves no pointer
+        // and takes no focus. Proven on Spotify: paused a quarter of a second
+        // after the key.
+        static const QRegularExpression kMediaOnly(QStringLiteral(
+            "^((volumeup|volumedown|mute|playpause|nexttrack|prevtrack)( |$))+$"));
+        if (kMediaOnly.match(keys).hasMatch()) {
+            if (!sendKeys(keys, &error))
+                return QObject::tr("Failed: %1").arg(error);
+            if (!pauseFor(700, cancelled))
+                return QObject::tr("Stopped.");
+            return QObject::tr("Pressed %1. %2").arg(keys, spotifyNow()).trimmed();
+        }
         // Into the task's own window, so keys meant for it never land in
         // whatever another task left in front - and by the agent's own keyboard,
         // so the user's keystrokes elsewhere are untouched. `real` forces the
@@ -2399,10 +2789,26 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         if (name.isEmpty())
             return QObject::tr("Failed: no program was named.");
 
-        // What is already open, so the new window can be told from the rest.
+        // What is already open, so the new window can be told from the rest -
+        // and whether the program is among it. One already running mostly
+        // brings back the window it had rather than a new one, and waiting nine
+        // seconds for a window that is never coming is what a second "open
+        // Spotify" used to cost.
+        const auto byTitle = [&](const DesktopWindow &w, const QString &label) {
+            return w.title.contains(label, Qt::CaseInsensitive)
+                   || w.title.contains(name, Qt::CaseInsensitive);
+        };
+        // By the program behind it, for a window whose title shows something
+        // else - the song Spotify is playing, the file an editor has open.
+        const auto byProgram = [&](const DesktopWindow &w) {
+            return nameScore(programOf(reinterpret_cast<HWND>(w.handle)), name) >= 2;
+        };
         QSet<quint64> before;
-        for (const DesktopWindow &w : windows())
+        bool running = false;
+        for (const DesktopWindow &w : windows()) {
             before.insert(w.handle);
+            running = running || byTitle(w, name) || byProgram(w);
+        }
 
         QString opened;
         if (!launchAnything(name, &opened, &error))
@@ -2416,7 +2822,7 @@ QString carryOut(const QVariantMap &args, DeskState &state,
         DesktopWindow fresh;
         QElapsedTimer clock;
         clock.start();
-        while (fresh.isNull() && clock.elapsed() < 9000) {
+        while (fresh.isNull() && clock.elapsed() < (running ? 2500 : 9000)) {
             if (!pauseFor(150, cancelled))
                 return QObject::tr("Stopped.");
             for (const DesktopWindow &w : windows()) {
@@ -2427,18 +2833,24 @@ QString carryOut(const QVariantMap &args, DeskState &state,
             }
         }
 
-        // NO NEW WINDOW can mean it was already open: Settings, and many
-        // single-window apps, bring back the window they already had. Look for
-        // it by name before sending the model off to hunt for it.
+        // NO NEW WINDOW can mean it was already open: Settings, Spotify and
+        // many single-window apps bring back the window they already had. Look
+        // for it by name, then by program, before sending the model off to hunt
+        // for it.
         if (fresh.isNull()) {
-            for (const DesktopWindow &w : windows()) {
-                if (w.title.contains(opened, Qt::CaseInsensitive)
-                    || w.title.contains(name, Qt::CaseInsensitive)) {
+            const QList<DesktopWindow> open = windows();
+            for (const DesktopWindow &w : open) {
+                if (byTitle(w, opened)) {
                     fresh = w;
-                    bringToFront(reinterpret_cast<HWND>(w.handle));
                     break;
                 }
             }
+            for (const DesktopWindow &w : open) {
+                if (fresh.isNull() && byProgram(w))
+                    fresh = w;
+            }
+            if (!fresh.isNull())
+                bringToFront(reinterpret_cast<HWND>(fresh.handle));
         }
         if (fresh.isNull()) {
             return QObject::tr("%1 was started but it has not put a window up yet. "
@@ -2514,6 +2926,9 @@ QString carryOut(const QVariantMap &args, DeskState &state,
             .arg(opened, describeControls(front, state));
     }
 
+    if (action == QLatin1String("play_music"))
+        return playOnSpotify(args.value(QStringLiteral("text")).toString(), cancelled);
+
     if (action == QLatin1String("list_windows")) {
         const QList<DesktopWindow> open = windows();
         if (open.isEmpty())
@@ -2527,11 +2942,15 @@ QString carryOut(const QVariantMap &args, DeskState &state,
     }
 
     if (action == QLatin1String("list_controls")) {
-        const QString wanted = args.value(QStringLiteral("window")).toString().trimmed();
-        const DesktopWindow target = wanted.isEmpty() ? foreground() : findWindow(wanted);
+        // The task's OWN window unless another is named, like every other
+        // action. It used to be whatever was in front - with the agent working
+        // in the background, mostly the user's own window - and the next click
+        // went there.
+        const DesktopWindow target = windowMeant();
         if (target.isNull())
             return QObject::tr("Failed: I could not find that window.");
-        return describeControls(target, state);
+        return describeControls(target, state,
+                                args.value(QStringLiteral("filter")).toString());
     }
 
     if (action == QLatin1String("click")) {
@@ -2588,12 +3007,26 @@ QString act(const QVariantMap &args, DeskState &state,
     const bool mayOpen = action == QLatin1String("click") || action == QLatin1String("click_at")
                          || action == QLatin1String("press_keys")
                          || action == QLatin1String("press_key");
+    // POSTED INPUT LANDS LATER. A background click, key or piece of text is
+    // only queued for the window when the call returns, so a look straight
+    // after it - two calls in one reply - could catch the screen before the
+    // change and report a failure that was not one. A look waits until the
+    // last input is at least 600 ms old.
+    static QElapsedTimer lastInput; // the hands thread only
+    const bool looks = action == QLatin1String("screenshot")
+                       || action == QLatin1String("read_text")
+                       || action == QLatin1String("list_controls");
+    if (looks && lastInput.isValid() && lastInput.elapsed() < 600)
+        pauseFor(int(600 - lastInput.elapsed()), cancelled);
     QSet<quint64> before;
     if (mayOpen) {
         for (const DesktopWindow &w : windows())
             before.insert(w.handle);
     }
     QString result = carryOut(args, state, cancelled, png);
+    if (mayOpen || action == QLatin1String("type_text") || action == QLatin1String("drag")
+        || action == QLatin1String("scroll"))
+        lastInput.start();
     if (mayOpen && !result.startsWith(QStringLiteral("Failed"))
         && !result.startsWith(QStringLiteral("Stopped")))
         result += newWindowNote(before, state, cancelled);
@@ -2636,14 +3069,20 @@ QObject *hands()
 
 } // namespace
 
-QString describeControls(const DesktopWindow &target, DeskState &state)
+QString describeControls(const DesktopWindow &target, DeskState &state, const QString &filter)
 {
+    constexpr int kLimit = 50;
     state.target = target;
-    state.offered = controls(target.handle);
+    state.offered = controls(target.handle, kLimit, filter);
 
     if (target.isNull() || target.title.isEmpty()) {
         return QObject::tr("There is no window in front, so there is nothing to "
                            "click or type into.");
+    }
+    if (state.offered.isEmpty() && !filter.trimmed().isEmpty()) {
+        return QObject::tr("Nothing in '%1' has '%2' in its name. Take a screenshot "
+                           "to see what is there.")
+            .arg(target.title, filter.trimmed());
     }
     if (state.offered.isEmpty()) {
         return QObject::tr("'%1' offers nothing that can be clicked or typed into. "
@@ -2654,9 +3093,16 @@ QString describeControls(const DesktopWindow &target, DeskState &state)
     QStringList lines;
     for (const DesktopControl &c : std::as_const(state.offered))
         lines.append(QStringLiteral("%1: %2").arg(c.key, c.describe()));
+    // A cut list has to SAY it was cut, or the model takes the first fifty for
+    // everything there is and decides what it wants is not on screen.
+    const QString more = state.offered.size() < kLimit
+                             ? QString()
+                             : QObject::tr("\nThat is only the first %1. To find another, "
+                                           "call list_controls with filter set to a "
+                                           "word of its name.").arg(kLimit);
     return QObject::tr("'%1' has these controls, and the key to give back for each "
-                       "one:\n%2")
-        .arg(target.title, lines.join(QLatin1Char('\n')));
+                       "one:\n%2%3")
+        .arg(target.title, lines.join(QLatin1Char('\n')), more);
 }
 
 DeskResult perform(const QVariantMap &args, const DeskState &state,

@@ -67,6 +67,9 @@ public:
     bool isReady() const { return m_ready; }
     const QList<Tool> &tools() const { return m_tools; }
     bool hasTool(const QString &tool) const;
+    // Whether that tool's schema names this argument - how a client tells a
+    // newer server from an older one without asking its version.
+    bool takes(const QString &tool, const QString &argument) const;
 
     void start();
     // One tools/call. `done` is called exactly once, and never from inside

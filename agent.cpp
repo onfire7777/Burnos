@@ -32,12 +32,38 @@ namespace {
 // what that needs; past it the user is told rather than left on Thinking.
 constexpr int kTalkTimeoutMs = 30000;
 
-// THE TALKER HAS NO CONTEXT WINDOW OF ITS OWN. The conversation it is shown
-// is read back from the memory before every answer: the newest turns from
-// working memory - bounded here, so a day of talk is not sent with every
-// sentence - and whatever long-term memory matches what was just said.
-constexpr int kMaxRecentTurns = 40;
-constexpr int kMaxRecentChars = 24000;
+// THE TALKER HAS NO CONTEXT WINDOW OF ITS OWN. What it is shown is read back
+// from the memory before every answer, as a WORKING SET of fixed size: the
+// newest lines word for word, what the memory holds that bears on the words
+// just said - from earlier today and from long before, ranked as one list -
+// and what the user asked to be kept in mind for good. A token is about four
+// characters, so this is roughly 300 + 600 + 300 tokens however long the
+// conversation has run.
+constexpr int kTailLines = 12;
+constexpr int kTailChars = 1200;
+constexpr int kTailLineChars = 400;
+// Asked of working memory: a few more than are shown, since the question's own
+// lines come back too and are left out.
+constexpr int kTailFetch = 16;
+constexpr int kRelevantTokens = 600;
+constexpr int kRelevantLines = 8;
+constexpr int kRelevantChars = 2400;
+constexpr int kRelevantLineChars = 300;
+constexpr int kProfileLines = 10;
+constexpr int kProfileChars = 1200;
+// Fewer words than this mean little alone - "yes", "why?", "the second one" -
+// so the memory is asked them together with the exchange they answer.
+constexpr int kFewWords = 5;
+// How many times the talker may look something up before it has to answer.
+constexpr int kMaxRecalls = 2;
+// Lines said and not yet confirmed in the memory: shown until they are.
+constexpr int kMaxUnsaved = 12;
+// A MEMORY SERVER WITHOUT THE SESSION-AWARE READS is asked the old way, the
+// way v0.9 asked every server: the newest forty turns, and five notes.
+constexpr int kOldTurns = 40;
+constexpr int kOldChars = 24000;
+constexpr int kOldNotes = 5;
+constexpr int kOldNoteChars = 2000;
 
 // A task is generous, because it works in the background and nobody waits on
 // it. A turn in v0.3 got eight tool calls and ninety seconds, because the orb
@@ -77,7 +103,12 @@ constexpr auto kMemorySession = "voice";
 constexpr auto kMemoryTask = "talk";
 constexpr int kMemoryLookupMs = 3000;
 constexpr int kMemoryStoreMs = 15000;
-constexpr double kMemoryMinScore = 0.3;
+// A NOTE HAS TO EARN ITS PLACE: within this share of the best match, and above
+// this floor however poor the best one is. The memory's scores are not on a
+// fixed scale - the same good line scored 0.23 for one question and 0.35 for
+// another - so a fixed cut of 0.3 threw real answers away.
+constexpr double kNoteShare = 0.3;
+constexpr double kNoteFloor = 0.12;
 // SHORT-TERM MEMORY is Mnemosyne's working memory, and a day is its ceiling:
 // every turn of today's conversation is there. LONG-TERM MEMORY is its
 // ledger, where every turn ever spoken stays for good.
@@ -88,27 +119,28 @@ constexpr int kSessionTokenTtlSeconds = 300;
 constexpr int kMaxBacklog = 5000;
 
 const char kMemoryPrompt[] =
+    // Sent with every answer, so every sentence of it has to earn its tokens:
+    // what each tool argument means is said once, in the tool's own schema.
     "MEMORY. You have no context window of your own. Everything you know about "
     "this conversation is read live from your memory, Mnemosyne, before every "
-    "answer, and it holds every word either of you has ever said, across "
-    "restarts, because everything said is stored automatically the moment it "
-    "is said - you never need to ask for that. The conversation lines you are "
-    "shown are your short-term memory: the newest turns of today, oldest "
-    "first. The memory notes are your long-term memory: what matched what was "
-    "just said, out of everything ever said and everything the user asked you "
-    "to keep. When the user asks you to remember something in particular, "
-    "call remember with it written as one plain sentence about them - 'The "
-    "user's favourite code editor is Qt Creator.' - so it is easy to find "
-    "later, and say 'Got it.'. NEVER say you remember anything that is not in "
-    "what you were shown or in what recall found. When they ask what you "
-    "remember, or something only your memory could answer and what you were "
-    "shown does not hold it, call recall with what to look for, and if that "
-    "finds nothing, say you do not know. When they ask you to forget "
-    "something, call forget_memory with its memory id from the notes; if the "
-    "notes do not show it, recall it first. Never store passwords, keys or "
-    "card numbers with remember. Use what you remember naturally, including "
-    "in the briefs you write for tasks: 'my editor' is the editor they told "
-    "you about.";
+    "answer. It holds every word either of you has ever said, across "
+    "restarts, stored automatically the moment it is said. You are shown "
+    "three things from it: ABOUT THE USER, what they told you to keep in mind "
+    "for good; the conversation lines, the newest ones word for word; and "
+    "RELEVANT MEMORIES, what matched what was just said out of everything "
+    "ever said, each with its date and speaker - where two disagree the newer "
+    "is right. When the user asks you to remember something, or tells you how "
+    "to behave from now on, call remember with it as one plain sentence about "
+    "them - 'The user's favourite code editor is Qt Creator.' - and say 'Got "
+    "it.'. NEVER say you remember anything that is not in what you were shown "
+    "or in what recall found. When only your memory could answer and what you "
+    "were shown does not hold it, call recall with what to look for, dates "
+    "written out in full, never 'yesterday'; if that finds nothing, say you "
+    "do not know. To forget something, call forget_memory with the id of the "
+    "line that holds it, recalling it first if it is not shown. Never store "
+    "passwords, keys or card numbers. Use what you remember naturally, "
+    "including in the briefs you write for tasks: 'my editor' is the editor "
+    "they told you about.";
 
 // ---------------------------------------------------------------------------
 // THE TALKER'S BRIEF. It talks and it delegates; it never operates anything.
@@ -296,25 +328,50 @@ QJsonObject workingScope()
                                  kSessionTokenTtlSeconds)}};
 }
 
-// THE CONVERSATION, as working memory tells it: every turn stored today, as
-// messages for the talker, oldest first. It ends on the last thing Burnos
-// said - whatever the user said after that is the question being asked now,
-// which travels separately - and it is bounded, so a long day is not sent
-// whole with every sentence.
-QJsonArray recentTurns(const QJsonObject &result)
+// A SEARCH OF THE MEMORY for these words: long-term memory and - where the
+// server can - the session's working memory in the same ranking. `fitted`
+// holds it to the working set's budget; the diagnostics nobody reads here are
+// left out wherever the server allows.
+QJsonObject searchFor(McpServer *memory, const QString &query, bool fitted)
 {
-    QJsonObject found = result.value(QStringLiteral("structuredContent")).toObject();
-    if (found.isEmpty())
-        found = QJsonDocument::fromJson(McpServer::textOf(result).toUtf8()).object();
+    QJsonObject ask{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                    {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)},
+                    {QStringLiteral("query"), query}};
+    if (memory->takes(QStringLiteral("search"), QStringLiteral("session_id"))) {
+        ask.insert(QStringLiteral("session_id"), QString::fromLatin1(kMemorySession));
+        ask.insert(QStringLiteral("session_token"),
+                   workingScope().value(QStringLiteral("session_token")));
+    }
+    if (fitted && memory->takes(QStringLiteral("search"), QStringLiteral("token_budget")))
+        ask.insert(QStringLiteral("token_budget"), kRelevantTokens);
+    if (memory->takes(QStringLiteral("search"), QStringLiteral("lean")))
+        ask.insert(QStringLiteral("lean"), true);
+    return ask;
+}
 
-    struct Turn
-    {
-        qint64 at;
-        QString role;
-        QString text;
-    };
-    QList<Turn> turns;
-    for (const QJsonValue &value : found.value(QStringLiteral("items")).toArray()) {
+// What a tool of the memory answered, as an object: its structured content,
+// or its text read as JSON where a server gave only text.
+QJsonObject answerOf(const QJsonObject &result)
+{
+    const QJsonObject found = result.value(QStringLiteral("structuredContent")).toObject();
+    return found.isEmpty() ? QJsonDocument::fromJson(McpServer::textOf(result).toUtf8()).object()
+                           : found;
+}
+
+// ONE SPOKEN LINE, as the memory holds it.
+struct Line
+{
+    qint64 at = 0;     // when it was said, in ms since the epoch
+    QString role;      // user or assistant
+    QString text;
+    bool saved = true; // false while it is still on its way to the memory
+};
+
+// The conversation turns working memory returned, oldest first.
+QList<Line> turnsOf(const QJsonObject &result)
+{
+    QList<Line> lines;
+    for (const QJsonValue &value : answerOf(result).value(QStringLiteral("items")).toArray()) {
         const QJsonObject item = value.toObject();
         if (item.value(QStringLiteral("kind")).toString() != QLatin1String("conversation_turn"))
             continue;
@@ -327,30 +384,97 @@ QJsonArray recentTurns(const QJsonObject &result)
             continue;
         const QDateTime at = QDateTime::fromString(
             item.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs);
-        turns.append({at.isValid() ? at.toMSecsSinceEpoch() : 0, role, content.mid(colon + 2)});
+        lines.append({at.isValid() ? at.toMSecsSinceEpoch() : 0, role, content.mid(colon + 2), true});
     }
-    std::stable_sort(turns.begin(), turns.end(),
-                     [](const Turn &a, const Turn &b) { return a.at < b.at; });
+    std::stable_sort(lines.begin(), lines.end(),
+                     [](const Line &a, const Line &b) { return a.at < b.at; });
+    return lines;
+}
 
-    while (!turns.isEmpty() && turns.last().role == QLatin1String("user"))
-        turns.removeLast();
+// THE NEWEST LINES OF THE CONVERSATION, as messages for the talker, oldest
+// first: what working memory holds, then whatever has been said since and is
+// still on its way there - `waiting` - or cannot get there, while the memory
+// is down. Reading only the memory lost the line before whenever the user
+// spoke before the last answer had been stored.
+//
+// Never the question itself, which travels separately: the user's last lines
+// that make it up are left out, however many a pause for breath split it
+// into. Bounded, beginning on something the user said. `unsaved` is how many
+// of the lines shown are not in the memory yet.
+QJsonArray tailMessages(QList<Line> lines, const QList<Line> &waiting, const QString &said,
+                        int maxLines, int maxChars, int lineChars, int *unsaved)
+{
+    for (const Line &w : waiting) {
+        bool held = false;
+        for (const Line &l : std::as_const(lines)) {
+            if (l.role == w.role && l.text == w.text && qAbs(l.at - w.at) < 2000) {
+                held = true;
+                break;
+            }
+        }
+        if (!held)
+            lines.append(w);
+    }
+    std::stable_sort(lines.begin(), lines.end(),
+                     [](const Line &a, const Line &b) { return a.at < b.at; });
 
-    // The newest that fit.
-    int first = int(turns.size());
+    while (!lines.isEmpty() && lines.last().role == QLatin1String("user")
+           && said.contains(lines.last().text)) {
+        lines.removeLast();
+    }
+
+    // The newest that fit; the newest of all always does.
+    int first = int(lines.size());
     int chars = 0;
-    while (first > 0 && int(turns.size()) - first < kMaxRecentTurns
-           && chars + int(turns.at(first - 1).text.size()) <= kMaxRecentChars) {
-        chars += int(turns.at(first - 1).text.size());
+    while (first > 0 && int(lines.size()) - first < maxLines) {
+        const int size = int(qMin<qsizetype>(lines.at(first - 1).text.size(), lineChars));
+        if (chars + size > maxChars && first < int(lines.size()))
+            break;
+        chars += size;
         --first;
     }
     // Beginning on something the user said.
-    while (first < int(turns.size()) && turns.at(first).role != QLatin1String("user"))
+    while (first < int(lines.size()) && lines.at(first).role != QLatin1String("user"))
         ++first;
 
     QJsonArray messages;
-    for (int i = first; i < int(turns.size()); ++i)
-        messages.append(msg(turns.at(i).role, turns.at(i).text));
+    int notSaved = 0;
+    for (int i = first; i < int(lines.size()); ++i) {
+        const Line &l = lines.at(i);
+        messages.append(msg(l.role, l.text.size() > lineChars
+                                        ? QString(l.text.left(lineChars) + QStringLiteral("..."))
+                                        : l.text));
+        if (!l.saved)
+            ++notSaved;
+    }
+    if (unsaved)
+        *unsaved = notSaved;
     return messages;
+}
+
+// The words of a remembered line without what the memory keeps in front of
+// them: "[2026-09-30 15:53:11] User: " on a ledger record, "user: " on a
+// working-memory item. A remembered fact, which has neither, comes back whole.
+QString spokenWords(const QString &text)
+{
+    static const QRegularExpression kLedger(
+        QStringLiteral("^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\] (?:User|Burnos|Remembered): "));
+    const QRegularExpressionMatch match = kLedger.match(text);
+    if (match.hasMatch())
+        return text.mid(match.capturedLength());
+    for (const char *lead : {"user: ", "assistant: "}) {
+        if (text.startsWith(QLatin1String(lead)))
+            return text.mid(qsizetype(qstrlen(lead)));
+    }
+    return text;
+}
+
+// Whether a line shown in the tail - cut with three dots when it was long -
+// is these words.
+bool sameWords(const QString &shown, const QString &words)
+{
+    return shown.endsWith(QLatin1String("...")) ? words.startsWith(shown.chopped(3))
+                                                : shown == words;
 }
 
 QString nowWords()
@@ -465,13 +589,29 @@ QJsonArray talkTools(bool memory)
     if (memory) {
         list.append(functionTool(
             QStringLiteral("remember"),
-            QStringLiteral("Keep something the user asked you to remember, for good."),
+            QStringLiteral("Keep something the user asked you to remember, or told "
+                           "you to do from now on, for good."),
             QJsonObject{
                 {"type", "object"},
                 {"properties", QJsonObject{
+                    // An instruction kept as the order itself is obeyed;
+                    // kept as a fact about what the user wants, it is noted
+                    // and passed over. Measured - see compose().
                     {"fact", textParam(QStringLiteral(
-                         "One plain sentence about the user, such as The user's "
-                         "favourite code editor is Qt Creator."))}}},
+                         "One plain sentence. A fact is written about the user: "
+                         "The user's favourite code editor is Qt Creator. An "
+                         "instruction is written as the order itself: Always "
+                         "address the user as Sam."))},
+                    {"kind", QJsonObject{
+                         {"type", "string"},
+                         {"enum", QJsonArray{"instruction", "preference", "about_me", "fact"}},
+                         {"description",
+                          "instruction: how they want you to behave from now on. "
+                          "preference: what they like or want. about_me: who they "
+                          "are, their people, health and work. fact: anything else."}}},
+                    {"replaces", textParam(QStringLiteral(
+                         "The id of the line this corrects or replaces, when you "
+                         "were shown one. Leave it out otherwise."))}}},
                 {"required", QJsonArray{"fact"}},
             }));
         list.append(functionTool(
@@ -1570,9 +1710,14 @@ void Agent::hear(const QString &text)
     QString said = text.simplified();
     if (said.isEmpty())
         return;
-    // Into the memory the moment it is heard - every word, whatever comes of
-    // it, and before it is folded into anything.
-    store(QStringLiteral("user"), said);
+    // Into the memory - every word, whatever comes of it, and before it is
+    // folded into anything. HELD for the instant it takes to read the memory
+    // for this turn: stored first, the words would be the best match for
+    // themselves, and the memory would hand the question back as its answer.
+    m_held.append({QStringLiteral("user"), said, QDateTime::currentDateTimeUtc()});
+    m_unsaved.append(m_held.last());
+    while (m_unsaved.size() > kMaxUnsaved)
+        m_unsaved.removeFirst();
 
     if (!m_asking.isEmpty()) {
         // STILL TALKING, and the talker has not answered yet. Nothing has been
@@ -1614,80 +1759,165 @@ void Agent::talk(const QString &said)
     const int turn = ++m_turn;
     emit thinkingChanged(true);
 
-    // THE MEMORY FIRST - it is the only conversation there is. Two questions
-    // to it, side by side: the recent turns from working memory, and whatever
-    // long-term memory bears on what was just said. Local and quick, and
-    // either is gone without if it does not answer in time.
-    McpServer *memory = m_mcp->memory();
-    if (!memory) {
-        liveLog(QStringLiteral("talk %1: the memory is not available - answering with no "
-                               "conversation at all")
+    // THE MEMORY FIRST - it is the only conversation there is. Three questions
+    // to it, side by side: the newest lines from working memory, whatever in
+    // working and long-term memory bears on what was just said, and what the
+    // user asked to be kept in mind. Local and quick, and each is gone
+    // without if it does not answer in time.
+    if (!m_mcp->memory()) {
+        liveLog(QStringLiteral("talk %1: the memory is not available - answering from "
+                               "what has been said since it went")
                     .arg(turn));
     }
     lookup(QStringLiteral("talk %1").arg(turn), said,
            [this, turn, said](const Recalled &recalled) {
+        // The memory has been read: now the words that were held go into it.
+        release();
         if (turn != m_turn || m_asking.isEmpty())
             return; // a newer turn took over, or everything was stopped
         sendTalk(turn, said, recalled);
     });
 }
 
+void Agent::release()
+{
+    QList<Unstored> held;
+    held.swap(m_held);
+    for (const Unstored &u : std::as_const(held))
+        store(u.role, u.text, u.at);
+}
+
 void Agent::lookup(const QString &who, const QString &said,
                    std::function<void(const Recalled &)> then)
 {
+    // Said, and not confirmed in the memory yet.
+    QList<Line> waiting;
+    for (const Unstored &u : std::as_const(m_unsaved))
+        waiting.append({u.at.toMSecsSinceEpoch(), u.role, u.text, false});
+
     McpServer *memory = m_mcp->memory();
     if (!memory) {
-        then(Recalled());
+        // Nothing can be read. What was said since the memory went is all
+        // there is to show, and it is shown.
+        Recalled got;
+        got.recent = tailMessages({}, waiting, said, kTailLines, kTailChars, kTailLineChars,
+                                  &got.unsaved);
+        then(got);
         return;
     }
 
+    // THE WORKING SET needs the memory server's session-aware reads. A server
+    // without them is asked exactly as v0.9 asked: forty turns, five notes.
+    // (BURNOS_COMPILED forces the working set on any server, for testing.)
+    const bool compiled = memory->takes(QStringLiteral("search"), QStringLiteral("session_id"))
+                          || qEnvironmentVariableIsSet("BURNOS_COMPILED");
+    const bool profile = compiled && memory->hasTool(QStringLiteral("profile_context"));
+
     struct Pending
     {
-        Recalled got;
-        int left = 2;
+        QList<Line> lines;
+        QString query;
+        QJsonObject found;
+        QJsonObject profile;
+        int left = 0;
     };
     auto pending = std::make_shared<Pending>();
-    const auto done = [pending, then]() {
-        if (--pending->left == 0)
-            then(pending->got);
+    pending->left = profile ? 3 : 2;
+    const auto done = [this, who, said, waiting, compiled, pending, then]() {
+        if (--pending->left > 0)
+            return;
+        Recalled got;
+        got.recent = compiled ? tailMessages(pending->lines, waiting, said, kTailLines,
+                                             kTailChars, kTailLineChars, &got.unsaved)
+                              : tailMessages(pending->lines, waiting, said, kOldTurns,
+                                             kOldChars, kOldChars, &got.unsaved);
+        got.notes = memoryNotes(pending->found, pending->query, said, got.recent,
+                                compiled ? kRelevantLines : kOldNotes,
+                                compiled ? kRelevantChars : kOldNoteChars);
+        got.profile = profileLines(pending->profile);
+        if (!got.notes.isEmpty()) {
+            liveLog(QStringLiteral("%1: memory brought %2 note(s)")
+                        .arg(who)
+                        .arg(got.notes.count(QLatin1Char('\n')) + 1));
+        }
+        then(got);
     };
 
+    // WHAT BEARS ON THE WORDS JUST SAID, from working and long-term memory as
+    // one ranked list where the server can do that.
+    const auto search = [this, who, compiled, pending, done](const QString &query) {
+        pending->query = query;
+        McpServer *memory = m_mcp->memory();
+        if (!memory) {
+            done();
+            return;
+        }
+        memory->call(QStringLiteral("search"), searchFor(memory, query, compiled),
+                     [who, pending, done](bool ok, const QJsonObject &result, const QString &error) {
+            if (ok) {
+                pending->found = answerOf(result);
+            } else {
+                liveLog(QStringLiteral("%1: memory lookup failed (%2), going on without it")
+                            .arg(who)
+                            .arg(error.isEmpty() ? McpServer::textOf(result).left(160) : error));
+            }
+            done();
+        }, kMemoryLookupMs);
+    };
+    // Few words mean little alone, so the memory is asked them together with
+    // the exchange they answer - which comes from the tail, so that search
+    // waits for it.
+    const bool few = compiled
+                     && said.split(QLatin1Char(' '), Qt::SkipEmptyParts).size() < kFewWords;
+
+    // THE NEWEST LINES.
     QJsonObject scope = workingScope();
     scope.insert(QStringLiteral("as_of"), isoTime(QDateTime::currentDateTimeUtc()));
+    if (compiled && memory->takes(QStringLiteral("working_query"), QStringLiteral("limit"))) {
+        scope.insert(QStringLiteral("limit"), kTailFetch);
+        scope.insert(QStringLiteral("kinds"), QJsonArray{QStringLiteral("conversation_turn")});
+    }
     memory->call(QStringLiteral("working_query"), scope,
-                 [who, pending, done](bool ok, const QJsonObject &result, const QString &error) {
+                 [who, said, waiting, few, pending, search, done](bool ok, const QJsonObject &result,
+                                                                    const QString &error) {
         if (ok) {
-            pending->got.recent = recentTurns(result);
+            pending->lines = turnsOf(result);
             liveLog(QStringLiteral("%1: working memory brought %2 turn(s)")
                         .arg(who)
-                        .arg(pending->got.recent.size()));
+                        .arg(pending->lines.size()));
         } else {
             liveLog(QStringLiteral("%1: working memory failed (%2), going on without it")
                         .arg(who)
                         .arg(error.isEmpty() ? McpServer::textOf(result).left(160) : error));
         }
-        done();
-    }, kMemoryLookupMs);
-
-    memory->call(QStringLiteral("search"),
-                 QJsonObject{{"tenant_id", kMemoryTenant},
-                             {"user_id", kMemoryUser},
-                             {"query", said}},
-                 [this, who, pending, done](bool ok, const QJsonObject &result, const QString &error) {
-        if (ok) {
-            pending->got.notes = memoryNotes(result);
-            if (!pending->got.notes.isEmpty()) {
-                liveLog(QStringLiteral("%1: memory brought %2 note(s)")
-                            .arg(who)
-                            .arg(pending->got.notes.count(QLatin1Char('\n')) + 1));
-            }
-        } else {
-            liveLog(QStringLiteral("%1: memory lookup failed (%2), going on without it")
-                        .arg(who)
-                        .arg(error));
+        if (few) {
+            QString query = said;
+            const QJsonArray last = tailMessages(pending->lines, waiting, said, 2, 600, 300, nullptr);
+            for (const QJsonValue &line : last)
+                query += QLatin1Char(' ') + line.toObject().value(QStringLiteral("content")).toString();
+            search(query);
         }
         done();
     }, kMemoryLookupMs);
+    if (!few)
+        search(said);
+
+    // WHAT THE USER ASKED TO BE KEPT IN MIND.
+    if (profile) {
+        memory->call(QStringLiteral("profile_context"),
+                     QJsonObject{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                                 {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)}},
+                     [who, pending, done](bool ok, const QJsonObject &result, const QString &error) {
+            if (ok) {
+                pending->profile = answerOf(result);
+            } else {
+                liveLog(QStringLiteral("%1: the user profile failed (%2), going on without it")
+                            .arg(who)
+                            .arg(error.isEmpty() ? McpServer::textOf(result).left(160) : error));
+            }
+            done();
+        }, kMemoryLookupMs);
+    }
 }
 
 QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
@@ -1697,33 +1927,53 @@ QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
     const QJsonArray &recent = recalled.recent;
     const QString status = statusReport();
 
+    // THE FIXED PART FIRST, the same on every call, so a provider that caches
+    // the start of a request has something to cache.
     QJsonArray messages;
     messages.append(msg(QStringLiteral("system"), QString::fromLatin1(kTalkPrompt)));
     if (remembering) {
         messages.append(msg(QStringLiteral("system"), QString::fromLatin1(kMemoryPrompt)));
     } else {
         messages.append(msg(QStringLiteral("system"),
-                            tr("Your memory is not available right now, so you cannot "
-                               "see anything said before this, and nothing said now is "
-                               "kept until it is back. Say so if it matters.")));
+                            tr("Your memory cannot be reached right now. You are shown "
+                               "only what has been said since it went, which is saved "
+                               "when it is back; anything older you cannot see. Say so "
+                               "if it matters.")));
+    }
+
+    // THE WORKING SET, every part of it read from the memory for this one
+    // answer, the part that changes least first: about the user, what is
+    // relevant, the newest lines.
+    //
+    // The wording over the profile was measured, not guessed. Told "always
+    // call me Captain", the talker answered the very next question without it
+    // in 25 runs of 36 while the line read 'The user wants to be called
+    // Captain' under a header that only said such lines hold for every answer;
+    // kept as the order itself (see the remember tool) under this header, it
+    // was followed in 30 runs of 30.
+    if (!recalled.profile.isEmpty()) {
+        messages.append(msg(QStringLiteral("system"),
+                            tr("ABOUT THE USER - what they told you to keep in mind for "
+                               "good. Check every line before you answer: an instruction "
+                               "is obeyed in THIS answer, whatever it is about, and a fact "
+                               "is respected. Never read the ids out:\n%1")
+                                .arg(recalled.profile)));
     }
     messages.append(msg(QStringLiteral("system"), status));
+    // NOTHING is said when nothing matched. 'Nothing else in your memory
+    // matches what was just said' stood here, to stop a model inventing a
+    // memory, and was read as 'nothing you were told applies': with it the
+    // instruction above went unfollowed in 16 runs of 18, without it in 9. The
+    // rule against guessing is in kMemoryPrompt and holds without the reminder.
     if (!memories.isEmpty()) {
         messages.append(msg(QStringLiteral("system"),
-                            tr("FROM YOUR LONG-TERM MEMORY - what matched what was just "
-                               "said. Use it where it helps, and never read the memory "
+                            tr("RELEVANT MEMORIES - what matched what was just said, out "
+                               "of everything ever said. Use them where they help; where "
+                               "two disagree the newer is right. Never read the memory "
                                "ids out:\n%1")
                                 .arg(memories)));
-    } else if (remembering) {
-        // Said outright, because a model left to fill the gap will invent a
-        // memory rather than admit to none - it once named a favourite editor
-        // it had never been told.
-        messages.append(msg(QStringLiteral("system"),
-                            tr("Your long-term memory holds nothing that matches what "
-                               "was just said. If the question needs a memory, call "
-                               "recall - never answer from a guess.")));
     }
-    // The conversation so far, as the memory tells it.
+    // The newest lines of the conversation, as the memory tells it.
     int turnChars = 0;
     for (const QJsonValue &line : recent) {
         messages.append(line);
@@ -1737,12 +1987,15 @@ QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
         {QStringLiteral("fixed_chars"),
          int(qstrlen(kTalkPrompt) + (remembering ? qstrlen(kMemoryPrompt) : 0))},
         {QStringLiteral("status_chars"), int(status.size())},
+        {QStringLiteral("profile_chars"), int(recalled.profile.size())},
         {QStringLiteral("note_lines"),
          memories.isEmpty() ? 0 : int(memories.count(QLatin1Char('\n')) + 1)},
         {QStringLiteral("note_chars"), int(memories.size())},
         {QStringLiteral("turns"), int(recent.size())},
         {QStringLiteral("turn_chars"), turnChars},
-        {QStringLiteral("memory_chars"), int(memories.size()) + turnChars},
+        {QStringLiteral("unsaved"), recalled.unsaved},
+        {QStringLiteral("memory_chars"),
+         int(recalled.profile.size() + memories.size()) + turnChars},
         {QStringLiteral("said_chars"), int(said.size())},
     };
     return messages;
@@ -1751,6 +2004,7 @@ QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
 void Agent::sendTalk(int turn, const QString &said, const Recalled &recalled)
 {
     const QJsonArray messages = compose(said, recalled);
+    m_talkBase = messages;
     m_talkSent = messages;
 
     liveLog(QStringLiteral("talk %1: heard '%2' - %3 task(s) running, %4 turn(s) from memory")
@@ -1758,12 +2012,17 @@ void Agent::sendTalk(int turn, const QString &said, const Recalled &recalled)
                 .arg(said.left(300))
                 .arg(liveTasks())
                 .arg(recalled.recent.size()));
-    liveLog(QStringLiteral("talk %1: context - %2 chars from memory (%3 note line(s), %4 "
-                           "turn(s)), status %5, fixed %6")
+    liveLog(QStringLiteral("talk %1: context - %2 chars from memory (%3 about the user, %4 "
+                           "relevant in %5 line(s), %6 in %7 line(s) of conversation of "
+                           "which %8 not saved yet), status %9, fixed %10")
                 .arg(turn)
                 .arg(m_stats.value(QStringLiteral("memory_chars")).toInt())
+                .arg(m_stats.value(QStringLiteral("profile_chars")).toInt())
+                .arg(m_stats.value(QStringLiteral("note_chars")).toInt())
                 .arg(m_stats.value(QStringLiteral("note_lines")).toInt())
+                .arg(m_stats.value(QStringLiteral("turn_chars")).toInt())
                 .arg(m_stats.value(QStringLiteral("turns")).toInt())
+                .arg(m_stats.value(QStringLiteral("unsaved")).toInt())
                 .arg(m_stats.value(QStringLiteral("status_chars")).toInt())
                 .arg(m_stats.value(QStringLiteral("fixed_chars")).toInt()));
     askTalker(turn, messages, QStringLiteral("talk %1").arg(turn));
@@ -1776,13 +2035,15 @@ void Agent::context(const QString &said, std::function<void(const QJsonArray &)>
     });
 }
 
-void Agent::askTalker(int turn, const QJsonArray &messages, const QString &who)
+void Agent::askTalker(int turn, const QJsonArray &messages, const QString &who, bool tools)
 {
     OpenRouterClient::Request request;
     request.messages = messages;
-    // Offered on a recall's second round too: some providers refuse a history
-    // holding tool calls without them. A second recall in a turn is not run.
-    request.tools = talkTools(m_mcp->memory() != nullptr);
+    // Offered on a recall's later rounds too: some providers refuse a history
+    // holding tool calls without them. Left out only when the talker is asked
+    // again for words, with nothing but plain messages.
+    if (tools)
+        request.tools = talkTools(m_mcp->memory() != nullptr);
     request.who = who;
     request.timeoutMs = kTalkTimeoutMs;
     request.fastest = true;
@@ -1839,9 +2100,15 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
         const QString callId = value.toObject().value(QStringLiteral("id")).toString();
         did.append(name);
         // RECALL waits for the memory's answer, below. Everything else runs
-        // now. A second recall in the same turn is not run at all.
+        // now. The talker may look twice in a turn; after that it has to
+        // answer with what it has.
         if (name == QLatin1String("recall")) {
-            if (m_recalledTurn != turn) {
+            if (m_recallTurn != turn) {
+                m_recallTurn = turn;
+                m_recalls = 0;
+                m_recallFound.clear();
+            }
+            if (m_recalls < kMaxRecalls && recallQuery.isEmpty()) {
                 recallQuery = args.value(QStringLiteral("query")).toString().trimmed();
                 recallCallId = callId;
             }
@@ -1879,7 +2146,7 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
     }
 
     if (!recallQuery.isEmpty()) {
-        m_recalledTurn = turn;
+        ++m_recalls;
         recall(turn, message, results, recallCallId, recallQuery);
         return; // still thinking: the answer comes after the memory's
     }
@@ -1914,9 +2181,42 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
     if (text.isEmpty())
         text = ack;
     // Some reasoning models leave content empty and put a plain answer in
-    // reasoning instead. Better to say that than nothing.
-    if (text.isEmpty() && calls.isEmpty())
-        text = message.value(QStringLiteral("reasoning")).toString().trimmed();
+    // reasoning instead. Better to say that than nothing - unless it is the
+    // model's notes on its own thinking, which open with a title in bold
+    // ("**Recalling the hint** I am reviewing...") and are never an answer.
+    if (text.isEmpty() && calls.isEmpty()) {
+        const QString thought = message.value(QStringLiteral("reasoning")).toString().trimmed();
+        if (!thought.startsWith(QLatin1String("**")))
+            text = thought;
+    }
+
+    // NO WORDS - it looked something up and then wanted to look again, or it
+    // only thought. Asked once more, in plain messages with no tools to reach
+    // for, and told what its lookups found.
+    if (text.isEmpty() && m_nudgedTurn != turn) {
+        m_nudgedTurn = turn;
+        liveLog(QStringLiteral("talk %1: no words after %2 ms - asking once more, without tools")
+                    .arg(turn)
+                    .arg(reply.ms));
+        QJsonArray messages = m_talkBase;
+        const QJsonValue question = messages.last();
+        messages.removeLast();
+        messages.append(msg(QStringLiteral("system"),
+                            (m_recallTurn == turn && !m_recallFound.isEmpty()
+                                 ? tr("You looked in your memory for this just now.\n%1")
+                                       .arg(m_recallFound)
+                                 : QString())
+                                + tr("Answer now, out loud, in one short sentence, with what "
+                                     "you have. If you do not know, say that you do not know.")));
+        messages.append(question);
+        askTalker(turn, messages, QStringLiteral("talk %1 again").arg(turn), false);
+        return;
+    }
+
+    // Still nothing. When the memory was searched for this and the talker has
+    // no more to say, the true answer is the short one.
+    if (text.isEmpty() && m_recallTurn == turn && m_recalls > 0)
+        text = tr("I do not know.");
 
     if (text.isEmpty()) {
         m_asking.clear();
@@ -1968,6 +2268,8 @@ void Agent::recall(int turn, const QJsonObject &assistant,
                 {QStringLiteral("content"), id == callId ? found
                                                          : results.value(id, QStringLiteral("Done."))}});
         }
+        // Kept, so a second lookup in the same turn is added to the first.
+        m_talkSent = messages;
         askTalker(turn, messages, QStringLiteral("talk %1 recall").arg(turn));
     };
 
@@ -1977,47 +2279,185 @@ void Agent::recall(int turn, const QJsonObject &assistant,
         return;
     }
     liveLog(QStringLiteral("talk %1: recalling '%2'").arg(turn).arg(query));
-    memory->call(QStringLiteral("search"),
-                 QJsonObject{{"tenant_id", kMemoryTenant},
-                             {"user_id", kMemoryUser},
-                             {"query", query}},
-                 [this, answer](bool ok, const QJsonObject &result, const QString &error) {
+    memory->call(QStringLiteral("search"), searchFor(memory, query, true),
+                 [this, answer, query](bool ok, const QJsonObject &result, const QString &error) {
         if (!ok) {
             answer(tr("The memory could not be searched: %1").arg(error));
             return;
         }
-        const QString notes = memoryNotes(result);
+        // Everything that matches is wanted here, even a line already shown:
+        // the talker asked for it by name.
+        const QString notes = memoryNotes(answerOf(result), query, m_asking, QJsonArray(),
+                                          kRelevantLines, kRelevantChars);
         liveLog(QStringLiteral("recall found %1 note(s)")
                     .arg(notes.isEmpty() ? 0 : notes.count(QLatin1Char('\n')) + 1));
-        answer(notes.isEmpty() ? tr("Nothing in the memory matches that.")
-                               : tr("From the memory:\n%1").arg(notes));
+        const QString found = notes.isEmpty() ? tr("Nothing in the memory matches that.")
+                                              : tr("From the memory:\n%1").arg(notes);
+        m_recallFound += tr("Looked for '%1'. %2\n").arg(query, found);
+        answer(found);
     }, 5000);
 }
 
-QString Agent::memoryNotes(const QJsonObject &result)
+// WHAT A SEARCH FOUND, as lines for the talker, each with a short id it can
+// hand back to forget or replace one. Left out: the question itself, whose
+// words were stored a moment before the search ran and so match it perfectly,
+// and any line already shown word for word in the tail.
+QString Agent::memoryNotes(const QJsonObject &found, const QString &query, const QString &said,
+                           const QJsonArray &tail, int maxLines, int maxChars)
 {
-    // Mnemosyne answers with structured content: whether it abstained, and
-    // its hits, each with an id and the text that was remembered.
-    QJsonObject found = result.value(QStringLiteral("structuredContent")).toObject();
-    if (found.isEmpty())
-        found = QJsonDocument::fromJson(McpServer::textOf(result).toUtf8()).object();
-    if (found.value(QStringLiteral("abstained")).toBool())
-        return {};
+    // Mnemosyne gives its hits, each with an id and the text remembered, and
+    // says whether it ABSTAINED: whether, taken together, they cover the
+    // question well enough to answer it. That is the wrong test for one line
+    // worth knowing - "The user is allergic to peanuts." covers little of a
+    // long sentence about ordering satay with crushed peanuts, and is the one
+    // thing that sentence needs. So an abstention does not empty the list; it
+    // only makes each line prove itself by sharing a real word with what was
+    // asked. Without that, a question about the weather on Mars brought back
+    // the allergy too.
+    // ponytail: word overlap, good for keyword memory; a semantic embedding
+    // model on the server makes the scores themselves trustworthy (v0.12).
+    const bool unsure = found.value(QStringLiteral("abstained")).toBool();
+    QStringList stems;
+    if (unsure) {
+        static const QRegularExpression kWord(QStringLiteral("[^\\W_]{5,}"),
+                                              QRegularExpression::UseUnicodePropertiesOption);
+        static const QStringList kEmpty{
+            QStringLiteral("about"), QStringLiteral("there"), QStringLiteral("their"),
+            QStringLiteral("which"), QStringLiteral("where"), QStringLiteral("would"),
+            QStringLiteral("could"), QStringLiteral("shoul"), QStringLiteral("these"),
+            QStringLiteral("those"), QStringLiteral("other"), QStringLiteral("being"),
+            QStringLiteral("pleas"), QStringLiteral("reall"), QStringLiteral("thing")};
+        auto words = kWord.globalMatch(query.toLower());
+        while (words.hasNext()) {
+            const QString stem = words.next().captured(0).left(5);
+            if (!kEmpty.contains(stem) && !stems.contains(stem))
+                stems.append(stem);
+        }
+        if (stems.isEmpty())
+            return {};
+    }
 
-    QStringList lines;
+    QStringList shown;
+    for (const QJsonValue &line : tail)
+        shown.append(line.toObject().value(QStringLiteral("content")).toString());
+
+    struct Note
+    {
+        double score;
+        QString cid;
+        QString text;
+    };
+    QList<Note> notes;
     for (const QJsonValue &value : found.value(QStringLiteral("hits")).toArray()) {
         const QJsonObject hit = value.toObject();
-        const QString text = hit.value(QStringLiteral("text")).toString().simplified();
-        const QString cid = hit.value(QStringLiteral("id")).toString();
-        if (text.isEmpty() || cid.isEmpty())
+        const QJsonObject meta = hit.value(QStringLiteral("metadata")).toObject();
+        QString text = hit.value(QStringLiteral("text")).toString().simplified();
+        QString cid = hit.value(QStringLiteral("id")).toString();
+        if (text.isEmpty())
             continue;
-        if (hit.value(QStringLiteral("score")).toDouble() < kMemoryMinScore)
+        const QString words = spokenWords(text);
+
+        // A WORKING-MEMORY ITEM is known to forget_memory by the ledger record
+        // it cites, and is shown the way a ledger line is: when, who, the words.
+        if (hit.value(QStringLiteral("kind")).toString() == QLatin1String("working")) {
+            QString cited = meta.value(QStringLiteral("evidence_ids")).toArray().first().toString();
+            if (cited.isEmpty())
+                cited = hit.value(QStringLiteral("provenance")).toArray().first().toString();
+            if (!cited.isEmpty())
+                cid = cited;
+            QString created = meta.value(QStringLiteral("created_at")).toString();
+            if (created.isEmpty()) {
+                created = meta.value(QStringLiteral("working_memory")).toObject()
+                              .value(QStringLiteral("created_at")).toString();
+            }
+            const QDateTime at = QDateTime::fromString(created, Qt::ISODateWithMs);
+            if (at.isValid() && words.size() != text.size()) {
+                text = QStringLiteral("[%1] %2: %3")
+                           .arg(at.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+                                text.startsWith(QLatin1String("user: ")) ? QStringLiteral("User")
+                                                                         : QStringLiteral("Burnos"),
+                                words);
+            }
+        }
+        if (cid.isEmpty())
             continue;
-        const QString shortId = cid.left(12);
-        m_memoryIds.insert(shortId, cid);
-        lines.append(QStringLiteral("- [memory %1] %2").arg(shortId, text.left(400)));
-        if (lines.size() >= 5)
+
+        // The question itself, and any question asked before: a question
+        // matches the next question better than any answer does, and holds
+        // nothing to answer with.
+        if (words.isEmpty() || said.contains(words) || words.endsWith(QLatin1Char('?')))
+            continue;
+        bool repeated = false;
+        for (const QString &line : std::as_const(shown)) {
+            if (sameWords(line, words)) {
+                repeated = true;
+                break;
+            }
+        }
+        if (repeated)
+            continue;
+        if (unsure) {
+            const QString lower = words.toLower();
+            bool shares = false;
+            for (const QString &stem : std::as_const(stems)) {
+                if (lower.contains(stem)) {
+                    shares = true;
+                    break;
+                }
+            }
+            if (!shares)
+                continue;
+        }
+        notes.append({hit.value(QStringLiteral("score")).toDouble(), cid, text});
+    }
+    if (notes.isEmpty())
+        return {};
+
+    // BEST FIRST - the memory hands them over with the best at both ends, for
+    // a reader that takes the whole list - and only those worth their place:
+    // within reach of the best one, and never the dregs of a list where
+    // nothing really matched.
+    std::stable_sort(notes.begin(), notes.end(),
+                     [](const Note &a, const Note &b) { return a.score > b.score; });
+    const double floor = qMax(kNoteFloor, notes.first().score * kNoteShare);
+    QStringList lines;
+    int chars = 0;
+    for (const Note &note : std::as_const(notes)) {
+        if (note.score < floor)
             break;
+        const QString shortId = note.cid.left(12);
+        const QString line = QStringLiteral("- [memory %1] %2")
+                                 .arg(shortId, note.text.left(maxChars / maxLines));
+        if (chars + int(line.size()) > maxChars)
+            break;
+        m_memoryIds.insert(shortId, note.cid);
+        lines.append(line);
+        chars += int(line.size());
+        if (lines.size() >= maxLines)
+            break;
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+// WHAT THE USER ASKED TO BE KEPT IN MIND, from their profile in the memory:
+// one line each, with a short id to replace or forget it by.
+QString Agent::profileLines(const QJsonObject &found)
+{
+    QStringList lines;
+    int chars = 0;
+    for (const QJsonValue &value : found.value(QStringLiteral("authoritative")).toArray()) {
+        const QJsonObject entry = value.toObject();
+        const QString statement = entry.value(QStringLiteral("statement")).toString().simplified();
+        const QString id = entry.value(QStringLiteral("id")).toString();
+        if (statement.isEmpty() || id.isEmpty())
+            continue;
+        const QString shortId = id.left(8);
+        const QString line = QStringLiteral("- [profile %1] %2").arg(shortId, statement.left(240));
+        if (lines.size() >= kProfileLines || chars + int(line.size()) > kProfileChars)
+            break;
+        m_profileIds.insert(shortId, id);
+        lines.append(line);
+        chars += int(line.size());
     }
     return lines.join(QLatin1Char('\n'));
 }
@@ -2035,52 +2475,142 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
             return tr("My memory is not available right now.");
         if (fact.isEmpty())
             return tr("I didn't catch what to remember.");
-        ++m_writes;
-        memory->call(QStringLiteral("capture"),
-                     QJsonObject{{"tenant_id", kMemoryTenant},
-                                 {"user_id", kMemoryUser},
-                                 {"actor", "burnos"},
-                                 {"source_type", "conversation"},
-                                 {"content", fact}},
-                     [this, fact](bool ok, const QJsonObject &result, const QString &error) {
-            --m_writes;
-            if (ok) {
-                liveLog(QStringLiteral("memory: REMEMBERED '%1' as %2")
-                            .arg(fact.left(200),
-                                 result.value(QStringLiteral("structuredContent")).toObject()
-                                     .value(QStringLiteral("cid")).toString().left(12)));
-                return;
-            }
-            const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
-            liveLog(QStringLiteral("memory: could NOT remember '%1': %2").arg(fact.left(200), why));
-            emit say(tr("I could not save that to my memory: %1").arg(why), 0);
-        });
+        const QJsonObject who{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                              {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)}};
+        const auto with = [who](std::initializer_list<QPair<QString, QJsonValue>> more) {
+            QJsonObject all = who;
+            for (const auto &pair : more)
+                all.insert(pair.first, pair.second);
+            return all;
+        };
+        const QString sorry = tr("I could not save that to my memory: %1");
+
+        // WHAT IT REPLACES, when the talker named a line it was shown. The old
+        // one goes, so the two never sit side by side.
+        const QString replaces = args.value(QStringLiteral("replaces")).toString().trimmed();
+        const QString oldProfile = m_profileIds.value(replaces.left(8));
+        const QString oldMemory = m_memoryIds.value(replaces.left(12));
+
+        // INSTRUCTIONS, PREFERENCES AND FACTS ABOUT THE USER go into their
+        // profile, which is shown on every answer; anything else is kept as a
+        // line, found when it bears on what is said. The profile is used only
+        // on a server that can also take an entry back - or "forget that"
+        // could not be honoured - and always as an explicit preference: a
+        // hard instruction needs operator authority, which a model must not
+        // hold, and an identity entry retires every preference beside it.
+        const QString kind = args.value(QStringLiteral("kind")).toString();
+        const bool keep = (kind == QLatin1String("instruction") || kind == QLatin1String("preference")
+                           || kind == QLatin1String("about_me"))
+                          && memory->hasTool(QStringLiteral("profile_retire"))
+                          && memory->hasTool(QStringLiteral("profile_record_explicit"));
+        // The user's own sentence is the evidence: forgetting it takes what
+        // was built on it along.
+        const QJsonArray source = m_lastUserCid.isEmpty() ? QJsonArray() : QJsonArray{m_lastUserCid};
+        if (keep && !oldProfile.isEmpty()) {
+            write(QStringLiteral("profile_correct"),
+                  with({{QStringLiteral("id"), oldProfile}, {QStringLiteral("statement"), fact}}),
+                  QStringLiteral("REMEMBERED about the user, in place of %1: '%2'")
+                      .arg(oldProfile.left(8), fact.left(200)),
+                  sorry);
+        } else if (keep) {
+            // An instruction is kept as one, in so many words: a small model
+            // obeys "Standing instruction: ..." where it merely notes "The
+            // user wants ...".
+            const QString statement = kind == QLatin1String("instruction")
+                                              && !fact.startsWith(QLatin1String("Standing instruction"))
+                                          ? QString(QStringLiteral("Standing instruction: ") + fact)
+                                          : fact;
+            write(QStringLiteral("profile_record_explicit"),
+                  with({{QStringLiteral("statement"), statement},
+                        {QStringLiteral("source_evidence_cids"), source}}),
+                  QStringLiteral("REMEMBERED about the user: '%1'").arg(fact.left(200)), sorry);
+        } else {
+            // Dated, so that of two remembered lines that disagree the talker
+            // can tell which is the newer.
+            write(QStringLiteral("capture"),
+                  with({{QStringLiteral("actor"), QStringLiteral("assistant")},
+                        {QStringLiteral("source_type"), QStringLiteral("conversation")},
+                        {QStringLiteral("content"),
+                         QStringLiteral("[%1] Remembered: %2")
+                             .arg(QDateTime::currentDateTime().toString(
+                                      QStringLiteral("yyyy-MM-dd HH:mm:ss")),
+                                  fact)},
+                        {QStringLiteral("metadata"),
+                         QJsonObject{{QStringLiteral("kind"), QStringLiteral("remembered")},
+                                     {QStringLiteral("source_evidence_cids"), source}}}}),
+                  QStringLiteral("REMEMBERED '%1'").arg(fact.left(200)), sorry);
+        }
+        // profile_correct adds the new statement but leaves the one it
+        // corrects standing, so that one is retired here; so is a profile
+        // line replaced by a plain fact.
+        if (!oldProfile.isEmpty() && memory->hasTool(QStringLiteral("profile_retire"))) {
+            write(QStringLiteral("profile_retire"), with({{QStringLiteral("id"), oldProfile}}),
+                  QStringLiteral("retired the profile line it replaces, %1").arg(oldProfile.left(8)),
+                  QString());
+        }
+        if (!oldMemory.isEmpty()) {
+            write(QStringLiteral("forget"),
+                  QJsonObject{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                              {QStringLiteral("cid"), oldMemory}},
+                  QStringLiteral("FORGOT the line it replaces, %1").arg(oldMemory.left(12)),
+                  QString());
+        }
         *acted = true;
         return tr("Got it.");
     }
 
     if (name == QLatin1String("forget_memory")) {
         McpServer *memory = m_mcp->memory();
-        const QString id = args.value(QStringLiteral("id")).toString().trimmed();
-        const QString cid = m_memoryIds.value(id.left(12),
-                                              id.size() == 64 ? id : QString());
         if (!memory)
             return tr("My memory is not available right now.");
+        // The id as it was shown, whatever the talker wrapped round it.
+        static const QRegularExpression kId(QStringLiteral("[0-9a-f][0-9a-f-]{7,63}"));
+        const QString id = kId.match(args.value(QStringLiteral("id")).toString().toLower()).captured(0);
+        const QString sorry = tr("I could not forget that: %1");
+
+        // A LINE OF THE PROFILE is taken back.
+        const QString profileId = m_profileIds.value(id.left(8));
+        if (!profileId.isEmpty() && (id.size() == 8 || id.size() == 36)
+            && memory->hasTool(QStringLiteral("profile_retire"))) {
+            write(QStringLiteral("profile_retire"),
+                  QJsonObject{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                              {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)},
+                              {QStringLiteral("id"), profileId}},
+                  QStringLiteral("FORGOT the profile line %1").arg(profileId.left(8)), sorry);
+            *acted = true;
+            return tr("Forgotten.");
+        }
+
+        const QString cid = m_memoryIds.value(id.left(12), id.size() == 64 ? id : QString());
         if (cid.isEmpty())
             return tr("I couldn't tell which memory that was.");
+        // A REMEMBERED LINE GOES WITH THE SENTENCE IT CAME FROM. The memory
+        // erases what was built on a forgotten line by itself; the other way
+        // round - the user's own sentence behind a remembered fact - is read
+        // off the record here and forgotten with it.
+        const QJsonObject erase{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)}};
         ++m_writes;
-        memory->call(QStringLiteral("forget"),
-                     QJsonObject{{"tenant_id", kMemoryTenant}, {"cid", cid}},
-                     [this, cid](bool ok, const QJsonObject &result, const QString &error) {
+        memory->call(QStringLiteral("get"),
+                     QJsonObject{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                                 {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)},
+                                 {QStringLiteral("id"), cid}},
+                     [this, cid, erase, sorry](bool ok, const QJsonObject &result, const QString &) {
             --m_writes;
-            if (ok) {
-                liveLog(QStringLiteral("memory: FORGOT %1").arg(cid.left(12)));
-                return;
+            const QJsonArray sources = ok ? answerOf(result).value(QStringLiteral("record")).toObject()
+                                                .value(QStringLiteral("metadata")).toObject()
+                                                .value(QStringLiteral("source_evidence_cids")).toArray()
+                                          : QJsonArray();
+            for (const QJsonValue &source : sources) {
+                QJsonObject one = erase;
+                one.insert(QStringLiteral("cid"), source.toString());
+                write(QStringLiteral("forget"), one,
+                      QStringLiteral("FORGOT the sentence it came from, %1").arg(source.toString().left(12)),
+                      QString());
             }
-            const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
-            liveLog(QStringLiteral("memory: could NOT forget %1: %2").arg(cid.left(12), why));
-            emit say(tr("I could not forget that: %1").arg(why), 0);
-        });
+            QJsonObject one = erase;
+            one.insert(QStringLiteral("cid"), cid);
+            write(QStringLiteral("forget"), one, QStringLiteral("FORGOT %1").arg(cid.left(12)), sorry);
+        }, kMemoryStoreMs);
         *acted = true;
         return tr("Forgotten.");
     }
@@ -2236,6 +2766,8 @@ void Agent::spoken(int turn)
 
 void Agent::stopAll()
 {
+    // Whatever was said still goes into the memory, answered or not.
+    release();
     if (m_request) {
         m_ai->cancel(m_request);
         m_request = 0;
@@ -2255,6 +2787,23 @@ void Agent::store(const QString &role, const QString &text, const QDateTime &at)
     const QString line = text.simplified();
     if (line.isEmpty())
         return;
+
+    // SAID, AND NOT IN THE MEMORY YET. Until working memory confirms the line
+    // it is shown from here: the next answer must not miss it because it was
+    // asked for a moment too soon, or because the memory is down.
+    bool known = false;
+    for (const Unstored &u : std::as_const(m_unsaved)) {
+        if (u.role == role && u.text == line && u.at == at) {
+            known = true;
+            break;
+        }
+    }
+    if (!known) {
+        m_unsaved.append({role, line, at});
+        while (m_unsaved.size() > kMaxUnsaved)
+            m_unsaved.removeFirst();
+    }
+
     McpServer *memory = m_mcp->memory();
     if (!memory) {
         if (m_backlog.size() < kMaxBacklog) {
@@ -2278,56 +2827,128 @@ void Agent::store(const QString &role, const QString &text, const QDateTime &at)
     memory->call(QStringLiteral("capture"),
                  QJsonObject{{"tenant_id", kMemoryTenant},
                              {"user_id", kMemoryUser},
-                             {"actor", user ? "user" : "burnos"},
+                             // What Burnos says is the assistant's, a step
+                             // below the user's own words in trust: its
+                             // answers must never weigh as their testimony.
+                             {"actor", user ? "user" : "assistant"},
+                             {"trust_tier", user ? 0 : 2},
                              {"source_type", "conversation"},
                              {"content", said},
                              {"session_id", kMemorySession},
                              {"metadata", QJsonObject{{QStringLiteral("role"), role},
                                                       {QStringLiteral("said_at"), when}}}},
-                 [this, role, line, at, when](bool ok, const QJsonObject &result, const QString &error) {
+                 [this, role, line, at](bool ok, const QJsonObject &result, const QString &error) {
         --m_writes;
         if (!ok) {
             const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
             liveLog(QStringLiteral("memory: could NOT store %1 '%2': %3")
                         .arg(role, line.left(120), why));
             // The memory did not answer at all: again when it does. A refusal
-            // is final.
+            // is final, and the line is no longer on its way anywhere.
             if (!error.isEmpty() && m_backlog.size() < kMaxBacklog)
                 m_backlog.append({role, line, at});
+            else
+                saved(role, line, at);
             return;
         }
-        QJsonObject made = result.value(QStringLiteral("structuredContent")).toObject();
-        if (made.isEmpty())
-            made = QJsonDocument::fromJson(McpServer::textOf(result).toUtf8()).object();
-        const QString cid = made.value(QStringLiteral("cid")).toString();
-        McpServer *memory = m_mcp->memory();
-        if (cid.isEmpty() || !memory) {
-            liveLog(QStringLiteral("memory: stored %1 '%2' but not into today's conversation: %3")
-                        .arg(role, line.left(120),
-                             cid.isEmpty() ? QStringLiteral("no cid came back")
-                                           : QStringLiteral("the memory went away")));
+        const QString cid = answerOf(result).value(QStringLiteral("cid")).toString();
+        if (cid.isEmpty()) {
+            liveLog(QStringLiteral("memory: stored %1 '%2' but not into today's conversation: "
+                                   "no cid came back")
+                        .arg(role, line.left(120)));
             return;
         }
-        // And into working memory, citing that record, so the next answer
-        // sees it as part of the conversation.
-        QJsonObject turn = workingScope();
-        turn.insert(QStringLiteral("kind"), QStringLiteral("conversation_turn"));
-        turn.insert(QStringLiteral("content"), role + QStringLiteral(": ") + line);
-        turn.insert(QStringLiteral("evidence_ids"), QJsonArray{cid});
-        turn.insert(QStringLiteral("ttl_seconds"), kWorkingTtlSeconds);
-        turn.insert(QStringLiteral("created_at"), when);
-        ++m_writes;
-        memory->call(QStringLiteral("working_seed"), turn,
-                     [this, role, line](bool ok, const QJsonObject &result, const QString &error) {
-            --m_writes;
-            if (ok)
-                return;
-            liveLog(QStringLiteral("memory: %1 '%2' is in the ledger but NOT in working memory: %3")
-                        .arg(role, line.left(120),
-                             error.isEmpty() ? McpServer::textOf(result).left(160) : error));
-        }, kMemoryStoreMs);
+        if (role == QLatin1String("user"))
+            m_lastUserCid = cid;
         liveLog(QStringLiteral("memory: stored %1 '%2' as %3")
                     .arg(role, line.left(80), cid.left(12)));
+        seed(role, line, at, cid, 1);
+    }, kMemoryStoreMs);
+}
+
+// And into working memory, citing the ledger record, so the next answer sees
+// the line as part of the conversation. Tried once more when the memory gave
+// no answer; the item carries the record's own id, so a second try can never
+// put the line there twice.
+void Agent::seed(const QString &role, const QString &line, const QDateTime &at,
+                 const QString &cid, int triesLeft)
+{
+    McpServer *memory = m_mcp->memory();
+    if (!memory) {
+        liveLog(QStringLiteral("memory: %1 '%2' is in the ledger but NOT in working memory: "
+                               "the memory went away")
+                    .arg(role, line.left(120)));
+        return;
+    }
+    QJsonObject turn = workingScope();
+    turn.insert(QStringLiteral("item_id"), cid);
+    turn.insert(QStringLiteral("kind"), QStringLiteral("conversation_turn"));
+    turn.insert(QStringLiteral("content"), role + QStringLiteral(": ") + line);
+    turn.insert(QStringLiteral("evidence_ids"), QJsonArray{cid});
+    turn.insert(QStringLiteral("ttl_seconds"), kWorkingTtlSeconds);
+    turn.insert(QStringLiteral("created_at"), isoTime(at));
+    ++m_writes;
+    memory->call(QStringLiteral("working_seed"), turn,
+                 [this, role, line, at, cid, triesLeft](bool ok, const QJsonObject &result,
+                                                        const QString &error) {
+        --m_writes;
+        const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
+        if (ok || why.contains(QLatin1String("already exists"))) {
+            saved(role, line, at);
+            return;
+        }
+        if (!error.isEmpty() && triesLeft > 0) {
+            liveLog(QStringLiteral("memory: %1 '%2' did not reach working memory (%3) - "
+                                   "trying once more")
+                        .arg(role, line.left(120), why));
+            QTimer::singleShot(500, this, [this, role, line, at, cid, triesLeft]() {
+                seed(role, line, at, cid, triesLeft - 1);
+            });
+            return;
+        }
+        liveLog(QStringLiteral("memory: %1 '%2' is in the ledger but NOT in working memory: %3")
+                    .arg(role, line.left(120), why));
+    }, kMemoryStoreMs);
+}
+
+// The line is in working memory: it no longer has to be shown from here.
+void Agent::saved(const QString &role, const QString &line, const QDateTime &at)
+{
+    for (int i = 0; i < int(m_unsaved.size()); ++i) {
+        const Unstored &u = m_unsaved.at(i);
+        if (u.role == role && u.text == line && u.at == at) {
+            m_unsaved.removeAt(i);
+            return;
+        }
+    }
+}
+
+// ONE WRITE TO THE MEMORY THAT NOBODY WAITS FOR. `done` is what the log says
+// when it worked, with the id of what was made; `sorry`, when not empty, is
+// said out loud when it did not, with the reason in place of %1.
+void Agent::write(const QString &tool, const QJsonObject &arguments, const QString &done,
+                  const QString &sorry)
+{
+    McpServer *memory = m_mcp->memory();
+    if (!memory)
+        return;
+    ++m_writes;
+    memory->call(tool, arguments,
+                 [this, tool, done, sorry](bool ok, const QJsonObject &result, const QString &error) {
+        --m_writes;
+        if (ok) {
+            const QJsonObject made = answerOf(result);
+            const QString id = made.value(QStringLiteral("cid")).toString(
+                made.value(QStringLiteral("id")).toString());
+            liveLog(QStringLiteral("memory: ") + done
+                    + (id.isEmpty() ? QString() : QStringLiteral(" as ") + id.left(12)));
+            return;
+        }
+        const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
+        liveLog(QStringLiteral("memory: ") + tool + QStringLiteral(" FAILED (") + why
+                + QStringLiteral(") - wanted: ") + done);
+        if (!sorry.isEmpty())
+            emit say(sorry.arg(why), 0);
     }, kMemoryStoreMs);
 }
 

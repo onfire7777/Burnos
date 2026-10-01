@@ -166,7 +166,7 @@ public:
     // provider counted for it.
     QJsonObject lastStats() const { return m_stats; }
     // Nothing is on its way to the memory.
-    bool isQuiet() const { return m_writes == 0; }
+    bool isQuiet() const { return m_writes == 0 && m_held.isEmpty(); }
     // A probe starts no tasks: a test must never touch the desktop.
     void setProbe(bool on) { m_probe = on; }
 
@@ -183,31 +183,46 @@ signals:
 
 private:
     void talk(const QString &said);
-    // What the memory gave for one answer.
+    // THE WORKING SET: what the memory gave for one answer, and all of what
+    // stands in for a chat. Built afresh each time and thrown away after.
     struct Recalled
     {
-        QString notes;     // long-term memory, as lines
-        QJsonArray recent; // the conversation so far, as messages
+        QString profile;   // what the user asked to be kept in mind, as lines
+        QString notes;     // what bears on the words just said, as lines
+        QJsonArray recent; // the newest lines of the conversation, as messages
+        int unsaved = 0;   // how many of those are not in the memory yet
     };
     // Asks the memory, and calls `then` exactly once with what it gave - at
-    // once, with nothing, when there is no memory. `who` names it in the log.
+    // once, with only the lines not saved yet, when there is no memory. `who`
+    // names it in the log.
     void lookup(const QString &who, const QString &said,
                 std::function<void(const Recalled &)> then);
-    // The whole request for the talker: instructions, status, what the memory
-    // gave, the new words. Sizes every part into m_stats.
+    // The whole request for the talker: instructions, status, the working
+    // set, the new words. Sizes every part into m_stats.
     QJsonArray compose(const QString &said, const Recalled &recalled);
     void sendTalk(int turn, const QString &said, const Recalled &recalled);
-    // One question to the talking model - fast provider, the talker's tools -
-    // answered on onTalkAnswer.
-    void askTalker(int turn, const QJsonArray &messages, const QString &who);
+    // One question to the talking model - fast provider, and the talker's
+    // tools unless `tools` is false - answered on onTalkAnswer.
+    void askTalker(int turn, const QJsonArray &messages, const QString &who, bool tools = true);
     void onTalkAnswer(int turn, const OpenRouterClient::Reply &reply);
     // The talker asked its memory something: look it up and ask the talker
     // once more with what was found, for the answer to say.
     void recall(int turn, const QJsonObject &assistant, const QHash<QString, QString> &results,
                 const QString &callId, const QString &query);
     // What a memory search found, as lines for the talker, each with a short
-    // id it can hand back to forget one.
-    QString memoryNotes(const QJsonObject &result);
+    // id it can hand back to forget or replace one - without the question
+    // itself and without what `tail` already shows word for word.
+    QString memoryNotes(const QJsonObject &found, const QString &query, const QString &said,
+                        const QJsonArray &tail, int maxLines, int maxChars);
+    // The user's profile as the memory returned it, as lines with short ids.
+    QString profileLines(const QJsonObject &found);
+    // One write to the memory that nobody waits for.
+    void write(const QString &tool, const QJsonObject &arguments, const QString &done,
+               const QString &sorry);
+    // A stored line into working memory, citing its ledger record.
+    void seed(const QString &role, const QString &line, const QDateTime &at, const QString &cid,
+              int triesLeft);
+    void saved(const QString &role, const QString &line, const QDateTime &at);
     // Carries out one of the talker's three tools and says, in a few words,
     // what came of it. `acted` is false when nothing could be done.
     QString runTalkTool(const QString &name, const QJsonObject &args, bool *acted);
@@ -221,6 +236,9 @@ private:
                const QDateTime &at = QDateTime::currentDateTimeUtc());
     // Stores what was said while the memory was not up.
     void flushBacklog();
+    // Stores what the user said this turn, held back while the memory was
+    // read for it.
+    void release();
     void pruneTasks();
     void updateWorking();
     Task *task(int id) const;
@@ -229,12 +247,22 @@ private:
     ComposioClient *const m_composio;
     // The user's MCP servers, their long-term memory among them.
     McpClient *m_mcp = nullptr;
-    // Short memory ids the talker has been shown, and the full ids behind them.
+    // Short ids the talker has been shown - of remembered lines and of profile
+    // lines - and the full ids behind them.
     QHash<QString, QString> m_memoryIds;
-    // What the talker was last sent, for a recall's second round, and the turn
-    // that has already had one - a second recall in a turn is refused.
+    QHash<QString, QString> m_profileIds;
+    // The ledger record of the last thing the user said: the evidence for
+    // whatever the talker is asked to remember about it.
+    QString m_lastUserCid;
+    // What the talker was first sent this turn, and that plus the lookups it
+    // has made since. It may look twice in a turn; what it found is kept for
+    // the one time it is asked again because it gave no words.
+    QJsonArray m_talkBase;
     QJsonArray m_talkSent;
-    int m_recalledTurn = 0;
+    int m_recallTurn = 0;
+    int m_recalls = 0;
+    QString m_recallFound;
+    int m_nudgedTurn = 0;
     // The last request's size and cost, a count of the writes to the memory
     // still in flight, and whether this is a probe.
     QJsonObject m_stats;
@@ -242,16 +270,24 @@ private:
     bool m_probe = false;
 
     // THERE IS NO CONVERSATION KEPT HERE. What was said lives in the memory
-    // and is read back from it before every answer. This is only what could
-    // not be stored yet because the memory was not up - stored, in the order
-    // it was said, the moment it is - and it is never shown to a model.
+    // and is read back from it before every answer. These two are the
+    // memory's own queue and nothing more.
     struct Unstored
     {
         QString role;
         QString text;
         QDateTime at;
     };
+    // What could not be stored because the memory was not up: stored, in the
+    // order it was said, the moment it is.
     QList<Unstored> m_backlog;
+    // What has been said and is not confirmed in working memory yet - on its
+    // way, or waiting in the backlog. Shown with the newest lines until it
+    // is, at most a dozen, and dropped from here the moment it is saved.
+    QList<Unstored> m_unsaved;
+    // The user's words of this turn, held for the instant the memory is read
+    // for them - see hear() - and stored the moment it has been.
+    QList<Unstored> m_held;
 
     QList<QPointer<Task>> m_tasks;
     int m_nextTask = 0;

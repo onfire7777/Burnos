@@ -214,8 +214,9 @@ private:
     // itself and without what `tail` already shows word for word.
     QString memoryNotes(const QJsonObject &found, const QString &query, const QString &said,
                         const QJsonArray &tail, int maxLines, int maxChars);
-    // The user's profile as the memory returned it, as lines with short ids.
-    QString profileLines(const QJsonObject &found);
+    // The user's profile as the memory returned it, as lines with short ids:
+    // standing instructions first, then what bears on `said`, then the rest.
+    QString profileLines(const QJsonObject &found, const QString &said);
     // One write to the memory that nobody waits for.
     void write(const QString &tool, const QJsonObject &arguments, const QString &done,
                const QString &sorry);
@@ -251,6 +252,11 @@ private:
     // lines - and the full ids behind them.
     QHash<QString, QString> m_memoryIds;
     QHash<QString, QString> m_profileIds;
+    // What the profile says, word for word, and what was last remembered: the
+    // talker now and then asks for the same thing to be kept twice, a turn
+    // apart, and it is kept once.
+    QStringList m_profileSaid;
+    QStringList m_remembered;
     // The ledger record of the last thing the user said: the evidence for
     // whatever the talker is asked to remember about it.
     QString m_lastUserCid;

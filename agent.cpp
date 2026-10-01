@@ -49,7 +49,9 @@ constexpr int kRelevantTokens = 600;
 constexpr int kRelevantLines = 8;
 constexpr int kRelevantChars = 2400;
 constexpr int kRelevantLineChars = 300;
-constexpr int kProfileLines = 10;
+// The characters are the budget; the line count only stops a profile of very
+// short lines from becoming a list nobody reads to the end.
+constexpr int kProfileLines = 20;
 constexpr int kProfileChars = 1200;
 // Fewer words than this mean little alone - "yes", "why?", "the second one" -
 // so the memory is asked them together with the exchange they answer.
@@ -475,6 +477,61 @@ bool sameWords(const QString &shown, const QString &words)
 {
     return shown.endsWith(QLatin1String("...")) ? words.startsWith(shown.chopped(3))
                                                 : shown == words;
+}
+
+// The words of a sentence that carry what it is about, each cut to five
+// letters so that "peanut" finds "peanuts": two lines that share one are
+// taken to be about the same thing.
+// ponytail: word overlap, good for keyword memory; a semantic embedding model
+// on the server makes the scores themselves trustworthy (v0.12).
+QStringList stemsOf(const QString &text)
+{
+    static const QRegularExpression kWord(QStringLiteral("[^\\W_]{5,}"),
+                                          QRegularExpression::UseUnicodePropertiesOption);
+    static const QStringList kEmpty{
+        QStringLiteral("about"), QStringLiteral("there"), QStringLiteral("their"),
+        QStringLiteral("which"), QStringLiteral("where"), QStringLiteral("would"),
+        QStringLiteral("could"), QStringLiteral("shoul"), QStringLiteral("these"),
+        QStringLiteral("those"), QStringLiteral("other"), QStringLiteral("being"),
+        QStringLiteral("pleas"), QStringLiteral("reall"), QStringLiteral("thing")};
+    QStringList stems;
+    auto words = kWord.globalMatch(text.toLower());
+    while (words.hasNext()) {
+        const QString stem = words.next().captured(0).left(5);
+        if (!kEmpty.contains(stem) && !stems.contains(stem))
+            stems.append(stem);
+    }
+    return stems;
+}
+
+// WHETHER A CAPTURE KEPT ANYTHING. The memory answers with a cid either way:
+// it hands back the id the record would have had when it stores nothing,
+// which it does once one of its own limits is reached. Only `created` - or
+// `idempotent`, for a record that was there already - means the words are in
+// the ledger. A server too old to say either is taken at its word.
+bool kept(const QJsonObject &captured)
+{
+    if (!captured.contains(QStringLiteral("created"))
+        && !captured.contains(QStringLiteral("idempotent")))
+        return true;
+    return captured.value(QStringLiteral("created")).toBool()
+           || captured.value(QStringLiteral("idempotent")).toBool();
+}
+
+// WHAT BURNOS SAYS OR WRITES ITSELF is the assistant's, a step below the
+// user's own words in trust, and is marked as something SUGGESTED to them. The
+// mark is not decoration. Left to itself the memory classes whatever the
+// assistant authored as self-generated and keeps sixteen such records per
+// store, for good: the seventeenth capture is answered with an id and stored
+// nowhere. Found on 1 October - from its sixteenth answer on, Burnos's half of
+// every conversation was missing from the ledger and from working memory, and
+// only the lines still waiting here hid it. A suggestion is kept without
+// limit, weighs less than the user's words in a search, and can never stand
+// as evidence for a fact about them.
+QJsonObject ownWords(QJsonObject metadata)
+{
+    metadata.insert(QStringLiteral("reality_class"), QStringLiteral("externally_suggested"));
+    return metadata;
 }
 
 QString nowWords()
@@ -1834,7 +1891,7 @@ void Agent::lookup(const QString &who, const QString &said,
         got.notes = memoryNotes(pending->found, pending->query, said, got.recent,
                                 compiled ? kRelevantLines : kOldNotes,
                                 compiled ? kRelevantChars : kOldNoteChars);
-        got.profile = profileLines(pending->profile);
+        got.profile = profileLines(pending->profile, said);
         if (!got.notes.isEmpty()) {
             liveLog(QStringLiteral("%1: memory brought %2 note(s)")
                         .arg(who)
@@ -2314,28 +2371,10 @@ QString Agent::memoryNotes(const QJsonObject &found, const QString &query, const
     // only makes each line prove itself by sharing a real word with what was
     // asked. Without that, a question about the weather on Mars brought back
     // the allergy too.
-    // ponytail: word overlap, good for keyword memory; a semantic embedding
-    // model on the server makes the scores themselves trustworthy (v0.12).
     const bool unsure = found.value(QStringLiteral("abstained")).toBool();
-    QStringList stems;
-    if (unsure) {
-        static const QRegularExpression kWord(QStringLiteral("[^\\W_]{5,}"),
-                                              QRegularExpression::UseUnicodePropertiesOption);
-        static const QStringList kEmpty{
-            QStringLiteral("about"), QStringLiteral("there"), QStringLiteral("their"),
-            QStringLiteral("which"), QStringLiteral("where"), QStringLiteral("would"),
-            QStringLiteral("could"), QStringLiteral("shoul"), QStringLiteral("these"),
-            QStringLiteral("those"), QStringLiteral("other"), QStringLiteral("being"),
-            QStringLiteral("pleas"), QStringLiteral("reall"), QStringLiteral("thing")};
-        auto words = kWord.globalMatch(query.toLower());
-        while (words.hasNext()) {
-            const QString stem = words.next().captured(0).left(5);
-            if (!kEmpty.contains(stem) && !stems.contains(stem))
-                stems.append(stem);
-        }
-        if (stems.isEmpty())
-            return {};
-    }
+    const QStringList stems = unsure ? stemsOf(query) : QStringList();
+    if (unsure && stems.isEmpty())
+        return {};
 
     QStringList shown;
     for (const QJsonValue &line : tail)
@@ -2441,23 +2480,71 @@ QString Agent::memoryNotes(const QJsonObject &found, const QString &query, const
 
 // WHAT THE USER ASKED TO BE KEPT IN MIND, from their profile in the memory:
 // one line each, with a short id to replace or forget it by.
-QString Agent::profileLines(const QJsonObject &found)
+//
+// The memory hands the entries over oldest first, so once there are more than
+// fit, taking them as they come would never show the newest - the eleventh
+// thing they said about themselves would be kept and never seen. What goes
+// first is what must not be missing: their standing instructions, then what
+// shares a word with what was just said, then the rest, the newest first in
+// each. What is left out is still in the memory, in the user's own sentence,
+// and a search finds it there.
+QString Agent::profileLines(const QJsonObject &found, const QString &said)
 {
-    QStringList lines;
-    int chars = 0;
+    struct Entry
+    {
+        int rank;
+        QString since;
+        QString id;
+        QString statement;
+    };
+    const QStringList stems = stemsOf(said);
+    QList<Entry> entries;
+    m_profileSaid.clear();
     for (const QJsonValue &value : found.value(QStringLiteral("authoritative")).toArray()) {
         const QJsonObject entry = value.toObject();
         const QString statement = entry.value(QStringLiteral("statement")).toString().simplified();
         const QString id = entry.value(QStringLiteral("id")).toString();
         if (statement.isEmpty() || id.isEmpty())
             continue;
-        const QString shortId = id.left(8);
-        const QString line = QStringLiteral("- [profile %1] %2").arg(shortId, statement.left(240));
-        if (lines.size() >= kProfileLines || chars + int(line.size()) > kProfileChars)
+        int rank = 2;
+        static const QLatin1String kOrder("Standing instruction: ");
+        m_profileSaid.append((statement.startsWith(kOrder) ? statement.mid(kOrder.size()) : statement)
+                                 .toLower());
+        if (statement.startsWith(QLatin1String("Standing instruction"))) {
+            rank = 0;
+        } else {
+            const QString lower = statement.toLower();
+            for (const QString &stem : stems) {
+                if (lower.contains(stem)) {
+                    rank = 1;
+                    break;
+                }
+            }
+        }
+        // An ISO time in UTC, so the text itself sorts by time.
+        entries.append({rank, entry.value(QStringLiteral("valid_from")).toString(), id, statement});
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return a.rank != b.rank ? a.rank < b.rank : a.since > b.since;
+    });
+
+    QStringList lines;
+    int chars = 0;
+    for (const Entry &entry : std::as_const(entries)) {
+        if (lines.size() >= kProfileLines)
             break;
-        m_profileIds.insert(shortId, id);
+        const QString shortId = entry.id.left(8);
+        const QString line = QStringLiteral("- [profile %1] %2").arg(shortId, entry.statement.left(240));
+        if (chars + int(line.size()) > kProfileChars)
+            continue; // a shorter one further down may still fit
+        m_profileIds.insert(shortId, entry.id);
         lines.append(line);
         chars += int(line.size());
+    }
+    if (lines.size() < entries.size()) {
+        liveLog(QStringLiteral("memory: the profile holds %1 line(s), %2 shown")
+                    .arg(entries.size())
+                    .arg(lines.size()));
     }
     return lines.join(QLatin1Char('\n'));
 }
@@ -2490,6 +2577,22 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
         const QString replaces = args.value(QStringLiteral("replaces")).toString().trimmed();
         const QString oldProfile = m_profileIds.value(replaces.left(8));
         const QString oldMemory = m_memoryIds.value(replaces.left(12));
+
+        // SAID ONCE, KEPT ONCE. The talker is shown the user's earlier
+        // "remember that ..." and its own "Got it.", and nothing that proves
+        // the call was made - so now and then it makes it again a turn later.
+        // Seven of twenty-five facts were stored twice before this.
+        const QString key = fact.toLower();
+        if (oldProfile.isEmpty() && oldMemory.isEmpty()
+            && (m_remembered.contains(key) || m_profileSaid.contains(key))) {
+            liveLog(QStringLiteral("memory: '%1' is remembered already - not kept twice")
+                        .arg(fact.left(200)));
+            *acted = true;
+            return tr("Got it.");
+        }
+        m_remembered.append(key);
+        while (m_remembered.size() > 40)
+            m_remembered.removeFirst();
 
         // INSTRUCTIONS, PREFERENCES AND FACTS ABOUT THE USER go into their
         // profile, which is shown on every answer; anything else is kept as a
@@ -2536,8 +2639,8 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
                                       QStringLiteral("yyyy-MM-dd HH:mm:ss")),
                                   fact)},
                         {QStringLiteral("metadata"),
-                         QJsonObject{{QStringLiteral("kind"), QStringLiteral("remembered")},
-                                     {QStringLiteral("source_evidence_cids"), source}}}}),
+                         ownWords(QJsonObject{{QStringLiteral("kind"), QStringLiteral("remembered")},
+                                              {QStringLiteral("source_evidence_cids"), source}})}}),
                   QStringLiteral("REMEMBERED '%1'").arg(fact.left(200)), sorry);
         }
         // profile_correct adds the new statement but leaves the one it
@@ -2823,22 +2926,29 @@ void Agent::store(const QString &role, const QString &text, const QDateTime &at)
                                   user ? QStringLiteral("User") : QStringLiteral("Burnos"),
                                   line);
     const QString when = isoTime(at);
+    const QJsonObject about{{QStringLiteral("role"), role}, {QStringLiteral("said_at"), when}};
     ++m_writes;
     memory->call(QStringLiteral("capture"),
                  QJsonObject{{"tenant_id", kMemoryTenant},
                              {"user_id", kMemoryUser},
-                             // What Burnos says is the assistant's, a step
-                             // below the user's own words in trust: its
-                             // answers must never weigh as their testimony.
+                             // Its answers must never weigh as the user's
+                             // testimony - see ownWords().
                              {"actor", user ? "user" : "assistant"},
                              {"trust_tier", user ? 0 : 2},
                              {"source_type", "conversation"},
                              {"content", said},
                              {"session_id", kMemorySession},
-                             {"metadata", QJsonObject{{QStringLiteral("role"), role},
-                                                      {QStringLiteral("said_at"), when}}}},
+                             {"metadata", user ? about : ownWords(about)}},
                  [this, role, line, at](bool ok, const QJsonObject &result, const QString &error) {
         --m_writes;
+        if (ok && !kept(answerOf(result))) {
+            // Not a failure the memory admits to, and the worst kind: the
+            // line stays among those shown from here, and the log says so.
+            liveLog(QStringLiteral("memory: answered but did NOT KEEP %1 '%2' - it is in no "
+                                   "ledger and no working memory")
+                        .arg(role, line.left(120)));
+            return;
+        }
         if (!ok) {
             const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
             liveLog(QStringLiteral("memory: could NOT store %1 '%2': %3")
@@ -2936,15 +3046,20 @@ void Agent::write(const QString &tool, const QJsonObject &arguments, const QStri
     memory->call(tool, arguments,
                  [this, tool, done, sorry](bool ok, const QJsonObject &result, const QString &error) {
         --m_writes;
-        if (ok) {
-            const QJsonObject made = answerOf(result);
+        const QJsonObject made = ok ? answerOf(result) : QJsonObject();
+        // A capture that kept nothing is a failure, whatever it answered.
+        const bool lost = ok && tool == QLatin1String("capture") && !kept(made);
+        if (ok && !lost) {
             const QString id = made.value(QStringLiteral("cid")).toString(
                 made.value(QStringLiteral("id")).toString());
             liveLog(QStringLiteral("memory: ") + done
                     + (id.isEmpty() ? QString() : QStringLiteral(" as ") + id.left(12)));
             return;
         }
-        const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
+        const QString why = lost ? tr("the memory answered and kept nothing")
+                            : error.isEmpty() ? McpServer::textOf(result).left(160) : error;
+        // Whatever was to be remembered may not have been: let it be asked again.
+        m_remembered.clear();
         liveLog(QStringLiteral("memory: ") + tool + QStringLiteral(" FAILED (") + why
                 + QStringLiteral(") - wanted: ") + done);
         if (!sorry.isEmpty())

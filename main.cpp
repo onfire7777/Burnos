@@ -1,3 +1,4 @@
+#include "agent.h"
 #include "mainwindow.h"
 #include "orbwidget.h"
 #include "sttengine.h"
@@ -35,6 +36,24 @@ int main(int argc, char *argv[])
         if (out.open(QIODevice::WriteOnly | QIODevice::Text))
             out.write("FAILED: " + error.toUtf8() + '\n');
         return 1;
+    }
+
+    // Test helpers: the real conversation path with no microphone, no voice
+    // and no window. --talk-probe says each line of a script and writes what
+    // was answered; --context-probe writes what would be sent for one
+    // sentence without asking the model. See BurnOS::runProbe.
+    const int talkAt = args.indexOf(QStringLiteral("--talk-probe"));
+    if (talkAt >= 0 && talkAt + 2 < args.size()) {
+        QFile script(args.at(talkAt + 1));
+        QStringList lines;
+        if (script.open(QIODevice::ReadOnly | QIODevice::Text))
+            lines = QString::fromUtf8(script.readAll()).split(QLatin1Char('\n'));
+        return BurnOS::runProbe(lines, args.at(talkAt + 2));
+    }
+    const int contextAt = args.indexOf(QStringLiteral("--context-probe"));
+    if (contextAt >= 0 && contextAt + 2 < args.size()) {
+        return BurnOS::runProbe({QStringLiteral("@context ") + args.at(contextAt + 1)},
+                                args.at(contextAt + 2));
     }
 
     MainWindow w;

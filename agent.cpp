@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -1622,37 +1623,47 @@ void Agent::talk(const QString &said)
         liveLog(QStringLiteral("talk %1: the memory is not available - answering with no "
                                "conversation at all")
                     .arg(turn));
-        sendTalk(turn, said, QString(), QJsonArray());
+    }
+    lookup(QStringLiteral("talk %1").arg(turn), said,
+           [this, turn, said](const Recalled &recalled) {
+        if (turn != m_turn || m_asking.isEmpty())
+            return; // a newer turn took over, or everything was stopped
+        sendTalk(turn, said, recalled);
+    });
+}
+
+void Agent::lookup(const QString &who, const QString &said,
+                   std::function<void(const Recalled &)> then)
+{
+    McpServer *memory = m_mcp->memory();
+    if (!memory) {
+        then(Recalled());
         return;
     }
 
-    struct Lookup
+    struct Pending
     {
-        QString notes;
-        QJsonArray recent;
-        int pending = 2;
+        Recalled got;
+        int left = 2;
     };
-    auto lookup = std::make_shared<Lookup>();
-    const auto done = [this, turn, said, lookup]() {
-        if (--lookup->pending > 0)
-            return;
-        if (turn != m_turn || m_asking.isEmpty())
-            return; // a newer turn took over, or everything was stopped
-        sendTalk(turn, said, lookup->notes, lookup->recent);
+    auto pending = std::make_shared<Pending>();
+    const auto done = [pending, then]() {
+        if (--pending->left == 0)
+            then(pending->got);
     };
 
     QJsonObject scope = workingScope();
     scope.insert(QStringLiteral("as_of"), isoTime(QDateTime::currentDateTimeUtc()));
     memory->call(QStringLiteral("working_query"), scope,
-                 [turn, lookup, done](bool ok, const QJsonObject &result, const QString &error) {
+                 [who, pending, done](bool ok, const QJsonObject &result, const QString &error) {
         if (ok) {
-            lookup->recent = recentTurns(result);
-            liveLog(QStringLiteral("talk %1: working memory brought %2 turn(s)")
-                        .arg(turn)
-                        .arg(lookup->recent.size()));
+            pending->got.recent = recentTurns(result);
+            liveLog(QStringLiteral("%1: working memory brought %2 turn(s)")
+                        .arg(who)
+                        .arg(pending->got.recent.size()));
         } else {
-            liveLog(QStringLiteral("talk %1: working memory failed (%2), going on without it")
-                        .arg(turn)
+            liveLog(QStringLiteral("%1: working memory failed (%2), going on without it")
+                        .arg(who)
                         .arg(error.isEmpty() ? McpServer::textOf(result).left(160) : error));
         }
         done();
@@ -1662,27 +1673,29 @@ void Agent::talk(const QString &said)
                  QJsonObject{{"tenant_id", kMemoryTenant},
                              {"user_id", kMemoryUser},
                              {"query", said}},
-                 [this, turn, lookup, done](bool ok, const QJsonObject &result, const QString &error) {
+                 [this, who, pending, done](bool ok, const QJsonObject &result, const QString &error) {
         if (ok) {
-            lookup->notes = memoryNotes(result);
-            if (!lookup->notes.isEmpty()) {
-                liveLog(QStringLiteral("talk %1: memory brought %2 note(s)")
-                            .arg(turn)
-                            .arg(lookup->notes.count(QLatin1Char('\n')) + 1));
+            pending->got.notes = memoryNotes(result);
+            if (!pending->got.notes.isEmpty()) {
+                liveLog(QStringLiteral("%1: memory brought %2 note(s)")
+                            .arg(who)
+                            .arg(pending->got.notes.count(QLatin1Char('\n')) + 1));
             }
         } else {
-            liveLog(QStringLiteral("talk %1: memory lookup failed (%2), going on without it")
-                        .arg(turn)
+            liveLog(QStringLiteral("%1: memory lookup failed (%2), going on without it")
+                        .arg(who)
                         .arg(error));
         }
         done();
     }, kMemoryLookupMs);
 }
 
-void Agent::sendTalk(int turn, const QString &said, const QString &memories,
-                     const QJsonArray &recent)
+QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
 {
     const bool remembering = m_mcp->memory() != nullptr;
+    const QString &memories = recalled.notes;
+    const QJsonArray &recent = recalled.recent;
+    const QString status = statusReport();
 
     QJsonArray messages;
     messages.append(msg(QStringLiteral("system"), QString::fromLatin1(kTalkPrompt)));
@@ -1694,7 +1707,7 @@ void Agent::sendTalk(int turn, const QString &said, const QString &memories,
                                "see anything said before this, and nothing said now is "
                                "kept until it is back. Say so if it matters.")));
     }
-    messages.append(msg(QStringLiteral("system"), statusReport()));
+    messages.append(msg(QStringLiteral("system"), status));
     if (!memories.isEmpty()) {
         messages.append(msg(QStringLiteral("system"),
                             tr("FROM YOUR LONG-TERM MEMORY - what matched what was just "
@@ -1711,17 +1724,56 @@ void Agent::sendTalk(int turn, const QString &said, const QString &memories,
                                "recall - never answer from a guess.")));
     }
     // The conversation so far, as the memory tells it.
-    for (const QJsonValue &line : recent)
+    int turnChars = 0;
+    for (const QJsonValue &line : recent) {
         messages.append(line);
+        turnChars += int(line.toObject().value(QStringLiteral("content")).toString().size());
+    }
     messages.append(msg(QStringLiteral("user"), said));
+
+    // HOW BIG EACH PART IS, for the log and the probes. What the memory put in
+    // is the part that matters: it is the whole of what stands in for a chat.
+    m_stats = QJsonObject{
+        {QStringLiteral("fixed_chars"),
+         int(qstrlen(kTalkPrompt) + (remembering ? qstrlen(kMemoryPrompt) : 0))},
+        {QStringLiteral("status_chars"), int(status.size())},
+        {QStringLiteral("note_lines"),
+         memories.isEmpty() ? 0 : int(memories.count(QLatin1Char('\n')) + 1)},
+        {QStringLiteral("note_chars"), int(memories.size())},
+        {QStringLiteral("turns"), int(recent.size())},
+        {QStringLiteral("turn_chars"), turnChars},
+        {QStringLiteral("memory_chars"), int(memories.size()) + turnChars},
+        {QStringLiteral("said_chars"), int(said.size())},
+    };
+    return messages;
+}
+
+void Agent::sendTalk(int turn, const QString &said, const Recalled &recalled)
+{
+    const QJsonArray messages = compose(said, recalled);
     m_talkSent = messages;
 
     liveLog(QStringLiteral("talk %1: heard '%2' - %3 task(s) running, %4 turn(s) from memory")
                 .arg(turn)
                 .arg(said.left(300))
                 .arg(liveTasks())
-                .arg(recent.size()));
+                .arg(recalled.recent.size()));
+    liveLog(QStringLiteral("talk %1: context - %2 chars from memory (%3 note line(s), %4 "
+                           "turn(s)), status %5, fixed %6")
+                .arg(turn)
+                .arg(m_stats.value(QStringLiteral("memory_chars")).toInt())
+                .arg(m_stats.value(QStringLiteral("note_lines")).toInt())
+                .arg(m_stats.value(QStringLiteral("turns")).toInt())
+                .arg(m_stats.value(QStringLiteral("status_chars")).toInt())
+                .arg(m_stats.value(QStringLiteral("fixed_chars")).toInt()));
     askTalker(turn, messages, QStringLiteral("talk %1").arg(turn));
+}
+
+void Agent::context(const QString &said, std::function<void(const QJsonArray &)> done)
+{
+    lookup(QStringLiteral("probe"), said, [this, said, done](const Recalled &recalled) {
+        done(compose(said, recalled));
+    });
 }
 
 void Agent::askTalker(int turn, const QJsonArray &messages, const QString &who)
@@ -1757,6 +1809,16 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
     const QJsonObject message = reply.message;
     QString text = message.value(QStringLiteral("content")).toString().trimmed();
     const QJsonArray calls = message.value(QStringLiteral("tool_calls")).toArray();
+
+    // What the turn cost, added up when a recall asks the talker a second time.
+    const auto add = [this](const char *key, int more) {
+        m_stats.insert(QLatin1String(key), m_stats.value(QLatin1String(key)).toInt() + more);
+    };
+    add("requests", 1);
+    add("prompt_tokens", reply.promptTokens);
+    add("cached_tokens", reply.cachedTokens);
+    add("completion_tokens", reply.completionTokens);
+    add("model_ms", int(reply.ms));
 
     // The tools run HERE, at once: starting, steering or stopping a task takes
     // no time at all, so there is no second round trip to the model. Its own
@@ -1808,6 +1870,12 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
         } else if (refusal.isEmpty()) {
             refusal = said;
         }
+    }
+
+    if (!did.isEmpty()) {
+        m_stats.insert(QStringLiteral("tools"),
+                       (m_stats.value(QStringLiteral("tools")).toString() + QLatin1Char(' ')
+                        + did.join(QLatin1Char(' '))).trimmed());
     }
 
     if (!recallQuery.isEmpty()) {
@@ -1967,6 +2035,7 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
             return tr("My memory is not available right now.");
         if (fact.isEmpty())
             return tr("I didn't catch what to remember.");
+        ++m_writes;
         memory->call(QStringLiteral("capture"),
                      QJsonObject{{"tenant_id", kMemoryTenant},
                                  {"user_id", kMemoryUser},
@@ -1974,6 +2043,7 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
                                  {"source_type", "conversation"},
                                  {"content", fact}},
                      [this, fact](bool ok, const QJsonObject &result, const QString &error) {
+            --m_writes;
             if (ok) {
                 liveLog(QStringLiteral("memory: REMEMBERED '%1' as %2")
                             .arg(fact.left(200),
@@ -1998,9 +2068,11 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
             return tr("My memory is not available right now.");
         if (cid.isEmpty())
             return tr("I couldn't tell which memory that was.");
+        ++m_writes;
         memory->call(QStringLiteral("forget"),
                      QJsonObject{{"tenant_id", kMemoryTenant}, {"cid", cid}},
                      [this, cid](bool ok, const QJsonObject &result, const QString &error) {
+            --m_writes;
             if (ok) {
                 liveLog(QStringLiteral("memory: FORGOT %1").arg(cid.left(12)));
                 return;
@@ -2014,6 +2086,8 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
     }
 
     if (name == QLatin1String("start_task")) {
+        if (m_probe)
+            return tr("Tasks are switched off in a probe.");
         const QString title = args.value(QStringLiteral("title")).toString().simplified();
         const QString instruction = args.value(QStringLiteral("instruction")).toString().trimmed();
         if (instruction.isEmpty())
@@ -2200,6 +2274,7 @@ void Agent::store(const QString &role, const QString &text, const QDateTime &at)
                                   user ? QStringLiteral("User") : QStringLiteral("Burnos"),
                                   line);
     const QString when = isoTime(at);
+    ++m_writes;
     memory->call(QStringLiteral("capture"),
                  QJsonObject{{"tenant_id", kMemoryTenant},
                              {"user_id", kMemoryUser},
@@ -2210,6 +2285,7 @@ void Agent::store(const QString &role, const QString &text, const QDateTime &at)
                              {"metadata", QJsonObject{{QStringLiteral("role"), role},
                                                       {QStringLiteral("said_at"), when}}}},
                  [this, role, line, at, when](bool ok, const QJsonObject &result, const QString &error) {
+        --m_writes;
         if (!ok) {
             const QString why = error.isEmpty() ? McpServer::textOf(result).left(160) : error;
             liveLog(QStringLiteral("memory: could NOT store %1 '%2': %3")
@@ -2240,8 +2316,10 @@ void Agent::store(const QString &role, const QString &text, const QDateTime &at)
         turn.insert(QStringLiteral("evidence_ids"), QJsonArray{cid});
         turn.insert(QStringLiteral("ttl_seconds"), kWorkingTtlSeconds);
         turn.insert(QStringLiteral("created_at"), when);
+        ++m_writes;
         memory->call(QStringLiteral("working_seed"), turn,
-                     [role, line](bool ok, const QJsonObject &result, const QString &error) {
+                     [this, role, line](bool ok, const QJsonObject &result, const QString &error) {
+            --m_writes;
             if (ok)
                 return;
             liveLog(QStringLiteral("memory: %1 '%2' is in the ledger but NOT in working memory: %3")
@@ -2285,6 +2363,137 @@ void Agent::updateWorking()
         return;
     m_working = working;
     emit workingChanged(working);
+}
+
+// ===========================================================================
+// THE PROBE
+// ===========================================================================
+
+int runProbe(const QStringList &script, const QString &outPath)
+{
+    struct Run
+    {
+        QStringList steps;
+        int at = 0;
+        QJsonArray out;
+        QString said;
+        QElapsedTimer clock;
+        bool paced = true;
+        int settling = 0;
+        std::function<void()> next;
+        std::function<void()> settle;
+    };
+    auto run = std::make_shared<Run>();
+    bool waitForMemory = true;
+    for (const QString &raw : script) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+        if (line == QLatin1String("@nomemory"))
+            waitForMemory = false;
+        else if (line == QLatin1String("@rapid"))
+            run->paced = false;
+        else
+            run->steps.append(line);
+    }
+
+    OpenRouterClient ai;
+    Agent agent(&ai, nullptr);
+    agent.setProbe(true);
+
+    // Everything said has to reach the memory before the process goes: up to
+    // fifteen seconds for the writes in flight, then the record is written.
+    const auto finish = [run, &agent, outPath]() {
+        auto *timer = new QTimer(&agent);
+        auto waited = std::make_shared<int>(0);
+        QObject::connect(timer, &QTimer::timeout, &agent, [run, &agent, outPath, timer, waited]() {
+            if (!agent.isQuiet() && ++*waited < 150)
+                return;
+            timer->stop();
+            QFile out(outPath);
+            const bool ok = out.open(QIODevice::WriteOnly | QIODevice::Text);
+            if (ok) {
+                out.write(QJsonDocument(QJsonObject{
+                              {QStringLiteral("memory"), agent.mcp()->memory() != nullptr},
+                              {QStringLiteral("quiet"), agent.isQuiet()},
+                              {QStringLiteral("steps"), run->out}})
+                              .toJson(QJsonDocument::Indented));
+            }
+            QCoreApplication::exit(ok ? 0 : 1);
+        });
+        timer->start(100);
+    };
+
+    run->next = [run, &agent, finish]() {
+        if (run->at >= run->steps.size()) {
+            finish();
+            return;
+        }
+        const QString line = run->steps.at(run->at++);
+        if (line.startsWith(QLatin1String("@wait "))) {
+            QTimer::singleShot(int(line.mid(6).trimmed().toDouble() * 1000), &agent, run->next);
+            return;
+        }
+        if (line.startsWith(QLatin1String("@context "))) {
+            const QString words = line.mid(9).trimmed();
+            agent.context(words, [run, &agent, words](const QJsonArray &messages) {
+                run->out.append(QJsonObject{{QStringLiteral("context_for"), words},
+                                            {QStringLiteral("messages"), messages},
+                                            {QStringLiteral("stats"), agent.lastStats()}});
+                QTimer::singleShot(0, &agent, run->next);
+            });
+            return;
+        }
+        run->said = line;
+        run->clock.start();
+        agent.hear(line);
+    };
+
+    // A PERSON SPEAKS AGAIN AFTER HEARING THE REPLY, by which time both lines
+    // are in the memory. A script is instant, so it waits for the writes in
+    // flight (five seconds at most) - unless it said "@rapid", which is how
+    // talking straight over the answer is rehearsed.
+    run->settle = [run, &agent]() {
+        if (run->paced && !agent.isQuiet() && ++run->settling < 250) {
+            QTimer::singleShot(20, &agent, run->settle);
+            return;
+        }
+        run->settling = 0;
+        run->next();
+    };
+
+    QObject::connect(&agent, &Agent::say, &agent, [run, &agent](const QString &text, int turn) {
+        if (turn == 0) {
+            // News from a task, or the memory saying a write failed.
+            run->out.append(QJsonObject{{QStringLiteral("news"), text}});
+            return;
+        }
+        run->out.append(QJsonObject{{QStringLiteral("said"), run->said},
+                                    {QStringLiteral("answer"), text},
+                                    {QStringLiteral("ms"), run->clock.elapsed()},
+                                    {QStringLiteral("stats"), agent.lastStats()}});
+        // Said "out loud" at once: a probe has no voice to wait for.
+        agent.spoken(turn);
+        QTimer::singleShot(0, &agent, run->settle);
+    });
+    QObject::connect(&agent, &Agent::failed, &agent, [run, &agent](const QString &reason) {
+        run->out.append(QJsonObject{{QStringLiteral("said"), run->said},
+                                    {QStringLiteral("failed"), reason}});
+        QTimer::singleShot(0, &agent, run->settle);
+    });
+
+    // The memory server takes a moment to answer its handshake: up to twenty
+    // seconds for it, unless the script said not to wait.
+    auto *ready = new QTimer(&agent);
+    auto ticks = std::make_shared<int>(0);
+    QObject::connect(ready, &QTimer::timeout, &agent, [run, &agent, ready, ticks, waitForMemory]() {
+        if (waitForMemory && !agent.mcp()->memory() && ++*ticks < 200)
+            return;
+        ready->stop();
+        run->next();
+    });
+    ready->start(100);
+    return QCoreApplication::exec();
 }
 
 } // namespace BurnOS

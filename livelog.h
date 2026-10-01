@@ -24,8 +24,11 @@ inline void liveLog(const QString &line)
     static QMutex lock;
     QMutexLocker locker(&lock);
 
-    QFile file(QCoreApplication::applicationDirPath()
-               + QStringLiteral("/burnos-live.log"));
+    // BURNOS_LIVE_LOG sends it elsewhere: a test run must not write its turns
+    // into the log of the Burnos the user is really talking to.
+    QFile file(qEnvironmentVariable("BURNOS_LIVE_LOG",
+                                    QCoreApplication::applicationDirPath()
+                                        + QStringLiteral("/burnos-live.log")));
     if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
         return;
 

@@ -576,6 +576,11 @@ McpClient::McpClient(QObject *parent)
 
 QString McpClient::configPath()
 {
+    // BURNOS_MCP_CONFIG names another list: a test run talks to a twin of
+    // the memory server on a scratch store, never to the user's own.
+    const QString other = qEnvironmentVariable("BURNOS_MCP_CONFIG");
+    if (!other.isEmpty())
+        return QDir::fromNativeSeparators(other);
     return QDir::fromNativeSeparators(qEnvironmentVariable("APPDATA"))
            + QStringLiteral("/BurnOS/mcp.json");
 }

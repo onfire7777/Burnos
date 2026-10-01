@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -16,6 +17,7 @@
 #include <QVariantMap>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 
 class ComposioClient;
@@ -156,6 +158,18 @@ public:
     ComposioClient *composio() const { return m_composio; }
     McpClient *mcp() const { return m_mcp; }
 
+    // FOR THE PROBES (--talk-probe, --context-probe), which run this very
+    // class with no microphone and no voice.
+    // What the talker would be sent for these words, without asking it.
+    void context(const QString &said, std::function<void(const QJsonArray &)> done);
+    // How big the last request to the talker was, part by part, and what the
+    // provider counted for it.
+    QJsonObject lastStats() const { return m_stats; }
+    // Nothing is on its way to the memory.
+    bool isQuiet() const { return m_writes == 0; }
+    // A probe starts no tasks: a test must never touch the desktop.
+    void setProbe(bool on) { m_probe = on; }
+
 signals:
     // Say this out loud. `turn` is the talker turn it answers, or 0 for news
     // from a task.
@@ -169,8 +183,20 @@ signals:
 
 private:
     void talk(const QString &said);
-    void sendTalk(int turn, const QString &said, const QString &memories,
-                  const QJsonArray &recent);
+    // What the memory gave for one answer.
+    struct Recalled
+    {
+        QString notes;     // long-term memory, as lines
+        QJsonArray recent; // the conversation so far, as messages
+    };
+    // Asks the memory, and calls `then` exactly once with what it gave - at
+    // once, with nothing, when there is no memory. `who` names it in the log.
+    void lookup(const QString &who, const QString &said,
+                std::function<void(const Recalled &)> then);
+    // The whole request for the talker: instructions, status, what the memory
+    // gave, the new words. Sizes every part into m_stats.
+    QJsonArray compose(const QString &said, const Recalled &recalled);
+    void sendTalk(int turn, const QString &said, const Recalled &recalled);
     // One question to the talking model - fast provider, the talker's tools -
     // answered on onTalkAnswer.
     void askTalker(int turn, const QJsonArray &messages, const QString &who);
@@ -209,6 +235,11 @@ private:
     // that has already had one - a second recall in a turn is refused.
     QJsonArray m_talkSent;
     int m_recalledTurn = 0;
+    // The last request's size and cost, a count of the writes to the memory
+    // still in flight, and whether this is a probe.
+    QJsonObject m_stats;
+    int m_writes = 0;
+    bool m_probe = false;
 
     // THERE IS NO CONVERSATION KEPT HERE. What was said lives in the memory
     // and is read back from it before every answer. This is only what could
@@ -239,6 +270,18 @@ private:
     QString m_unspokenAsked;
     QString m_unspokenAnswer;
 };
+
+// THE PROBE behind --talk-probe and --context-probe: the real conversation
+// path - hear, the memory, the model, the answer - with no microphone, no
+// voice and no window, so a conversation can be scripted and checked. One line
+// of `script` is one thing said. "@wait 2" waits two seconds, "@context words"
+// records what would be sent for those words without asking the model, and
+// "@nomemory" does not wait for the memory to come up, and "@rapid" says each
+// line the instant the last was answered instead of waiting, as a person
+// would, until the reply is in the memory. What was answered, how
+// long it took and how big each request was go to `outPath` as JSON. Runs the
+// application's event loop and returns its exit code.
+int runProbe(const QStringList &script, const QString &outPath);
 
 } // namespace BurnOS
 

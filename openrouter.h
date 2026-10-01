@@ -54,6 +54,11 @@ public:
         QString error;       // worded for a person, when not ok
         QJsonObject message; // the first choice's message, when ok
         int reasoningTokens = 0;
+        // What the provider counted: everything sent, how much of that it had
+        // cached from an earlier request, and everything written back.
+        int promptTokens = 0;
+        int cachedTokens = 0;
+        int completionTokens = 0;
         qint64 ms = 0;
     };
 

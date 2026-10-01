@@ -14,6 +14,7 @@
 #include <QPointer>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QVariantMap>
 
 #include <atomic>
@@ -165,8 +166,11 @@ public:
     // How big the last request to the talker was, part by part, and what the
     // provider counted for it.
     QJsonObject lastStats() const { return m_stats; }
-    // Nothing is on its way to the memory.
-    bool isQuiet() const { return m_writes == 0 && m_held.isEmpty(); }
+    // Nothing is on its way to the memory, the session notes included.
+    bool isQuiet() const
+    {
+        return m_writes == 0 && m_held.isEmpty() && !m_scribing && !m_scribeTimer.isActive();
+    }
     // A probe starts no tasks: a test must never touch the desktop.
     void setProbe(bool on) { m_probe = on; }
 
@@ -188,6 +192,7 @@ private:
     struct Recalled
     {
         QString profile;   // what the user asked to be kept in mind, as lines
+        QString where;     // the session notes: where the conversation stands
         QString notes;     // what bears on the words just said, as lines
         QJsonArray recent; // the newest lines of the conversation, as messages
         int unsaved = 0;   // how many of those are not in the memory yet
@@ -220,6 +225,15 @@ private:
     // One write to the memory that nobody waits for.
     void write(const QString &tool, const QJsonObject &arguments, const QString &done,
                const QString &sorry);
+    // SESSION NOTES. Once an answer has been said and the user has been quiet
+    // for a few seconds, the notes of the conversation so far are written
+    // again - from the notes before and the lines said since - and kept in
+    // working memory, where the next answer reads them. Never on the voice
+    // path: nothing waits for it. Only on a memory server where a note can
+    // replace the one before it.
+    bool notesOn() const;
+    void scribeSoon();
+    void scribe();
     // A stored line into working memory, citing its ledger record.
     void seed(const QString &role, const QString &line, const QDateTime &at, const QString &cid,
               int triesLeft);
@@ -257,6 +271,14 @@ private:
     // apart, and it is kept once.
     QStringList m_profileSaid;
     QStringList m_remembered;
+    // The wait for quiet before the session notes are written, whether they
+    // are being written now, what the user has just asked to be forgotten -
+    // in their own words, for the rewrite - and whether the notes are held
+    // back from the talker until that rewrite has landed.
+    QTimer m_scribeTimer;
+    bool m_scribing = false;
+    QString m_notesForget;
+    bool m_notesBlocked = false;
     // The ledger record of the last thing the user said: the evidence for
     // whatever the talker is asked to remember about it.
     QString m_lastUserCid;

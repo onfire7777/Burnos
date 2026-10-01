@@ -46,6 +46,9 @@ public:
         // The talker wants this: the same model has taken anywhere from two to
         // twenty eight seconds to answer, depending on who served it.
         bool fastest = false;
+        // How hard to think: empty is the usual effort. Housekeeping that needs
+        // no thought - the session notes - asks for "low".
+        QString effort;
     };
 
     struct Reply

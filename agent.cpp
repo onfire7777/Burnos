@@ -119,6 +119,33 @@ constexpr int kSessionTokenTtlSeconds = 300;
 // Said while the memory was not up: kept aside, never shown to a model, and
 // stored the moment the memory is back.
 constexpr int kMaxBacklog = 5000;
+// SESSION NOTES: how long the user has to have been quiet before they are
+// written, how long they may be, how many lines one rewrite takes in, how many
+// of those it cites, and how long the model gets for it.
+constexpr int kNotesQuietMs = 4000;
+constexpr int kNotesChars = 600;
+constexpr int kNotesLines = 24;
+constexpr int kNotesCites = 16;
+constexpr int kNotesTimeoutMs = 20000;
+// The newest dozen lines are shown word for word anyway, so the notes only
+// have to hold what has scrolled out of them: they are written again once
+// this many lines have been said since, not after every exchange.
+constexpr int kNotesEvery = 8;
+
+// THE SCRIBE'S BRIEF. Asked of the talking model, away from the voice.
+const char kNotesPrompt[] =
+    "You keep the notes of one running conversation between a user and Burnos, "
+    "their voice assistant, so that Burnos can pick up the thread later "
+    "without the transcript. You are given the notes so far and the lines said "
+    "since. Write the notes again, complete, in at most 600 characters, as "
+    "plain short sentences. The first sentence says how the conversation began "
+    "- 'Began with ...' - and once written it stays as it is. Then, in the "
+    "order things happened: what the user said about themselves and their "
+    "plans, what was decided, what Burnos did or found, with names, numbers, "
+    "dates and times exactly as given. Where something was changed, keep only "
+    "what holds now. General-knowledge questions and small talk get one clause "
+    "in all. Leave out questions about the conversation itself and anything "
+    "Burnos could not answer. Write only the notes, with no heading.";
 
 const char kMemoryPrompt[] =
     // Sent with every answer, so every sentence of it has to earn its tokens:
@@ -348,6 +375,12 @@ QJsonObject searchFor(McpServer *memory, const QString &query, bool fitted)
         ask.insert(QStringLiteral("token_budget"), kRelevantTokens);
     if (memory->takes(QStringLiteral("search"), QStringLiteral("lean")))
         ask.insert(QStringLiteral("lean"), true);
+    // Only the spoken lines of the session are ranked: its notes are shown in
+    // a place of their own and must not take a line's room in the list.
+    if (memory->takes(QStringLiteral("search"), QStringLiteral("working_kinds"))) {
+        ask.insert(QStringLiteral("working_kinds"),
+                   QJsonArray{QStringLiteral("conversation_turn")});
+    }
     return ask;
 }
 
@@ -1741,6 +1774,8 @@ Agent::Agent(OpenRouterClient *ai, ComposioClient *composio, QObject *parent)
         if (ready)
             flushBacklog();
     });
+    m_scribeTimer.setSingleShot(true);
+    connect(&m_scribeTimer, &QTimer::timeout, this, &Agent::scribe);
 }
 
 int Agent::liveTasks() const
@@ -1767,6 +1802,8 @@ void Agent::hear(const QString &text)
     QString said = text.simplified();
     if (said.isEmpty())
         return;
+    // Not quiet any more: the session notes wait for the next pause.
+    m_scribeTimer.stop();
     // Into the memory - every word, whatever comes of it, and before it is
     // folded into anything. HELD for the instant it takes to read the memory
     // for this turn: stored first, the words would be the best match for
@@ -1870,20 +1907,26 @@ void Agent::lookup(const QString &who, const QString &said,
                           || qEnvironmentVariableIsSet("BURNOS_COMPILED");
     const bool profile = compiled && memory->hasTool(QStringLiteral("profile_context"));
 
+    // The session notes are read only where they are kept, and not while a
+    // rewrite is on its way that takes something forgotten out of them.
+    const bool where = compiled && notesOn() && !m_notesBlocked;
+
     struct Pending
     {
         QList<Line> lines;
         QString query;
         QJsonObject found;
         QJsonObject profile;
+        QString where;
         int left = 0;
     };
     auto pending = std::make_shared<Pending>();
-    pending->left = profile ? 3 : 2;
+    pending->left = 2 + (profile ? 1 : 0) + (where ? 1 : 0);
     const auto done = [this, who, said, waiting, compiled, pending, then]() {
         if (--pending->left > 0)
             return;
         Recalled got;
+        got.where = pending->where;
         got.recent = compiled ? tailMessages(pending->lines, waiting, said, kTailLines,
                                              kTailChars, kTailLineChars, &got.unsaved)
                               : tailMessages(pending->lines, waiting, said, kOldTurns,
@@ -1959,6 +2002,23 @@ void Agent::lookup(const QString &who, const QString &said,
     if (!few)
         search(said);
 
+    // WHERE THE CONVERSATION STANDS: the newest of the session notes.
+    if (where) {
+        QJsonObject notes = workingScope();
+        notes.insert(QStringLiteral("as_of"), isoTime(QDateTime::currentDateTimeUtc()));
+        notes.insert(QStringLiteral("limit"), 1);
+        notes.insert(QStringLiteral("kinds"), QJsonArray{QStringLiteral("intermediate_conclusion")});
+        memory->call(QStringLiteral("working_query"), notes,
+                     [pending, done](bool ok, const QJsonObject &result, const QString &) {
+            if (ok) {
+                pending->where = answerOf(result).value(QStringLiteral("items")).toArray().first()
+                                     .toObject().value(QStringLiteral("content")).toString()
+                                     .trimmed().left(kNotesChars + 200);
+            }
+            done();
+        }, kMemoryLookupMs);
+    }
+
     // WHAT THE USER ASKED TO BE KEPT IN MIND.
     if (profile) {
         memory->call(QStringLiteral("profile_context"),
@@ -2017,6 +2077,17 @@ QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
                                 .arg(recalled.profile)));
     }
     messages.append(msg(QStringLiteral("system"), status));
+    // Where the conversation stands, in Burnos's own notes of it: what the
+    // newest lines no longer show.
+    if (!recalled.where.isEmpty()) {
+        messages.append(msg(QStringLiteral("system"),
+                            tr("WHERE WE ARE - your own notes on today's conversation, from "
+                               "how it began, in the order things happened. Use them for "
+                               "whatever the lines below no longer show. They are a "
+                               "summary: where a line you are shown word for word says "
+                               "otherwise, the line is right.\n%1")
+                                .arg(recalled.where)));
+    }
     // NOTHING is said when nothing matched. 'Nothing else in your memory
     // matches what was just said' stood here, to stop a model inventing a
     // memory, and was read as 'nothing you were told applies': with it the
@@ -2045,6 +2116,7 @@ QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
          int(qstrlen(kTalkPrompt) + (remembering ? qstrlen(kMemoryPrompt) : 0))},
         {QStringLiteral("status_chars"), int(status.size())},
         {QStringLiteral("profile_chars"), int(recalled.profile.size())},
+        {QStringLiteral("where_chars"), int(recalled.where.size())},
         {QStringLiteral("note_lines"),
          memories.isEmpty() ? 0 : int(memories.count(QLatin1Char('\n')) + 1)},
         {QStringLiteral("note_chars"), int(memories.size())},
@@ -2052,7 +2124,7 @@ QJsonArray Agent::compose(const QString &said, const Recalled &recalled)
         {QStringLiteral("turn_chars"), turnChars},
         {QStringLiteral("unsaved"), recalled.unsaved},
         {QStringLiteral("memory_chars"),
-         int(recalled.profile.size() + memories.size()) + turnChars},
+         int(recalled.profile.size() + recalled.where.size() + memories.size()) + turnChars},
         {QStringLiteral("said_chars"), int(said.size())},
     };
     return messages;
@@ -2069,7 +2141,8 @@ void Agent::sendTalk(int turn, const QString &said, const Recalled &recalled)
                 .arg(said.left(300))
                 .arg(liveTasks())
                 .arg(recalled.recent.size()));
-    liveLog(QStringLiteral("talk %1: context - %2 chars from memory (%3 about the user, %4 "
+    liveLog(QStringLiteral("talk %1: context - %2 chars from memory (%3 about the user, %11 of "
+                           "session notes, %4 "
                            "relevant in %5 line(s), %6 in %7 line(s) of conversation of "
                            "which %8 not saved yet), status %9, fixed %10")
                 .arg(turn)
@@ -2081,7 +2154,8 @@ void Agent::sendTalk(int turn, const QString &said, const Recalled &recalled)
                 .arg(m_stats.value(QStringLiteral("turns")).toInt())
                 .arg(m_stats.value(QStringLiteral("unsaved")).toInt())
                 .arg(m_stats.value(QStringLiteral("status_chars")).toInt())
-                .arg(m_stats.value(QStringLiteral("fixed_chars")).toInt()));
+                .arg(m_stats.value(QStringLiteral("fixed_chars")).toInt())
+                .arg(m_stats.value(QStringLiteral("where_chars")).toInt()));
     askTalker(turn, messages, QStringLiteral("talk %1").arg(turn));
 }
 
@@ -2399,6 +2473,12 @@ QString Agent::memoryNotes(const QJsonObject &found, const QString &query, const
         // A WORKING-MEMORY ITEM is known to forget_memory by the ledger record
         // it cites, and is shown the way a ledger line is: when, who, the words.
         if (hit.value(QStringLiteral("kind")).toString() == QLatin1String("working")) {
+            // The session notes are shown in a place of their own, never here.
+            if (meta.value(QStringLiteral("working_memory")).toObject()
+                    .value(QStringLiteral("kind")).toString() != QLatin1String("conversation_turn")
+                && words.size() == text.size()) {
+                continue;
+            }
             QString cited = meta.value(QStringLiteral("evidence_ids")).toArray().first().toString();
             if (cited.isEmpty())
                 cited = hit.value(QStringLiteral("provenance")).toArray().first().toString();
@@ -2670,6 +2750,15 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
         static const QRegularExpression kId(QStringLiteral("[0-9a-f][0-9a-f-]{7,63}"));
         const QString id = kId.match(args.value(QStringLiteral("id")).toString().toLower()).captured(0);
         const QString sorry = tr("I could not forget that: %1");
+        // What is forgotten must go from the session notes too. They are held
+        // back from the talker until they have been written again without it,
+        // and the rewrite is told what to leave out in the user's own words.
+        const auto fromNotes = [this]() {
+            if (notesOn()) {
+                m_notesForget = m_asking;
+                m_notesBlocked = true;
+            }
+        };
 
         // A LINE OF THE PROFILE is taken back.
         const QString profileId = m_profileIds.value(id.left(8));
@@ -2680,6 +2769,7 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
                               {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)},
                               {QStringLiteral("id"), profileId}},
                   QStringLiteral("FORGOT the profile line %1").arg(profileId.left(8)), sorry);
+            fromNotes();
             *acted = true;
             return tr("Forgotten.");
         }
@@ -2714,6 +2804,7 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
             one.insert(QStringLiteral("cid"), cid);
             write(QStringLiteral("forget"), one, QStringLiteral("FORGOT %1").arg(cid.left(12)), sorry);
         }, kMemoryStoreMs);
+        fromNotes();
         *acted = true;
         return tr("Forgotten.");
     }
@@ -2864,6 +2955,7 @@ void Agent::spoken(int turn)
         // Out loud now, so part of the conversation for good.
         store(QStringLiteral("assistant"), m_unspokenAnswer);
         m_unspokenTurn = 0;
+        scribeSoon();
     }
 }
 
@@ -2871,6 +2963,7 @@ void Agent::stopAll()
 {
     // Whatever was said still goes into the memory, answered or not.
     release();
+    m_scribeTimer.stop();
     if (m_request) {
         m_ai->cancel(m_request);
         m_request = 0;
@@ -3067,6 +3160,191 @@ void Agent::write(const QString &tool, const QJsonObject &arguments, const QStri
     }, kMemoryStoreMs);
 }
 
+// ---------------------------------------------------------------------------
+// SESSION NOTES
+// ---------------------------------------------------------------------------
+
+bool Agent::notesOn() const
+{
+    // A note has to REPLACE the one before it. Where the memory cannot do
+    // that, every rewrite would leave the old note live for a day and a search
+    // would rank them all against the real lines - so there, none are kept.
+    // (BURNOS_NOTES keeps them anyway, to measure what they are worth.)
+    McpServer *memory = m_mcp->memory();
+    return memory
+           && (memory->takes(QStringLiteral("working_seed"), QStringLiteral("supersedes"))
+               || qEnvironmentVariableIsSet("BURNOS_NOTES"));
+}
+
+void Agent::scribeSoon()
+{
+    // A probe has nobody to wait for.
+    if (notesOn())
+        m_scribeTimer.start(m_probe ? 100 : kNotesQuietMs);
+}
+
+void Agent::scribe()
+{
+    McpServer *memory = m_mcp->memory();
+    if (!memory || m_scribing || !notesOn())
+        return;
+    // Not while an answer is on its way: spoken() starts the wait again.
+    if (!m_asking.isEmpty() || m_unspokenTurn)
+        return;
+    m_scribing = true;
+    const QString forget = m_notesForget;
+    m_notesForget.clear();
+    const auto giveUp = [this, forget](const QString &why) {
+        liveLog(QStringLiteral("notes: not written - %1").arg(why));
+        // What was to be left out still has to be, next time.
+        if (m_notesForget.isEmpty())
+            m_notesForget = forget;
+        m_scribing = false;
+    };
+
+    // THE NOTES SO FAR, then THE LINES SAID SINCE - both read from the memory,
+    // like everything else: nothing of the conversation is kept here.
+    QJsonObject asNotes = workingScope();
+    asNotes.insert(QStringLiteral("as_of"), isoTime(QDateTime::currentDateTimeUtc()));
+    asNotes.insert(QStringLiteral("limit"), 1);
+    asNotes.insert(QStringLiteral("kinds"), QJsonArray{QStringLiteral("intermediate_conclusion")});
+    memory->call(QStringLiteral("working_query"), asNotes,
+                 [this, forget, giveUp](bool ok, const QJsonObject &result, const QString &error) {
+        McpServer *memory = m_mcp->memory();
+        if (!ok || !memory) {
+            giveUp(error.isEmpty() ? McpServer::textOf(result).left(160) : error);
+            return;
+        }
+        QJsonObject old = answerOf(result).value(QStringLiteral("items")).toArray().first().toObject();
+        // THE NOTES ARE OF TODAY. A note from another day is not carried on:
+        // it is replaced by one that begins where today began.
+        const QDateTime noted = QDateTime::fromString(
+            old.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs);
+        const bool stale = noted.isValid() && noted.toLocalTime().date() != QDate::currentDate();
+        if (stale) {
+            old.remove(QStringLiteral("content"));
+            old.remove(QStringLiteral("evidence_ids"));
+            old.insert(QStringLiteral("created_at"),
+                       isoTime(QDateTime(QDate::currentDate(), QTime(0, 0))));
+        }
+        QJsonObject asLines = workingScope();
+        asLines.insert(QStringLiteral("as_of"), isoTime(QDateTime::currentDateTimeUtc()));
+        asLines.insert(QStringLiteral("limit"), kNotesLines);
+        asLines.insert(QStringLiteral("kinds"), QJsonArray{QStringLiteral("conversation_turn")});
+        memory->call(QStringLiteral("working_query"), asLines,
+                     [this, forget, giveUp, old](bool ok, const QJsonObject &result, const QString &error) {
+            if (!ok) {
+                giveUp(error.isEmpty() ? McpServer::textOf(result).left(160) : error);
+                return;
+            }
+            // A note is dated a moment after the newest line it covers, so
+            // whatever is newer than the note is what it has not seen.
+            const QDateTime since = QDateTime::fromString(
+                old.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs);
+            struct Said
+            {
+                QDateTime at;
+                QString text;
+                QString cid;
+            };
+            QList<Said> lines;
+            for (const QJsonValue &value : answerOf(result).value(QStringLiteral("items")).toArray()) {
+                const QJsonObject item = value.toObject();
+                const QDateTime at = QDateTime::fromString(
+                    item.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs);
+                if (!at.isValid() || (since.isValid() && at <= since))
+                    continue;
+                lines.append({at, item.value(QStringLiteral("content")).toString(),
+                              item.value(QStringLiteral("evidence_ids")).toArray().first().toString()});
+            }
+            // Too little said since the last note, and all of it still shown
+            // word for word: not yet. (Something to forget cannot wait.)
+            if (lines.size() < kNotesEvery && forget.isEmpty()) {
+                m_scribing = false;
+                return;
+            }
+            std::stable_sort(lines.begin(), lines.end(),
+                             [](const Said &a, const Said &b) { return a.at < b.at; });
+
+            QString heard;
+            QJsonArray cites;
+            for (const Said &line : std::as_const(lines)) {
+                const bool user = line.text.startsWith(QLatin1String("user: "));
+                heard += QStringLiteral("[%1] %2: %3\n")
+                             .arg(line.at.toLocalTime().toString(QStringLiteral("HH:mm")),
+                                  user ? QStringLiteral("User") : QStringLiteral("Burnos"),
+                                  spokenWords(line.text).left(kTailLineChars));
+            }
+            for (int i = int(qMax<qsizetype>(0, lines.size() - kNotesCites)); i < int(lines.size()); ++i) {
+                if (!lines.at(i).cid.isEmpty())
+                    cites.append(lines.at(i).cid);
+            }
+            // A rewrite with no new line - one that only takes something out -
+            // still stands on what the note before it stood on.
+            if (cites.isEmpty())
+                cites = old.value(QStringLiteral("evidence_ids")).toArray();
+            const QDateTime upTo = lines.isEmpty() ? QDateTime::currentDateTimeUtc()
+                                                   : lines.last().at.addMSecs(1);
+            const QString before = old.value(QStringLiteral("content")).toString().trimmed();
+
+            OpenRouterClient::Request request;
+            QString brief = QString::fromLatin1(kNotesPrompt);
+            if (!forget.isEmpty()) {
+                brief += tr(" The user has just asked for something to be forgotten, in "
+                            "these words: '%1'. Nothing about it may remain in the notes, "
+                            "not even that it was forgotten.")
+                             .arg(forget.left(300));
+            }
+            request.messages = QJsonArray{
+                msg(QStringLiteral("system"), brief),
+                msg(QStringLiteral("user"),
+                    tr("NOTES SO FAR:\n%1\n\nSAID SINCE:\n%2")
+                        .arg(before.isEmpty() ? tr("(none yet)") : before,
+                             heard.isEmpty() ? tr("(nothing)") : heard.trimmed()))};
+            request.who = QStringLiteral("notes");
+            request.timeoutMs = kNotesTimeoutMs;
+            request.fastest = true;
+            // Copying down, not thinking: at the usual effort a rewrite cost
+            // three times what the answer it followed had.
+            request.effort = QStringLiteral("low");
+            m_ai->send(request, [this, giveUp, old, cites, upTo](const OpenRouterClient::Reply &reply) {
+                McpServer *memory = m_mcp->memory();
+                const QString notes = reply.message.value(QStringLiteral("content")).toString().trimmed();
+                if (!reply.ok || !memory || notes.isEmpty() || notes.startsWith(QLatin1String("**"))) {
+                    giveUp(reply.ok ? QStringLiteral("the model wrote none") : reply.error);
+                    return;
+                }
+                QJsonObject note = workingScope();
+                note.insert(QStringLiteral("kind"), QStringLiteral("intermediate_conclusion"));
+                // Asked for 600 characters; a little over is kept, a lot is cut.
+                note.insert(QStringLiteral("content"), notes.left(kNotesChars + 200));
+                note.insert(QStringLiteral("evidence_ids"), cites);
+                note.insert(QStringLiteral("ttl_seconds"), kWorkingTtlSeconds);
+                note.insert(QStringLiteral("created_at"), isoTime(upTo));
+                const QString oldId = old.value(QStringLiteral("item_id")).toString();
+                if (!oldId.isEmpty()
+                    && memory->takes(QStringLiteral("working_seed"), QStringLiteral("supersedes"))) {
+                    note.insert(QStringLiteral("supersedes"), QJsonArray{oldId});
+                }
+                ++m_writes;
+                memory->call(QStringLiteral("working_seed"), note,
+                             [this, giveUp, notes](bool ok, const QJsonObject &result, const QString &error) {
+                    --m_writes;
+                    if (!ok) {
+                        giveUp(error.isEmpty() ? McpServer::textOf(result).left(160) : error);
+                        return;
+                    }
+                    liveLog(QStringLiteral("notes: written, %1 chars: %2")
+                                .arg(notes.size())
+                                .arg(notes.simplified().left(300)));
+                    m_notesBlocked = false;
+                    m_scribing = false;
+                }, kMemoryStoreMs);
+            });
+        }, kMemoryLookupMs);
+    }, kMemoryLookupMs);
+}
+
 void Agent::flushBacklog()
 {
     if (m_backlog.isEmpty() || !m_mcp->memory())
@@ -3190,7 +3468,7 @@ int runProbe(const QStringList &script, const QString &outPath)
     // flight (five seconds at most) - unless it said "@rapid", which is how
     // talking straight over the answer is rehearsed.
     run->settle = [run, &agent]() {
-        if (run->paced && !agent.isQuiet() && ++run->settling < 250) {
+        if (run->paced && !agent.isQuiet() && ++run->settling < 600) {
             QTimer::singleShot(20, &agent, run->settle);
             return;
         }

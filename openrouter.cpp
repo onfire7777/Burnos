@@ -124,7 +124,9 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
         {QStringLiteral("max_tokens"),
          request.maxTokens > 0 ? request.maxTokens : BurnOS::Settings::replyTokens()},
         {QStringLiteral("reasoning"),
-         QJsonObject{{QStringLiteral("effort"), QString::fromLatin1(kReasoningEffort)}}},
+         QJsonObject{{QStringLiteral("effort"),
+                      request.effort.isEmpty() ? QString::fromLatin1(kReasoningEffort)
+                                               : request.effort}}},
         // The full count of what was sent and written, cached tokens
         // included - without this OpenRouter leaves the details out.
         {QStringLiteral("usage"), QJsonObject{{QStringLiteral("include"), true}}},
@@ -144,7 +146,9 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
 
     BurnOS::liveLog(QStringLiteral("%1: asking %2, reasoning %3, %4 message(s), "
                                    "%5 tool(s)%6%7")
-                        .arg(request.who, model, QString::fromLatin1(kReasoningEffort))
+                        .arg(request.who, model,
+                             request.effort.isEmpty() ? QString::fromLatin1(kReasoningEffort)
+                                                      : request.effort)
                         .arg(request.messages.size())
                         .arg(request.tools.size())
                         .arg(request.fastest ? QStringLiteral(", fastest provider")

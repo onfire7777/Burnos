@@ -111,6 +111,15 @@ bool McpServer::hasTool(const QString &tool) const
     return false;
 }
 
+bool McpServer::takes(const QString &tool, const QString &argument) const
+{
+    for (const Tool &t : m_tools) {
+        if (t.name == tool)
+            return t.schema.value(QStringLiteral("properties")).toObject().contains(argument);
+    }
+    return false;
+}
+
 void McpServer::start()
 {
     if (m_stopping)
@@ -223,15 +232,21 @@ void McpServer::handshake()
                                                     {QStringLiteral("version"), QStringLiteral("0.4")}}},
     };
     request(QStringLiteral("initialize"), hello, kStartTimeoutMs,
-            [this](const QJsonObject &, const QString &error) {
+            [this](const QJsonObject &answer, const QString &error) {
         if (!error.isEmpty()) {
             stalled(QStringLiteral("no answer to initialize (%1)").arg(error));
             return;
         }
+        // Which build answered - name and version, the version carrying its
+        // commit where the server gives one - so a stale install shows in
+        // the log.
+        const QJsonObject info = answer.value(QStringLiteral("serverInfo")).toObject();
+        const QString build = (info.value(QStringLiteral("name")).toString() + QLatin1Char(' ')
+                               + info.value(QStringLiteral("version")).toString()).trimmed();
         send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                          {QStringLiteral("method"), QStringLiteral("notifications/initialized")}});
         request(QStringLiteral("tools/list"), QJsonObject(), kStartTimeoutMs,
-                [this](const QJsonObject &result, const QString &error) {
+                [this, build](const QJsonObject &result, const QString &error) {
             if (!error.isEmpty()) {
                 stalled(QStringLiteral("no tool list (%1)").arg(error));
                 return;
@@ -251,7 +266,10 @@ void McpServer::handshake()
                             .arg(m_url, m_proc ? QStringLiteral("started by Burnos")
                                                : QStringLiteral("already hosted"));
             }
-            liveLog(QStringLiteral("mcp %1: ready, %2 tool(s)%3").arg(m_name).arg(m_tools.size()).arg(where));
+            liveLog(QStringLiteral("mcp %1: ready, %2 tool(s)%3%4")
+                        .arg(m_name)
+                        .arg(m_tools.size())
+                        .arg(where, build.isEmpty() ? QString() : QStringLiteral(" - ") + build));
             emit readyChanged(true);
         });
     });
@@ -576,6 +594,11 @@ McpClient::McpClient(QObject *parent)
 
 QString McpClient::configPath()
 {
+    // BURNOS_MCP_CONFIG names another list: a test run talks to a twin of
+    // the memory server on a scratch store, never to the user's own.
+    const QString other = qEnvironmentVariable("BURNOS_MCP_CONFIG");
+    if (!other.isEmpty())
+        return QDir::fromNativeSeparators(other);
     return QDir::fromNativeSeparators(qEnvironmentVariable("APPDATA"))
            + QStringLiteral("/BurnOS/mcp.json");
 }

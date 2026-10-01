@@ -125,6 +125,9 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
          request.maxTokens > 0 ? request.maxTokens : BurnOS::Settings::replyTokens()},
         {QStringLiteral("reasoning"),
          QJsonObject{{QStringLiteral("effort"), QString::fromLatin1(kReasoningEffort)}}},
+        // The full count of what was sent and written, cached tokens
+        // included - without this OpenRouter leaves the details out.
+        {QStringLiteral("usage"), QJsonObject{{QStringLiteral("include"), true}}},
     };
     if (!request.tools.isEmpty())
         body.insert(QStringLiteral("tools"), request.tools);
@@ -209,9 +212,13 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
 
         // Logged with every answer, so a slow turn can be told apart from a
         // slow network: thousands of these means the model thought at length.
-        out.reasoningTokens = root.value(QStringLiteral("usage")).toObject()
-                                  .value(QStringLiteral("completion_tokens_details")).toObject()
+        const QJsonObject usage = root.value(QStringLiteral("usage")).toObject();
+        out.reasoningTokens = usage.value(QStringLiteral("completion_tokens_details")).toObject()
                                   .value(QStringLiteral("reasoning_tokens")).toInt();
+        out.promptTokens = usage.value(QStringLiteral("prompt_tokens")).toInt();
+        out.cachedTokens = usage.value(QStringLiteral("prompt_tokens_details")).toObject()
+                               .value(QStringLiteral("cached_tokens")).toInt();
+        out.completionTokens = usage.value(QStringLiteral("completion_tokens")).toInt();
 
         const QJsonArray choices = root.value(QStringLiteral("choices")).toArray();
         if (choices.isEmpty()) {
@@ -228,10 +235,17 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
 
         out.message = choices.first().toObject().value(QStringLiteral("message")).toObject();
         out.ok = true;
-        BurnOS::liveLog(QStringLiteral("%1: answered in %2 ms, %3 reasoning tokens")
+        // Who served it is logged too: the same model is quick from one
+        // provider and slow from the next, and only one of them may cache.
+        BurnOS::liveLog(QStringLiteral("%1: answered in %2 ms by %7, %3 reasoning tokens, "
+                                       "%4 tokens in (%5 cached), %6 out")
                             .arg(request.who)
                             .arg(out.ms)
-                            .arg(out.reasoningTokens));
+                            .arg(out.reasoningTokens)
+                            .arg(out.promptTokens)
+                            .arg(out.cachedTokens)
+                            .arg(out.completionTokens)
+                            .arg(root.value(QStringLiteral("provider")).toString()));
         done(out);
     });
 }

@@ -56,6 +56,12 @@ int main(int argc, char *argv[])
                                 args.at(contextAt + 2));
     }
 
+    // What the memory's consolidation runs to have a stretch of talk written
+    // up: the lines come in on stdin, the summary goes out on stdout. See
+    // BurnOS::runSummarizer.
+    if (args.contains(QStringLiteral("--summarize")))
+        return BurnOS::runSummarizer();
+
     MainWindow w;
     w.show();
     return a.exec();

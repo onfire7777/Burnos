@@ -347,6 +347,15 @@ private:
 // application's event loop and returns its exit code.
 int runProbe(const QStringList &script, const QString &outPath);
 
+// THE SUMMARY WRITER behind --summarize: what the memory's consolidation calls
+// to turn a stretch of talk into one entry of long-term memory. Mnemosyne's
+// provider protocol - one JSON object on stdin holding the lines as
+// `evidence`, one on stdout, {"summary": ...} - with the talking model doing
+// the writing. The entry opens with the day and hours it covers, read off the
+// lines themselves, so a question about a day finds it by its date. Runs the
+// application's event loop; returns 0 when a summary was written.
+int runSummarizer();
+
 } // namespace BurnOS
 
 #endif // AGENT_H

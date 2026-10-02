@@ -146,7 +146,8 @@ public:
     // The voice has started saying what the talker answered on this turn, so
     // the turn is closed and cannot be taken back any more.
     void spoken(int turn);
-    // Muted: the talker and every task stop, now.
+    // Stopped, by a double click on the orb: the talker and every task stop,
+    // now. A single click only mutes, and reaches nothing in here.
     void stopAll();
 
     // From the moment something is heard until the talker's answer is ready:

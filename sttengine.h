@@ -49,6 +49,7 @@ public:
 
     bool isLive() const { return m_live; }           // armed
     bool isCapturing() const { return m_capturing; } // keeping a phrase
+    bool isReading() const { return m_pending; }     // a phrase is in the recogniser
 
     // Arm live mode and open the microphone. False means it never opened and
     // failed() has been emitted.

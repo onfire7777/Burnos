@@ -70,6 +70,11 @@ public:
     // Whether that tool's schema names this argument - how a client tells a
     // newer server from an older one without asking its version.
     bool takes(const QString &tool, const QString &argument) const;
+    // The build that answered initialize: "<name> <version>", the version
+    // carrying its commit where the server gives one. Empty until the
+    // handshake lands. This is what Burnos tells the user when asked which
+    // memory it is running, instead of guessing.
+    QString build() const { return m_build; }
 
     void start();
     // One tools/call. `done` is called exactly once, and never from inside
@@ -129,6 +134,8 @@ private:
     int m_nextId = 0;
     QHash<int, Pending> m_pending;
     QList<Tool> m_tools;
+    // What serverInfo said at the handshake, kept for build().
+    QString m_build;
     bool m_ready = false;
     bool m_stopping = false;
     // Died too often to be started again; an HTTP url is still watched.

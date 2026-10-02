@@ -2799,6 +2799,21 @@ QString Agent::statusReport() const
                          .arg(servers.join(QStringLiteral(", "))));
     }
 
+    // So "which version of your memory is that?" has a true answer instead of
+    // a guess. The memory server names its build when it answers initialize -
+    // its package version, plus the commit it was built from where it gives
+    // one - and Burnos's own release is stamped into the exe by qmake.
+    const McpServer *remembering = m_mcp->memory();
+    const QString memoryBuild = remembering ? remembering->build() : QString();
+    lines.append(memoryBuild.isEmpty()
+                     ? tr("You are Burnos %1. Your memory has not said which build "
+                          "it is, so say that rather than guessing a version.")
+                           .arg(QCoreApplication::applicationVersion())
+                     : tr("You are Burnos %1, and your memory system is %2 - that is "
+                          "the version to give when the user asks which memory you "
+                          "have.")
+                           .arg(QCoreApplication::applicationVersion(), memoryBuild));
+
     QStringList report;
     for (const QPointer<Task> &t : m_tasks) {
         if (!t)

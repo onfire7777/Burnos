@@ -243,6 +243,7 @@ void McpServer::handshake()
         const QJsonObject info = answer.value(QStringLiteral("serverInfo")).toObject();
         const QString build = (info.value(QStringLiteral("name")).toString() + QLatin1Char(' ')
                                + info.value(QStringLiteral("version")).toString()).trimmed();
+        m_build = build;
         send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                          {QStringLiteral("method"), QStringLiteral("notifications/initialized")}});
         request(QStringLiteral("tools/list"), QJsonObject(), kStartTimeoutMs,

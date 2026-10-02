@@ -172,8 +172,14 @@ MainWindow::MainWindow(QWidget *parent)
     // ONE CLICK MUTES OR UNMUTES, and interrupts nothing that is being worked
     // on. A DOUBLE CLICK STOPS EVERYTHING. The first click of a double click
     // has already muted or unmuted by the time the second lands, and the stop
-    // leaves the orb muted either way.
-    connect(m_orb, &OrbWidget::doubleClicked, this, &MainWindow::forceStop);
+    // puts the orb back as it was before that click - a stop is not a mute -
+    // and turns it red for two seconds.
+    connect(m_orb, &OrbWidget::doubleClicked, this, [this]() {
+        forceStop();
+        // A STOP IS NOT A MUTE: an orb that was listening goes on listening.
+        if (m_orb->isActive() && !m_stt->startLive())
+            m_orb->setActive(false);
+    });
     connect(m_orb, &OrbWidget::clicked, this, [this]() {
         if (m_orb->isActive()) {
             if (!m_stt->startLive())
@@ -689,6 +695,7 @@ void MainWindow::forceStop()
     m_orb->setThinking(false);
     m_orb->setPreparing(false);
     m_orb->setWorking(false);
+    m_orb->showStopped();
 
     BurnOS::liveLog(QStringLiteral("stopped: microphone, talker, tasks, voice and queue "
                                    "all stopped"));

@@ -83,7 +83,8 @@ private:
     void mute();
     void unmuted();
     // A DOUBLE CLICK STOPS EVERYTHING - microphone, talker, every task, the
-    // voice and whatever was waiting to be said.
+    // voice and whatever was waiting to be said. It is not a mute: the orb goes
+    // red for two seconds and is then listening, or muted, as it was before.
     void forceStop();
 
     // The BURNOS_ASK_SELFTEST rehearsal: the next scripted line, and the check

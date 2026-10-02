@@ -51,6 +51,11 @@ const QColor kCaptionTrail(200, 236, 255);
 // microphone is shut.
 const QColor kOrbGrey(206, 213, 223);
 const QColor kOrbGreyDeep(148, 156, 170);
+// Stopped. A double click stopped everything, and for two seconds the orb says
+// so in red: the same orb in another colour, a glow and a deeper aura behind
+// it, as the blue has its violet.
+const QColor kOrbRed(255, 84, 84);
+const QColor kOrbRedDeep(214, 36, 78);
 
 // Blend two colours, 0 gives the first and 1 the second. Used so the orb
 // CHANGES colour over a quarter of a second instead of snapping to it.
@@ -128,6 +133,14 @@ OrbWidget::OrbWidget(QWidget *parent)
         // The lights whirl faster the louder it talks, and keep whatever angle
         // they have reached when it stops, so they never jump back.
         m_wispSpin += kPhaseStep * 1.8 * m_speakMix * m_speakLevel;
+
+        // Stopped: red within a few frames, and eased back out once its two
+        // seconds are up.
+        const qreal wantStop = m_stopped ? qreal(1.0) : qreal(0.0);
+        if (m_stopMix < wantStop)
+            m_stopMix = qMin(wantStop, m_stopMix + 0.34);
+        else if (m_stopMix > wantStop)
+            m_stopMix = qMax(wantStop, m_stopMix - 0.07);
 
         // The working arcs fade in and out rather than switching.
         const qreal wantWork = m_working ? qreal(1.0) : qreal(0.0);
@@ -395,6 +408,12 @@ void OrbWidget::paintEvent(QPaintEvent *)
         glow = mixColour(glow, kOrbDeepBlue, m_speakMix);
         aura = mixColour(aura, kOrbDeepViolet, m_speakMix);
     }
+    // STOPPED outranks every other colour for the two seconds it lasts, on the
+    // blue orb and on the grey one alike.
+    if (m_stopMix > 0.0) {
+        glow = mixColour(glow, kOrbRed, m_stopMix);
+        aura = mixColour(aura, kOrbRedDeep, m_stopMix);
+    }
 
     // Additive blending so overlapping halos build up light instead of mud.
     p.setCompositionMode(QPainter::CompositionMode_Plus);
@@ -448,6 +467,16 @@ void OrbWidget::paintEvent(QPaintEvent *)
                                     QColor(150, 200, 255, 240), m_speakMix));
     core.setColorAt(0.75, coreMid);
     core.setColorAt(1.0, coreEdge);
+    if (m_stopMix > 0.0) {
+        // The heart goes red with the rest, or a white core would bleach the
+        // red out exactly where the eye lands.
+        core.setColorAt(0.0, mixColour(mixColour(QColor(255, 255, 255, 255),
+                                                 QColor(214, 234, 255, 255), m_speakMix),
+                                       QColor(255, 228, 224, 255), m_stopMix));
+        core.setColorAt(0.35, mixColour(mixColour(QColor(235, 246, 255, 235),
+                                                  QColor(150, 200, 255, 240), m_speakMix),
+                                        QColor(255, 168, 162, 240), m_stopMix));
+    }
     p.setPen(Qt::NoPen);
     p.setBrush(core);
 
@@ -661,12 +690,13 @@ void OrbWidget::mouseDoubleClickEvent(QMouseEvent *event)
     // The first click has already muted or unmuted - at once, because a mute
     // that waited to see whether a second click was coming would be half a
     // second late every time. This one is the STOP. It acts on the press, not
-    // the release, and leaves the orb muted whichever way the first click went.
+    // the release, and it is NOT a mute: the orb is put back as it was before
+    // the first click, listening if it was listening and muted if it was muted.
     if (event->button() == Qt::LeftButton && m_wasClick && !m_initializing
         && hitsOrb(event->position())) {
         m_wasClick = false;
         m_dragging = false; // so the release that follows toggles nothing
-        setActive(false);
+        setActive(m_beforeClick);
         emit doubleClicked();
         event->accept();
         return;
@@ -699,6 +729,7 @@ void OrbWidget::mouseReleaseEvent(QMouseEvent *event)
         // the end of a drag, can be the first half of a double click.
         m_wasClick = !m_moved && !m_initializing;
         if (m_wasClick) {
+            m_beforeClick = m_active;
             setActive(!m_active);
             emit clicked();
         }
@@ -724,6 +755,25 @@ void OrbWidget::setActive(bool active)
                         .arg(m_active ? QStringLiteral("BLUE (live mode armed)")
                                       : QStringLiteral("GREY (live mode off)")));
     updateHint();
+    update();
+}
+
+void OrbWidget::showStopped(int holdMs)
+{
+    // RED, FOR TWO SECONDS, THEN BACK. Nothing else about the orb changes: it
+    // is the same orb in another colour, and whatever colour it had - blue and
+    // listening, grey and muted - is the one it eases back to.
+    if (!m_stopTimer) {
+        m_stopTimer = new QTimer(this);
+        m_stopTimer->setSingleShot(true);
+        connect(m_stopTimer, &QTimer::timeout, this, [this]() {
+            m_stopped = false;
+            BurnOS::liveLog(QStringLiteral("orb: red gone"));
+        });
+    }
+    m_stopped = true;
+    m_stopTimer->start(holdMs);
+    BurnOS::liveLog(QStringLiteral("orb is RED for %1 ms: everything was stopped").arg(holdMs));
     update();
 }
 

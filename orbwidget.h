@@ -51,6 +51,10 @@ public:
     void showNotice(const QString &text, int holdMs = 8000);
     void clearNotice();
 
+    // Everything was stopped by a double click: the orb goes red, in its own
+    // scheme, for two seconds and then back to the colour it had. No word.
+    void showStopped(int holdMs = 2000);
+
     // Nothing is being said any more: the deep blue goes, the warp settles back
     // and any failure word is taken down. EVERY path out of a turn ends here.
     void stopSpeaking();
@@ -65,7 +69,7 @@ signals:
     // A left press and release that never crossed the drag threshold.
     void clicked();
     // A second click straight after one: stop everything. The orb has already
-    // gone grey by the time this is heard.
+    // been put back as it was before the first click by the time this is heard.
     void doubleClicked();
 
 
@@ -130,6 +134,7 @@ private:
     bool m_dragging = false;
     bool m_moved = false;
     bool m_wasClick = false;  // the last press and release was a click, not a drag
+    bool m_beforeClick = false; // armed or not, before that click toggled it
     bool m_active = false;    // live mode armed
     bool m_capturing = false; // a phrase is being kept right now
     bool m_initializing = false;
@@ -163,6 +168,10 @@ private:
 
     bool m_working = false;        // background tasks are running
     qreal m_workMix = 0.0;         // eased 0 to 1, so the arcs fade in and out
+
+    bool m_stopped = false;        // red: everything was just stopped
+    qreal m_stopMix = 0.0;         // eased 0 to 1, so the red never snaps
+    QTimer *m_stopTimer = nullptr; // and this takes the red away again
 
     bool m_noticeOn = false;       // a failure word is up on the orb
     QTimer *m_notice = nullptr;    // and this takes it away again

@@ -33,18 +33,34 @@ namespace {
 constexpr int kTalkTimeoutMs = 30000;
 
 // THE TALKER HAS NO CONTEXT WINDOW OF ITS OWN. What it is shown is read back
-// from the memory before every answer, as a WORKING SET of fixed size: the
+// from the memory before every answer, as a WORKING SET: the
 // newest lines word for word, what the memory holds that bears on the words
 // just said - from earlier today and from long before, ranked as one list -
 // and what the user asked to be kept in mind for good. A token is about four
-// characters, so this is roughly 300 + 600 + 300 tokens however long the
+// characters.
+//
+// THE WHOLE REQUEST IS HELD TO ABOUT 25,000 TOKENS, AND THAT WINDOW IS THE
+// SHORT-TERM MEMORY (v0.13). The instructions, the tools, the status, the
+// profile and the relevant memories take what they need - some 3,000 tokens -
+// and the newest lines of the conversation fill the rest, word for word. A
+// line that no longer fits has not gone anywhere: every line is in the ledger
+// from the moment it is said, and comes back as a relevant memory when it
+// bears on what is asked.
+// BURNOS_CONTEXT_TOKENS sets another size, for the tests and as the way back:
+// 2000 leaves the conversation the 1,200 characters v0.10 gave it.
+// ponytail: counted in characters, not by a tokenizer; the provider's own
+// count - prompt_tokens in a probe's stats - is the one to trust however long the
 // conversation has run.
-constexpr int kTailLines = 12;
+constexpr int kContextTokens = 25000;
+constexpr int kCharsPerToken = 4;
+// What a message costs beyond its words: the role and the wrapping round it.
+constexpr int kLineOverheadChars = 16;
+// Never less than this of the newest lines, however small the window is set.
 constexpr int kTailChars = 1200;
-constexpr int kTailLineChars = 400;
-// Asked of working memory: a few more than are shown, since the question's own
-// lines come back too and are left out.
-constexpr int kTailFetch = 16;
+constexpr int kTailLineChars = 2000;
+// Asked of working memory: as many of the newest lines as the window could
+// ever hold - short spoken lines run to some sixty characters.
+constexpr int kTailFetch = 1500;
 constexpr int kRelevantTokens = 600;
 constexpr int kRelevantLines = 8;
 constexpr int kRelevantChars = 2400;
@@ -128,13 +144,20 @@ const char kMemoryPrompt[] =
     "answer. It holds every word either of you has ever said, across "
     "restarts, stored automatically the moment it is said. You are shown "
     "three things from it: ABOUT THE USER, what they told you to keep in mind "
-    "for good; the conversation lines, the newest ones word for word; and "
+    "for good; the conversation lines, the newest ones word for word - your "
+    "short-term memory, and whatever is older has left it; and "
     "RELEVANT MEMORIES, what matched what was just said out of everything "
     "ever said, each with its date and speaker - where two disagree the newer "
-    "is right. When the user asks you to remember something, or tells you how "
-    "to behave from now on, call remember with it as one plain sentence about "
-    "them - 'The user's favourite code editor is Qt Creator.' - and say 'Got "
-    "it.'. NEVER say you remember anything that is not in what you were shown "
+    "is right. When the user asks you to remember something, tells you how "
+    "to behave from now on, or mentions in passing something about themselves "
+    "that will still matter next week - a preference, a like or dislike, a "
+    "habit, an allergy or their health, their people, their work, a date that "
+    "matters - call remember with it as one plain sentence about "
+    "them - 'The user's favourite code editor is Qt Creator.' Asked to "
+    "remember, say 'Got it.'; told in passing, call remember and answer what "
+    "they said in the same reply. Never for small talk, a passing mood, or "
+    "what ABOUT THE USER already holds. "
+    "NEVER say you remember anything that is not in what you were shown "
     "or in what recall found. When only your memory could answer and what you "
     "were shown does not hold it, call recall with what to look for, dates "
     "written out in full, never 'yesterday'; if that finds nothing, say you "
@@ -404,7 +427,8 @@ QList<Line> turnsOf(const QJsonObject &result)
 // into. Bounded, beginning on something the user said. `unsaved` is how many
 // of the lines shown are not in the memory yet.
 QJsonArray tailMessages(QList<Line> lines, const QList<Line> &waiting, const QString &said,
-                        int maxLines, int maxChars, int lineChars, int *unsaved)
+                        int maxLines, int maxChars, int lineChars, int *unsaved,
+                        int lineCost = 0) // what a line costs beyond its words
 {
     for (const Line &w : waiting) {
         bool held = false;
@@ -429,7 +453,8 @@ QJsonArray tailMessages(QList<Line> lines, const QList<Line> &waiting, const QSt
     int first = int(lines.size());
     int chars = 0;
     while (first > 0 && int(lines.size()) - first < maxLines) {
-        const int size = int(qMin<qsizetype>(lines.at(first - 1).text.size(), lineChars));
+        const int size = int(qMin<qsizetype>(lines.at(first - 1).text.size(), lineChars))
+                         + lineCost;
         if (chars + size > maxChars && first < int(lines.size()))
             break;
         chars += size;
@@ -646,8 +671,10 @@ QJsonArray talkTools(bool memory)
     if (memory) {
         list.append(functionTool(
             QStringLiteral("remember"),
-            QStringLiteral("Keep something the user asked you to remember, or told "
-                           "you to do from now on, for good."),
+            QStringLiteral("Keep something for good: what the user asked you to "
+                           "remember, how they told you to behave from now on, or a "
+                           "lasting preference or fact about themselves that they "
+                           "mentioned in passing."),
             QJsonObject{
                 {"type", "object"},
                 {"properties", QJsonObject{
@@ -735,6 +762,23 @@ QJsonArray talkTools(bool memory)
             }},
         }));
     return list;
+}
+
+// HOW MUCH CONVERSATION THE WINDOW HAS ROOM FOR, in characters: the whole
+// request's budget less everything else that travels with it. The profile and
+// the relevant memories are taken at their caps, because what they really
+// hold is not known until the conversation lines have been chosen.
+int tailBudget(qsizetype statusChars, qsizetype saidChars)
+{
+    static const int kWindow = [] {
+        const int asked = qEnvironmentVariableIntValue("BURNOS_CONTEXT_TOKENS");
+        return (asked > 0 ? asked : kContextTokens) * kCharsPerToken;
+    }();
+    static const int kFixed
+        = int(qstrlen(kTalkPrompt) + qstrlen(kMemoryPrompt))
+          + int(QJsonDocument(talkTools(true)).toJson(QJsonDocument::Compact).size());
+    return qMax(kTailChars, kWindow - kFixed - kProfileChars - kRelevantChars
+                                - int(statusChars) - int(saidChars));
 }
 
 // One function with an action, rather than a function per verb, because a
@@ -1847,6 +1891,9 @@ void Agent::release()
 void Agent::lookup(const QString &who, const QString &said,
                    std::function<void(const Recalled &)> then)
 {
+    // How much conversation the window has room for on this turn.
+    const int room = tailBudget(statusReport().size(), said.size());
+
     // Said, and not confirmed in the memory yet.
     QList<Line> waiting;
     for (const Unstored &u : std::as_const(m_unsaved))
@@ -1857,7 +1904,7 @@ void Agent::lookup(const QString &who, const QString &said,
         // Nothing can be read. What was said since the memory went is all
         // there is to show, and it is shown.
         Recalled got;
-        got.recent = tailMessages({}, waiting, said, kTailLines, kTailChars, kTailLineChars,
+        got.recent = tailMessages({}, waiting, said, kTailFetch, room, kTailLineChars,
                                   &got.unsaved);
         then(got);
         return;
@@ -1880,18 +1927,27 @@ void Agent::lookup(const QString &who, const QString &said,
     };
     auto pending = std::make_shared<Pending>();
     pending->left = profile ? 3 : 2;
-    const auto done = [this, who, said, waiting, compiled, pending, then]() {
+    const auto done = [this, who, said, waiting, compiled, room, pending, then]() {
         if (--pending->left > 0)
             return;
         Recalled got;
-        got.recent = compiled ? tailMessages(pending->lines, waiting, said, kTailLines,
-                                             kTailChars, kTailLineChars, &got.unsaved)
+        got.recent = compiled ? tailMessages(pending->lines, waiting, said, kTailFetch,
+                                             room, kTailLineChars, &got.unsaved,
+                                             kLineOverheadChars)
                               : tailMessages(pending->lines, waiting, said, kOldTurns,
                                              kOldChars, kOldChars, &got.unsaved);
         got.notes = memoryNotes(pending->found, pending->query, said, got.recent,
                                 compiled ? kRelevantLines : kOldNotes,
                                 compiled ? kRelevantChars : kOldNoteChars);
         got.profile = profileLines(pending->profile, said);
+        if (compiled) {
+            liveLog(QStringLiteral("%1: short-term memory - %2 of %3 line(s) fit the window's "
+                                   "%4 chars")
+                        .arg(who)
+                        .arg(got.recent.size())
+                        .arg(pending->lines.size())
+                        .arg(room));
+        }
         if (!got.notes.isEmpty()) {
             liveLog(QStringLiteral("%1: memory brought %2 note(s)")
                         .arg(who)

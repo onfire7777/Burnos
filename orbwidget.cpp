@@ -655,6 +655,26 @@ void OrbWidget::mousePressEvent(QMouseEvent *event)
     QWidget::mousePressEvent(event);
 }
 
+void OrbWidget::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    // THE SECOND PRESS OF A DOUBLE CLICK comes here, not to mousePressEvent.
+    // The first click has already muted or unmuted - at once, because a mute
+    // that waited to see whether a second click was coming would be half a
+    // second late every time. This one is the STOP. It acts on the press, not
+    // the release, and leaves the orb muted whichever way the first click went.
+    if (event->button() == Qt::LeftButton && m_wasClick && !m_initializing
+        && hitsOrb(event->position())) {
+        m_wasClick = false;
+        m_dragging = false; // so the release that follows toggles nothing
+        setActive(false);
+        emit doubleClicked();
+        event->accept();
+        return;
+    }
+    // Straight after a drag, or off the orb, it is an ordinary press.
+    mousePressEvent(event);
+}
+
 void OrbWidget::mouseMoveEvent(QMouseEvent *event)
 {
     if (m_dragging && (event->buttons() & Qt::LeftButton)) {
@@ -674,8 +694,11 @@ void OrbWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton && m_dragging) {
         m_dragging = false;
-        // Nothing to talk to until the models are on disk.
-        if (!m_moved && !m_initializing) {
+        // Nothing to talk to until the models are on disk, so no click then.
+        // Remembered for the press that may follow at once: only a click, never
+        // the end of a drag, can be the first half of a double click.
+        m_wasClick = !m_moved && !m_initializing;
+        if (m_wasClick) {
             setActive(!m_active);
             emit clicked();
         }

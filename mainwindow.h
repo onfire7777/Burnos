@@ -77,7 +77,12 @@ private:
     void refreshThinking();
     // The voice has finished: reopen the microphone, if the orb is still armed.
     void listenAgain();
-    // Muting. STOPS EVERYTHING - the microphone, the talker, every task, the
+    // ONE CLICK MUTES, AND ONLY MUTES: the microphone shuts and the voice goes
+    // quiet, while the talker and every task carry on. What they have to say
+    // is kept, and said after the click that unmutes.
+    void mute();
+    void unmuted();
+    // A DOUBLE CLICK STOPS EVERYTHING - microphone, talker, every task, the
     // voice and whatever was waiting to be said.
     void forceStop();
 
@@ -99,6 +104,9 @@ private:
     ModelInstaller *m_setup = nullptr;
     bool m_settingsOpen = false;
     bool m_transcribing = false;
+    // A phrase was still inside the recogniser when everything was stopped:
+    // what it turns out to say is dropped, not answered.
+    bool m_dropHeard = false;
 
     struct Speech
     {

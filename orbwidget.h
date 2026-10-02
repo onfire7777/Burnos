@@ -19,7 +19,8 @@ class QTimer;
 // A self contained widget that paints an animated, glowing orb on a fully
 // transparent background. It also carries the window interaction, because it
 // covers the whole client area of a frameless window: drag with the left
-// button to move, click without dragging to toggle active, right click for
+// button to move, click without dragging to mute or unmute, double click to
+// stop everything, right click for
 // the menu.
 class OrbWidget : public QWidget
 {
@@ -63,6 +64,9 @@ public:
 signals:
     // A left press and release that never crossed the drag threshold.
     void clicked();
+    // A second click straight after one: stop everything. The orb has already
+    // gone grey by the time this is heard.
+    void doubleClicked();
 
 
 public slots:
@@ -105,6 +109,7 @@ public slots:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
 
@@ -124,6 +129,7 @@ private:
     QTimer *m_timer = nullptr;
     bool m_dragging = false;
     bool m_moved = false;
+    bool m_wasClick = false;  // the last press and release was a click, not a drag
     bool m_active = false;    // live mode armed
     bool m_capturing = false; // a phrase is being kept right now
     bool m_initializing = false;

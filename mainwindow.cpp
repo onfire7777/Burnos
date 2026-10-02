@@ -168,12 +168,19 @@ MainWindow::MainWindow(QWidget *parent)
     if (ComposioClient::isConfigured())
         m_composio->refreshConnections();
 
+    // --- THE ORB ------------------------------------------------------------
+    // ONE CLICK MUTES OR UNMUTES, and interrupts nothing that is being worked
+    // on. A DOUBLE CLICK STOPS EVERYTHING. The first click of a double click
+    // has already muted or unmuted by the time the second lands, and the stop
+    // leaves the orb muted either way.
+    connect(m_orb, &OrbWidget::doubleClicked, this, &MainWindow::forceStop);
     connect(m_orb, &OrbWidget::clicked, this, [this]() {
         if (m_orb->isActive()) {
             if (!m_stt->startLive())
                 m_orb->setActive(false);
+            unmuted();
         } else {
-            forceStop();
+            mute();
         }
     });
 
@@ -205,6 +212,13 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_stt, &SttEngine::transcribed, this, [this](const QString &text) {
         m_transcribing = false;
         refreshThinking();
+        if (m_dropHeard) {
+            // Said before everything was stopped, read after it: not answered.
+            m_dropHeard = false;
+            BurnOS::liveLog(QStringLiteral("stopped: dropped what was still being "
+                                           "transcribed"));
+            return;
+        }
         if (text.isEmpty()) {
             speakNext();
             return;
@@ -218,6 +232,9 @@ MainWindow::MainWindow(QWidget *parent)
     // The microphone itself failing is the one case that disarms, because
     // there is nothing left to listen with.
     connect(m_stt, &SttEngine::failed, this, [this](const QString &reason) {
+        // Nothing is being read any more, so there is nothing left to drop.
+        if (!m_stt->isReading())
+            m_dropHeard = false;
         m_transcribing = false;
         if (!m_stt->isLive())
             m_orb->setActive(false);
@@ -530,9 +547,11 @@ void MainWindow::speakNext()
     if (m_voiceBusy || m_speech.isEmpty() || m_settingsOpen)
         return;
 
-    // MUTED MEANS MUTED: nothing queued before the click is said after it.
+    // MUTED MEANS QUIET, NOT FORGOTTEN. The work goes on behind a muted orb, so
+    // what it has to say - a task that finished, a question it needs answered -
+    // waits here and is said after the click that unmutes.
     if (!m_orb->isActive()) {
-        m_speech.clear();
+        m_speakRetry->stop();
         return;
     }
 
@@ -584,7 +603,9 @@ void MainWindow::voiceGone()
 
 void MainWindow::refreshThinking()
 {
-    m_orb->setThinking(m_transcribing || m_agent->isThinking());
+    // Not behind a muted orb: the word there is "Muted", and the arcs round
+    // the rim already say that work is going on.
+    m_orb->setThinking(m_orb->isActive() && (m_transcribing || m_agent->isThinking()));
 }
 
 void MainWindow::listenAgain()
@@ -602,15 +623,59 @@ void MainWindow::listenAgain()
     m_stt->resumeListening();
 }
 
+void MainWindow::mute()
+{
+    // ONE CLICK: QUIET, AND NOTHING ELSE. The microphone shuts and the voice
+    // stops mid word, but the talker goes on answering and every task goes on
+    // working - a mute must never cost the user the thing they asked for.
+    m_speakRetry->stop();
+
+    // An answer still being made into speech has been heard by nobody, so it
+    // goes back to the front of the queue and is said after the unmute. One
+    // that was already audible is simply cut off: it was said.
+    if (m_voiceBusy && !m_voicePlaying)
+        m_speech.prepend(m_voice);
+
+    m_stt->stopLive();
+    m_tts->stop();
+    voiceGone();
+    m_orb->setPreparing(false);
+
+    // A phrase the recogniser already has is still read and still answered:
+    // it was said before the click. One cut off by the click is gone, and must
+    // not leave "transcribing" standing with nothing to end it.
+    m_transcribing = m_stt->isReading();
+    refreshThinking();
+
+    BurnOS::liveLog(QStringLiteral("muted: microphone shut and voice quiet - the talker and "
+                                   "%1 task(s) carry on, %2 line(s) wait to be said")
+                        .arg(m_agent->liveTasks())
+                        .arg(m_speech.size()));
+}
+
+void MainWindow::unmuted()
+{
+    // Back on. Whatever went on behind the muted orb shows again, and what was
+    // kept is said - but only once a double click has had its chance. This
+    // click may be the first half of one, and a stop must not be preceded by
+    // half a sentence.
+    refreshThinking();
+    QTimer::singleShot(QApplication::doubleClickInterval(), this, &MainWindow::speakNext);
+    BurnOS::liveLog(QStringLiteral("unmuted: %1 line(s) kept while muted")
+                        .arg(m_speech.size()));
+}
+
 void MainWindow::forceStop()
 {
-    // MUTING STOPS EVERYTHING, AT ONCE. The queue goes first, so nothing that
+    // THIS STOPS EVERYTHING, AT ONCE. The queue goes first, so nothing that
     // stops below can start the voice again on its way out.
     m_speech.clear();
     m_speakRetry->stop();
     m_rehearsal.clear();
     m_rehearsalWaiting = false;
 
+    // A phrase still inside the recogniser comes out after this. It is dropped.
+    m_dropHeard = m_stt->isReading();
     m_stt->stopLive();
     m_tts->stop();
     voiceGone();
@@ -625,7 +690,7 @@ void MainWindow::forceStop()
     m_orb->setPreparing(false);
     m_orb->setWorking(false);
 
-    BurnOS::liveLog(QStringLiteral("muted: microphone, talker, tasks, voice and queue "
+    BurnOS::liveLog(QStringLiteral("stopped: microphone, talker, tasks, voice and queue "
                                    "all stopped"));
 }
 

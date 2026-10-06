@@ -77,6 +77,12 @@ private:
     void refreshThinking();
     // The voice has finished: reopen the microphone, if the orb is still armed.
     void listenAgain();
+    // Opens the microphone for live mode. If it will not open, the orb goes
+    // back to grey and remembers it is grey for want of a microphone.
+    bool openMicrophone();
+    // True only for a mute by the user - the one grey orb that holds the voice
+    // back. Grey for want of a microphone still speaks, so answers are kept.
+    bool voiceHeld() const;
     // ONE CLICK MUTES, AND ONLY MUTES: the microphone shuts and the voice goes
     // quiet, while the talker and every task carry on. What they have to say
     // is kept, and said after the click that unmutes.
@@ -118,6 +124,9 @@ private:
     Speech m_voice;              // being synthesised or said right now
     bool m_voiceBusy = false;    // m_voice is in the voice engine
     bool m_voicePlaying = false; // and it is audible
+    // Grey because no microphone would open (none plugged in, or a remote
+    // session without one) - not because the user muted.
+    bool m_micMissing = false;
     // Looks at the queue again while something is in the way.
     QTimer *m_speakRetry = nullptr;
 

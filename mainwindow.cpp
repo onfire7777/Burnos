@@ -13,7 +13,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QAudioDevice>
 #include <QGuiApplication>
+#include <QMediaDevices>
 #include <QMenu>
 #include <QScreen>
 #include <QStringList>
@@ -177,13 +179,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_orb, &OrbWidget::doubleClicked, this, [this]() {
         forceStop();
         // A STOP IS NOT A MUTE: an orb that was listening goes on listening.
-        if (m_orb->isActive() && !m_stt->startLive())
-            m_orb->setActive(false);
+        if (m_orb->isActive())
+            openMicrophone();
     });
     connect(m_orb, &OrbWidget::clicked, this, [this]() {
         if (m_orb->isActive()) {
-            if (!m_stt->startLive())
-                m_orb->setActive(false);
+            openMicrophone();
             unmuted();
         } else {
             mute();
@@ -242,8 +243,13 @@ MainWindow::MainWindow(QWidget *parent)
         if (!m_stt->isReading())
             m_dropHeard = false;
         m_transcribing = false;
-        if (!m_stt->isLive())
+        if (!m_stt->isLive()) {
+            // Live mode was on and the microphone has gone: the orb is grey for
+            // want of a microphone, which is not a mute.
+            if (m_orb->isActive())
+                m_micMissing = true;
             m_orb->setActive(false);
+        }
         m_orb->setCapturing(false);
         listenAgain();
         showNotice(reason);
@@ -358,8 +364,26 @@ void MainWindow::armLiveMode()
     // The orb is told first, so the colour and the hint change on the same
     // frame the microphone opens; a failure puts it straight back to grey.
     m_orb->setActive(true);
-    if (!m_stt->startLive())
+    openMicrophone();
+}
+
+bool MainWindow::openMicrophone()
+{
+    const bool open = m_stt->startLive();
+    m_micMissing = !open;
+    if (!open)
         m_orb->setActive(false);
+    return open;
+}
+
+bool MainWindow::voiceHeld() const
+{
+    // MUTED MEANS QUIET - but only a mute. An orb that is grey because no
+    // microphone would open was never muted, and holding its answers back
+    // would keep them unsaid for good: an answer goes into the memory when it
+    // is said, so none would be kept, and every next line would be taken for
+    // talking over an answer still waiting to be said.
+    return !m_orb->isActive() && !m_micMissing;
 }
 
 void MainWindow::restoreOrbPosition()
@@ -556,7 +580,7 @@ void MainWindow::speakNext()
     // MUTED MEANS QUIET, NOT FORGOTTEN. The work goes on behind a muted orb, so
     // what it has to say - a task that finished, a question it needs answered -
     // waits here and is said after the click that unmutes.
-    if (!m_orb->isActive()) {
+    if (voiceHeld()) {
         m_speakRetry->stop();
         return;
     }
@@ -586,6 +610,24 @@ void MainWindow::speakNext()
     }
 
     m_voice = m_speech.takeAt(pick);
+
+    // NO SPEAKER, YET STILL ANSWERED. With no audio output at all - a remote
+    // session often has none - Kokoro would only make sound for nobody, and
+    // the answer would never count as said. It was answered; there is just
+    // nothing to hear it through. So the turn is closed at once and goes into
+    // the memory, and the next line is not mistaken for talking over it.
+    if (QMediaDevices::defaultAudioOutput().isNull()) {
+        BurnOS::liveLog(QStringLiteral("voice: no speaker on this PC - counted as said: %1")
+                            .arg(m_voice.text.simplified().left(160)));
+        if (m_voice.turn > 0)
+            m_agent->spoken(m_voice.turn);
+        m_voice = Speech();
+        listenAgain();
+        QTimer::singleShot(0, this, &MainWindow::speakNext);
+        rehearseWhenIdle();
+        return;
+    }
+
     m_voiceBusy = true;
     m_orb->setPreparing(true);
 

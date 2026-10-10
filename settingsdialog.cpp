@@ -6,6 +6,8 @@
 
 #include <QAbstractItemView>
 #include <QCheckBox>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -163,6 +165,68 @@ private:
     QHash<QString, QString> m_names;         // slug to proper name
     // So "nothing matched" is only said about a search that came back empty.
     bool m_catalogueLoaded = false;
+};
+
+// THE TRANSCRIPTION KEY, set by pressing it: click the field, then the key or
+// the combination. It is kept as Windows will be asked to register it, which
+// is why this is not a QKeySequenceEdit - its keys are Qt's and would have to
+// be translated back. Backspace or Delete takes the key away again. Saved the
+// moment it is pressed, like everything else on this page.
+class KeyField : public QLineEdit
+{
+public:
+    explicit KeyField(QWidget *parent = nullptr)
+        : QLineEdit(parent)
+    {
+        setReadOnly(true);
+        setPlaceholderText(QObject::tr("None - click here, then press a key"));
+        setText(BurnOS::Settings::transcriptionKey());
+    }
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        const int key = event->key();
+        const Qt::KeyboardModifiers held =
+            event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier
+                                  | Qt::MetaModifier);
+        // Escape still closes the page and Enter still does nothing: neither
+        // can be the key. A modifier alone is on its way to a combination.
+        if (key == Qt::Key_Escape || key == Qt::Key_Return || key == Qt::Key_Enter
+            || key == Qt::Key_Tab || key == Qt::Key_Backtab) {
+            QLineEdit::keyPressEvent(event);
+            return;
+        }
+        if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt
+            || key == Qt::Key_Meta || key == Qt::Key_AltGr || key == Qt::Key_unknown)
+            return;
+        if (held == Qt::NoModifier && (key == Qt::Key_Backspace || key == Qt::Key_Delete)) {
+            clear();
+            BurnOS::Settings::setTranscriptionKey(QString(), 0);
+            return;
+        }
+        // A key that types something cannot be taken from every other program
+        // on its own: only a function key may stand without Ctrl, Alt or Win.
+        const bool functionKey = key >= Qt::Key_F1 && key <= Qt::Key_F24;
+        const bool anchored = held & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        const quint32 vk = event->nativeVirtualKey() & 0xFFFF;
+        if (!vk || (!functionKey && !anchored))
+            return;
+        // Windows' own flags: MOD_ALT 1, MOD_CONTROL 2, MOD_SHIFT 4, MOD_WIN 8.
+        quint32 mods = 0;
+        if (held & Qt::AltModifier)
+            mods |= 1;
+        if (held & Qt::ControlModifier)
+            mods |= 2;
+        if (held & Qt::ShiftModifier)
+            mods |= 4;
+        if (held & Qt::MetaModifier)
+            mods |= 8;
+        const QString shown =
+            QKeySequence(QKeyCombination(held, Qt::Key(key))).toString(QKeySequence::NativeText);
+        setText(shown);
+        BurnOS::Settings::setTranscriptionKey(shown, (mods << 16) | vk);
+    }
 };
 
 SettingsDialog::SettingsDialog(QWidget *parent)
@@ -390,6 +454,18 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->addRow(tr("Integrations"), integrationsRow);
     form->addRow(tr("Microphone sensitivity"), sensitivityRow);
     form->addRow(tr("Pause before it answers"), hangoverRow);
+    auto *dictateKey = new KeyField(this);
+    dictateKey->setToolTip(tr("Hold this key and speak: the words are typed where "
+                              "the cursor is, in any program, instead of being "
+                              "answered. A function key works on its own; any "
+                              "other key needs Ctrl, Alt or Win with it. "
+                              "Backspace removes it."));
+    auto *dictateNote = new QLabel(tr("Hold it and speak, and the words are typed where the "
+                                      "cursor is. Or say \"turn on transcription mode\"."), this);
+    dictateNote->setWordWrap(true);
+    dictateNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+    form->addRow(tr("Transcription key"), dictateKey);
+    form->addRow(QString(), dictateNote);
     form->addRow(tr("Voice"), m_voice);
     form->addRow(tr("Speech volume"), volumeRow);
     form->addRow(tr("Orb size"), orbSizeRow);

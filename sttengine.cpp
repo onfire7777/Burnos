@@ -37,6 +37,8 @@ constexpr int kMinSpeechMs = 350;
 // Nobody asks a question for half a minute. This stops a noisy room from
 // recording for ever.
 constexpr int kMaxPhraseMs = 30000;
+// A push-to-talk hold shorter than this was a slip of the finger.
+constexpr int kMinHeldMs = 300;
 
 // Silero hears in steps of 512 samples, 32 ms at 16 kHz, and a phrase starts
 // once two steps in a row sound like speech - a keystroke is one step at most.
@@ -519,6 +521,63 @@ bool SttEngine::resumeListening()
     return true;
 }
 
+bool SttEngine::beginHeld()
+{
+    if (m_held)
+        return true;
+    if (!m_source) {
+        // Live mode is off or paused: the microphone opens for this hold only.
+        if (!BurnOS::Models::sttPresent() || !QFileInfo::exists(cliPath())) {
+            emit failed(tr("The speech model is not installed yet."));
+            return false;
+        }
+        if (!openMicrophone())
+            return false;
+        m_heldOwnsMic = true;
+    }
+    // What was being said as the key went down belongs to the hold: the phrase
+    // the detector had started, or else the moment before the key.
+    m_heldPcm = m_capturing ? m_speech : m_preroll;
+    m_speech.clear();
+    m_preroll.clear();
+    m_silenceBytes = 0;
+    m_voicedBytes = 0;
+    m_attackBytes = 0;
+    if (m_capturing) {
+        m_capturing = false;
+        emit speechEnded();
+    }
+    m_held = true;
+    BurnOS::liveLog(QStringLiteral("push to talk DOWN%1")
+                        .arg(m_heldOwnsMic ? QStringLiteral(" (microphone opened for it)")
+                                           : QString()));
+    return true;
+}
+
+bool SttEngine::endHeld()
+{
+    if (!m_held)
+        return false;
+    m_held = false;
+    const QByteArray phrase = m_heldPcm;
+    m_heldPcm.clear();
+    if (m_heldOwnsMic) {
+        m_heldOwnsMic = false;
+        // Unless live mode was armed while the key was down: then it is in use.
+        if (!m_live)
+            closeMicrophone();
+    }
+    const int ms = bytesToMs(phrase.size());
+    BurnOS::liveLog(QStringLiteral("push to talk UP after %1 ms%2")
+                        .arg(ms)
+                        .arg(ms < kMinHeldMs ? QStringLiteral(" - too short to be a phrase")
+                                             : QString()));
+    if (ms < kMinHeldMs)
+        return false;
+    transcribe(phrase, true);
+    return true;
+}
+
 void SttEngine::setOverVoice(bool on)
 {
     if (m_overVoice == on)
@@ -609,6 +668,18 @@ void SttEngine::closeMicrophone()
 
 void SttEngine::onAudio(const QByteArray &pcm)
 {
+    // PUSH TO TALK IS DOWN: all of it is the phrase, and the detector is not
+    // asked. A key held for minutes still reaches the recogniser half a minute
+    // at a time - deferred, because this is the audio device's own write call.
+    if (m_held) {
+        m_heldPcm.append(pcm);
+        if (m_heldPcm.size() >= msToBytes(kMaxPhraseMs)) {
+            const QByteArray part = m_heldPcm;
+            m_heldPcm.clear();
+            QTimer::singleShot(0, this, [this, part]() { transcribe(part, true); });
+        }
+        return;
+    }
     if (!m_live || !m_source)
         return;
 
@@ -815,13 +886,13 @@ void SttEngine::selfTest()
                                    "mono WAV"));
 }
 
-void SttEngine::transcribe(const QByteArray &pcm)
+void SttEngine::transcribe(const QByteArray &pcm, bool held)
 {
     if (m_pending) {
         // One recogniser at a time. Now that the microphone stays open while we
         // work, a second phrase can arrive before the first has been read, and
         // it waits its turn rather than overwriting the wav that is still open.
-        m_queue.append(pcm);
+        m_queue.append({pcm, held});
         BurnOS::liveLog(QStringLiteral("queued %1 ms behind the recogniser")
                             .arg(bytesToMs(pcm.size())));
         return;
@@ -856,12 +927,16 @@ void SttEngine::transcribe(const QByteArray &pcm)
                     }
                     BurnOS::liveLog(QStringLiteral("transcribed: %1")
                                         .arg(out.isEmpty() ? QStringLiteral("(nothing)") : out));
-                    emit transcribed(out);
+                    if (m_pendingHeld)
+                        emit dictated(out);
+                    else
+                        emit transcribed(out);
                     drainQueue();
                 });
     }
 
     m_pending = true;
+    m_pendingHeld = held;
 
     BurnOS::liveLog(QStringLiteral("transcribing %1 ms of audio").arg(bytesToMs(pcm.size())));
 
@@ -878,7 +953,8 @@ void SttEngine::drainQueue()
 {
     if (m_pending || m_queue.isEmpty())
         return;
-    transcribe(m_queue.takeFirst());
+    const QPair<QByteArray, bool> next = m_queue.takeFirst();
+    transcribe(next.first, next.second);
 }
 
 bool SttEngine::writeWav(const QByteArray &pcm, const QString &wavPath,

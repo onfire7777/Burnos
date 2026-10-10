@@ -93,6 +93,23 @@ private:
     // red for two seconds and is then listening, or muted, as it was before.
     void forceStop();
 
+    // WHAT WAS SAID, from the microphone or the rehearsal: a spoken command
+    // for this window, words to be typed in transcription mode, or a line for
+    // the Agent.
+    void heard(const QString &text);
+    // TRANSCRIPTION MODE: what is said is typed where the caret is, as a
+    // dictation tool would, and is neither answered nor remembered. Turned on
+    // and off by saying so. The voice keeps what it has to say until it is off.
+    void setDictating(bool on);
+    // Puts `text` into whatever window has the keyboard.
+    void typeOut(const QString &text);
+    // THE TRANSCRIPTION KEY, from Settings: while it is held, what is said is
+    // typed - in either mode, muted or not - and the mode itself does not
+    // change. Registered with Windows as a hot key, so it works from any window.
+    void applyTranscriptionKey();
+    void keyDown();
+    void keyUp();
+
     // The BURNOS_ASK_SELFTEST rehearsal: the next scripted line, and the check
     // that lets an untimed one go once everything said so far has been
     // answered out loud.
@@ -114,6 +131,12 @@ private:
     // A phrase was still inside the recogniser when everything was stopped:
     // what it turns out to say is dropped, not answered.
     bool m_dropHeard = false;
+    bool m_dictating = false; // transcription mode is on
+    bool m_keyHeld = false;   // the transcription key is down
+    // That key's virtual key while it is registered with Windows, else 0, and
+    // the timer that sees it come up again: a hot key only ever says "down".
+    int m_keyVk = 0;
+    QTimer *m_keyWatch = nullptr;
 
     struct Speech
     {

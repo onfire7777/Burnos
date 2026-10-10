@@ -56,6 +56,10 @@ const QColor kOrbGreyDeep(148, 156, 170);
 // it, as the blue has its violet.
 const QColor kOrbRed(255, 84, 84);
 const QColor kOrbRedDeep(214, 36, 78);
+// Transcription. What is said is typed, not answered, and the orb says so in a
+// green nothing else here uses.
+const QColor kOrbGreen(96, 236, 168);
+const QColor kOrbGreenDeep(30, 168, 150);
 
 // Blend two colours, 0 gives the first and 1 the second. Used so the orb
 // CHANGES colour over a quarter of a second instead of snapping to it.
@@ -141,6 +145,13 @@ OrbWidget::OrbWidget(QWidget *parent)
             m_stopMix = qMin(wantStop, m_stopMix + 0.34);
         else if (m_stopMix > wantStop)
             m_stopMix = qMax(wantStop, m_stopMix - 0.07);
+
+        // Transcription: the green comes and goes over a few frames.
+        const qreal wantDictate = m_dictating ? qreal(1.0) : qreal(0.0);
+        if (m_dictateMix < wantDictate)
+            m_dictateMix = qMin(wantDictate, m_dictateMix + 0.08);
+        else if (m_dictateMix > wantDictate)
+            m_dictateMix = qMax(wantDictate, m_dictateMix - 0.06);
 
         // The working arcs fade in and out rather than switching.
         const qreal wantWork = m_working ? qreal(1.0) : qreal(0.0);
@@ -408,6 +419,12 @@ void OrbWidget::paintEvent(QPaintEvent *)
         glow = mixColour(glow, kOrbDeepBlue, m_speakMix);
         aura = mixColour(aura, kOrbDeepViolet, m_speakMix);
     }
+    // TRANSCRIPTION is green over the listening blue and over the muted grey
+    // alike: what matters is that the next words are typed, not answered.
+    if (m_dictateMix > 0.0) {
+        glow = mixColour(glow, kOrbGreen, m_dictateMix);
+        aura = mixColour(aura, kOrbGreenDeep, m_dictateMix);
+    }
     // STOPPED outranks every other colour for the two seconds it lasts, on the
     // blue orb and on the grey one alike.
     if (m_stopMix > 0.0) {
@@ -580,7 +597,7 @@ void OrbWidget::updateHint()
         else if (m_preparing)
             wanted = tr("Preparing");
         else if (m_thinking)
-            wanted = tr("Thinking");
+            wanted = m_dictating ? tr("Typing") : tr("Thinking");
         else if (!m_active)
             wanted = tr("Muted");
     }
@@ -805,6 +822,17 @@ void OrbWidget::setPreparing(bool on)
     if (m_preparing == on)
         return;
     m_preparing = on;
+    updateHint();
+    update();
+}
+
+void OrbWidget::setDictating(bool on)
+{
+    if (m_dictating == on)
+        return;
+    m_dictating = on;
+    BurnOS::liveLog(on ? QStringLiteral("orb is GREEN: what is said is typed, not answered")
+                       : QStringLiteral("orb: green gone"));
     updateHint();
     update();
 }

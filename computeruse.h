@@ -100,6 +100,13 @@ DeskResult perform(const QVariantMap &args, const DeskState &state,
 void onHands(QObject *guard, std::function<DeskResult()> job,
              std::function<void(const DeskResult &)> done);
 
+// DICTATION: `text` goes in at the caret of whatever window has the keyboard,
+// as if it had been typed there. Pasted, with the clipboard put back as it
+// was - or typed key by key when the clipboard holds something that is not
+// text, which a paste would lose. On the hands thread, so it waits its turn
+// behind anything a task is doing; only the log hears how it went.
+void dictate(QObject *guard, const QString &text);
+
 // One files action - read, write, edit, list, find or search - on any path on
 // this machine, answered in plain words for the model. Blocking; it runs on a
 // pool thread, never on the orb's.

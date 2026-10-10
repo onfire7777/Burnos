@@ -24,6 +24,8 @@ constexpr auto kTaskModelPath = "openrouter/taskModel";
 constexpr auto kTokensPath = "openrouter/maxTokens";
 constexpr auto kHangoverPath = "stt/hangoverMs";
 constexpr auto kSensitivityPath = "stt/sensitivity";
+constexpr auto kDictateKeyPath = "stt/transcriptionKey";
+constexpr auto kDictateCodePath = "stt/transcriptionKeyCode";
 constexpr auto kVoicePath  = "tts/voice";
 constexpr auto kVolumePath = "tts/volume";
 constexpr auto kOnTopPath  = "ui/alwaysOnTop";
@@ -266,6 +268,26 @@ void setOrbSize(int px)
     QSettings s = store();
     s.setValue(QString::fromLatin1(kOrbSizePath),
                qBound(kMinOrbSize, px, kMaxOrbSize));
+    s.sync();
+}
+
+QString transcriptionKey()
+{
+    return transcriptionKeyCode()
+               ? store().value(QString::fromLatin1(kDictateKeyPath)).toString()
+               : QString();
+}
+
+quint32 transcriptionKeyCode()
+{
+    return store().value(QString::fromLatin1(kDictateCodePath), 0).toUInt();
+}
+
+void setTranscriptionKey(const QString &shown, quint32 code)
+{
+    QSettings s = store();
+    s.setValue(QString::fromLatin1(kDictateKeyPath), shown);
+    s.setValue(QString::fromLatin1(kDictateCodePath), code);
     s.sync();
 }
 

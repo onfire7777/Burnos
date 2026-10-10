@@ -3334,6 +3334,31 @@ bool writeTextFile(const QString &path, const QString &text, QString *error)
 
 } // namespace
 
+void dictate(QObject *guard, const QString &text)
+{
+    onHands(guard, [text]() {
+        // Only a clipboard that is empty or holds text can be put back as it
+        // was: a copied picture or file would be gone after a paste.
+        const bool restorable = CountClipboardFormats() == 0
+                                || IsClipboardFormatAvailable(CF_UNICODETEXT);
+        QString before;
+        bool pasted = false;
+        if (restorable && clipboardText(&before) && setClipboardText(text)) {
+            pasted = sendChord(QStringLiteral("ctrl+v"), nullptr);
+            // The window reads the clipboard when it gets round to the paste,
+            // not when the keys go down.
+            QThread::msleep(180);
+            setClipboardText(before);
+        }
+        if (!pasted)
+            typeHere(text);
+        liveLog(QStringLiteral("dictation: %1 %2 chars where the caret is")
+                    .arg(pasted ? QStringLiteral("pasted") : QStringLiteral("typed"))
+                    .arg(text.size()));
+        return DeskResult();
+    }, [](const DeskResult &) {});
+}
+
 QString files(const QVariantMap &args)
 {
     const QString action = args.value(QStringLiteral("action")).toString();

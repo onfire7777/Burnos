@@ -104,6 +104,11 @@ public slots:
     // because it is still listening and talking as usual the whole time.
     void setWorking(bool on);
 
+    // True while what is said will be typed rather than answered: transcription
+    // mode, or the transcription key held down. The orb turns green - the same
+    // orb in another colour - whether it is listening or muted.
+    void setDictating(bool on);
+
     // First run setup: a ring and a caption over the orb. While this is on,
     // clicking does nothing, because there is nothing to talk to yet.
     void beginInitializing();
@@ -172,6 +177,9 @@ private:
     bool m_stopped = false;        // red: everything was just stopped
     qreal m_stopMix = 0.0;         // eased 0 to 1, so the red never snaps
     QTimer *m_stopTimer = nullptr; // and this takes the red away again
+
+    bool m_dictating = false;      // green: what is said is typed, not answered
+    qreal m_dictateMix = 0.0;      // eased 0 to 1, so the green never snaps
 
     bool m_noticeOn = false;       // a failure word is up on the orb
     QTimer *m_notice = nullptr;    // and this takes it away again

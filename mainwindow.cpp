@@ -1,5 +1,6 @@
 #include "agent.h"
 #include "composio.h"
+#include "computeruse.h"
 #include "installer.h"
 #include "livelog.h"
 #include "mainwindow.h"
@@ -14,6 +15,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QFile>
 #include <QAudioDevice>
 #include <QGuiApplication>
 #include <QMediaDevices>
@@ -69,6 +71,58 @@ bool isSettingsCommand(const QString &text)
             return true;
     }
     return false;
+}
+
+// The id Windows hands back with WM_HOTKEY for the transcription key.
+constexpr int kTranscriptionHotKey = 1;
+
+// "Turn on transcription mode", "stop transcription" and the other ways of
+// saying it: +1 to turn it on, -1 to turn it off, 0 for anything else. Matched
+// here, like the settings command, so it works at once and needs no model.
+// While words are being typed it has to be the WHOLE phrase, so a dictated
+// sentence that merely ends with those words is still typed; otherwise the
+// tail is enough, as it is for the settings.
+int transcriptionCommand(const QString &text, bool wholeOnly)
+{
+    QString letters;
+    for (const QChar c : text.toLower()) {
+        if (c.isLetterOrNumber() || c.isSpace())
+            letters.append(c);
+    }
+    QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    for (const char *filler : {"please", "now", "okay", "ok", "hey", "burnos"})
+        words.removeAll(QString::fromLatin1(filler));
+    const QString said = words.join(QLatin1Char(' '));
+    if (said.isEmpty() || said.size() > 60)
+        return 0;
+
+    static const QStringList things{
+        QStringLiteral("transcription mode"), QStringLiteral("transcription"),
+        QStringLiteral("transcribing"),       QStringLiteral("dictation mode"),
+        QStringLiteral("dictation"),
+    };
+    static const QStringList turnOn{
+        QStringLiteral("turn on %1"), QStringLiteral("turn %1 on"), QStringLiteral("start %1"),
+        QStringLiteral("%1 on"),      QStringLiteral("go to %1"),   QStringLiteral("go into %1"),
+        QStringLiteral("switch to %1"), QStringLiteral("enter %1"),
+    };
+    static const QStringList turnOff{
+        QStringLiteral("turn off %1"), QStringLiteral("turn %1 off"), QStringLiteral("stop %1"),
+        QStringLiteral("%1 off"),      QStringLiteral("end %1"),      QStringLiteral("exit %1"),
+        QStringLiteral("leave %1"),
+    };
+    const auto says = [&said, wholeOnly](const QStringList &forms) {
+        for (const QString &form : forms) {
+            for (const QString &thing : things) {
+                const QString phrase = form.arg(thing);
+                if (said == phrase
+                    || (!wholeOnly && said.endsWith(QLatin1Char(' ') + phrase)))
+                    return true;
+            }
+        }
+        return false;
+    };
+    return says(turnOff) ? -1 : says(turnOn) ? 1 : 0;
 }
 
 // The replies the talker falls back on when a model calls a tool without a
@@ -165,6 +219,17 @@ MainWindow::MainWindow(QWidget *parent)
     m_speakRetry->setInterval(400);
     connect(m_speakRetry, &QTimer::timeout, this, &MainWindow::speakNext);
 
+    // THE TRANSCRIPTION KEY. Windows says when a hot key goes down and never
+    // when it comes up, so while it is down this looks at the key itself.
+    m_keyWatch = new QTimer(this);
+    m_keyWatch->setInterval(30);
+    connect(m_keyWatch, &QTimer::timeout, this, [this]() {
+        if (!(GetAsyncKeyState(m_keyVk) & 0x8000))
+            keyUp();
+    });
+    // Registered once the window exists.
+    QTimer::singleShot(0, this, &MainWindow::applyTranscriptionKey);
+
     // Ask Composio once at startup which apps are actually connected, rather
     // than trusting a cached list written who knows when - a connection revoked
     // from the other end would otherwise still be offered to the model.
@@ -231,11 +296,18 @@ MainWindow::MainWindow(QWidget *parent)
             speakNext();
             return;
         }
-        if (isSettingsCommand(text)) {
-            openSettings(); // resumes listening itself once it closes
-            return;
+        heard(text);
+    });
+    // Said with the transcription key held: typed, never answered.
+    connect(m_stt, &SttEngine::dictated, this, [this](const QString &text) {
+        m_transcribing = m_stt->isReading();
+        refreshThinking();
+        if (m_dropHeard) {
+            m_dropHeard = false; // everything was stopped while it was being read
+        } else if (!text.isEmpty()) {
+            typeOut(text);
         }
-        m_agent->hear(text);
+        speakNext();
     });
     // The microphone itself failing is the one case that disarms, because
     // there is nothing left to listen with.
@@ -581,7 +653,8 @@ void MainWindow::speakNext()
     // MUTED MEANS QUIET, NOT FORGOTTEN. The work goes on behind a muted orb, so
     // what it has to say - a task that finished, a question it needs answered -
     // waits here and is said after the click that unmutes.
-    if (voiceHeld()) {
+    // The same while what is said is being typed: the voice waits its turn.
+    if (voiceHeld() || m_dictating || m_keyHeld) {
         m_speakRetry->stop();
         return;
     }
@@ -762,6 +835,12 @@ void MainWindow::openSettings()
     m_orb->setPreparing(false);
 
     const QString keyBefore = BurnOS::Settings::openRouterKey();
+    // No hot key while the dialog is up: the field that sets it could never be
+    // given the key it already is, and nothing is listening anyway.
+    if (m_keyVk) {
+        UnregisterHotKey(reinterpret_cast<HWND>(winId()), kTranscriptionHotKey);
+        m_keyVk = 0;
+    }
     SettingsDialog dialog(this);
 
     // LIVE, while it is open. There is no Save button on that dialog: every
@@ -796,6 +875,9 @@ void MainWindow::openSettings()
     // The voice may have changed, and the short replies are kept per voice.
     m_tts->prepare(instantReplies());
     m_settingsOpen = false;
+    // After the window flags above: changing them makes Windows a new window,
+    // and a hot key belongs to the window it was registered for.
+    applyTranscriptionKey();
 
     if (wasLive)
         listenAgain();
@@ -847,6 +929,11 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message,
     // behind instead.
     if (eventType == "windows_generic_MSG") {
         MSG *msg = static_cast<MSG *>(message);
+        if (msg && msg->message == WM_HOTKEY && msg->wParam == kTranscriptionHotKey) {
+            // Not from inside the message itself: it may open the microphone.
+            QTimer::singleShot(0, this, &MainWindow::keyDown);
+            return true;
+        }
         if (msg && msg->message == WM_NCHITTEST) {
             RECT frame{};
             if (GetWindowRect(msg->hwnd, &frame)) {
@@ -868,6 +955,113 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message,
     return QMainWindow::nativeEvent(eventType, message, result);
 }
 
+void MainWindow::heard(const QString &text)
+{
+    const int command = transcriptionCommand(text, m_dictating);
+    if (command != 0) {
+        setDictating(command > 0);
+        return;
+    }
+    // In transcription mode every other word is typed, "open settings" too.
+    if (m_dictating) {
+        typeOut(text);
+        return;
+    }
+    if (isSettingsCommand(text)) {
+        openSettings(); // resumes listening itself once it closes
+        return;
+    }
+    m_agent->hear(text);
+}
+
+void MainWindow::setDictating(bool on)
+{
+    if (m_dictating == on)
+        return;
+    m_dictating = on;
+    m_orb->setDictating(on || m_keyHeld);
+    BurnOS::liveLog(on ? QStringLiteral("TRANSCRIPTION MODE ON: what is said is typed where the "
+                                        "caret is - not answered, not remembered")
+                       : QStringLiteral("TRANSCRIPTION MODE OFF: listening as the agent again, "
+                                        "%1 line(s) kept meanwhile").arg(m_speech.size()));
+    // Back to answering: whatever the voice kept while typing is said now.
+    if (!on)
+        speakNext();
+}
+
+void MainWindow::typeOut(const QString &text)
+{
+    // A space after every phrase, so the next one does not run into it.
+    const QString words = text.trimmed() + QLatin1Char(' ');
+    // THE CHECK, without touching anybody's window: with BURNOS_DICTATE_FILE
+    // set the words go to the end of that file instead. Never in a normal run.
+    const QString file = qEnvironmentVariable("BURNOS_DICTATE_FILE");
+    if (!file.isEmpty()) {
+        QFile out(file);
+        if (out.open(QIODevice::Append))
+            out.write(words.toUtf8());
+        BurnOS::liveLog(QStringLiteral("dictation: %1 chars to %2").arg(words.size()).arg(file));
+        return;
+    }
+    BurnOS::Computer::dictate(this, words);
+}
+
+void MainWindow::applyTranscriptionKey()
+{
+    const HWND window = reinterpret_cast<HWND>(winId());
+    UnregisterHotKey(window, kTranscriptionHotKey);
+    m_keyVk = 0;
+    const quint32 code = BurnOS::Settings::transcriptionKeyCode();
+    if (!code)
+        return;
+    const UINT vk = code & 0xFFFF;
+    // MOD_NOREPEAT: holding it is one press, not thirty a second.
+    if (RegisterHotKey(window, kTranscriptionHotKey, (code >> 16) | MOD_NOREPEAT, vk)) {
+        m_keyVk = int(vk);
+        BurnOS::liveLog(QStringLiteral("transcription key: %1 - hold it and what is said is typed")
+                            .arg(BurnOS::Settings::transcriptionKey()));
+    } else {
+        showNotice(tr("The transcription key %1 is already taken by another program.")
+                       .arg(BurnOS::Settings::transcriptionKey()));
+    }
+}
+
+void MainWindow::keyDown()
+{
+    if (m_keyHeld || m_settingsOpen || !m_keyVk)
+        return;
+    // Not over our own voice: it stops, as it does when it is talked over. An
+    // answer nobody has heard yet goes back to the front of the queue.
+    if (m_voiceBusy) {
+        if (!m_voicePlaying)
+            m_speech.prepend(m_voice);
+        m_tts->stop();
+        voiceGone();
+        m_orb->setPreparing(false);
+    }
+    if (!m_stt->beginHeld())
+        return; // failed() has said why
+    m_keyHeld = true;
+    m_orb->setDictating(true);
+    m_orb->setCapturing(true);
+    m_keyWatch->start();
+}
+
+void MainWindow::keyUp()
+{
+    if (!m_keyHeld)
+        return;
+    m_keyHeld = false;
+    m_keyWatch->stop();
+    m_orb->setCapturing(false);
+    m_orb->setDictating(m_dictating);
+    // Shown as being read until dictated() comes back with the words.
+    const bool sent = m_stt->endHeld();
+    m_transcribing = sent || m_stt->isReading();
+    refreshThinking();
+    speakNext();
+}
+
 void MainWindow::rehearse()
 {
     if (m_rehearsal.isEmpty())
@@ -876,7 +1070,7 @@ void MainWindow::rehearse()
     const QString line = m_rehearsal.takeFirst();
     BurnOS::liveLog(QStringLiteral("SELF TEST: heard as if spoken: %1").arg(line));
     // Through the SAME door a real sentence comes in by.
-    m_agent->hear(line);
+    heard(line);
 
     if (m_rehearsal.isEmpty())
         return;

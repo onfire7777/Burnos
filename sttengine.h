@@ -5,6 +5,7 @@
 #include <QIODevice>
 #include <QList>
 #include <QObject>
+#include <QPair>
 #include <QString>
 
 #include <memory>
@@ -70,6 +71,14 @@ public:
     // fires, which is exactly how v0.3 behaved.
     void setOverVoice(bool on);
 
+    // PUSH TO TALK. From beginHeld() to endHeld() everything the microphone
+    // hears is one phrase, whatever the voice detector makes of it, and it
+    // comes back through dictated() instead of transcribed(). It works with
+    // live mode off too: the microphone is opened for the hold and shut after
+    // it. endHeld() says whether a phrase went to the recogniser.
+    bool beginHeld();
+    bool endHeld();
+
     // THE CHECK on the phrase logic: the 16 kHz mono WAV named by
     // BURNOS_VAD_SELFTEST is fed through it as if it were the microphone -
     // with BURNOS_VAD_OVERVOICE, as if the orb were talking over it. Never in
@@ -84,6 +93,8 @@ public:
 
 signals:
     void transcribed(const QString &text);
+    // The same, for a phrase taken between beginHeld() and endHeld().
+    void dictated(const QString &text);
     void failed(const QString &reason);
     void levelChanged(qreal level);
     void speechStarted();
@@ -104,7 +115,7 @@ private:
     void endPhrase(bool tooLong, int hangoverMs);
     // Raw 16 kHz mono 16 bit samples out of a WAV, for the self test and probe.
     static QByteArray readPcm(const QString &wavPath, QString *error);
-    void transcribe(const QByteArray &pcm);
+    void transcribe(const QByteArray &pcm, bool held = false);
     void drainQueue();
     bool writeWav(const QByteArray &pcm, const QString &wavPath,
                   QString *error) const;
@@ -117,10 +128,14 @@ private:
     bool m_live = false;      // live mode armed by the user
     bool m_capturing = false; // a phrase is being kept right now
     bool m_pending = false;   // a phrase is inside the recogniser right now
+    bool m_pendingHeld = false; // and it was taken by push to talk
+    bool m_held = false;        // push to talk is down
+    bool m_heldOwnsMic = false; // the microphone was opened just for this hold
+    QByteArray m_heldPcm;       // what has been said while it is down
     // Phrases heard while the recogniser was busy, oldest first. The microphone
     // no longer closes while we work, so this can happen whenever somebody
     // carries on talking.
-    QList<QByteArray> m_queue;
+    QList<QPair<QByteArray, bool>> m_queue; // each with whether it was held
     QByteArray m_speech;      // the phrase being kept
     QByteArray m_preroll;     // the moment before it, so no syllable is lost
     qint64 m_silenceBytes = 0;

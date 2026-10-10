@@ -85,6 +85,14 @@ void setOrbPosition(const QPoint &topLeft);
 bool alwaysOnTop();
 void setAlwaysOnTop(bool onTop);
 
+// THE TRANSCRIPTION KEY: while it is held, what is said is typed where the
+// caret is instead of being answered. Kept as the words Settings shows
+// ("Ctrl+Alt+Space") and as what Windows is asked to register - its MOD_ flags
+// in the high word, the virtual key in the low. A code of zero means no key.
+QString transcriptionKey();
+quint32 transcriptionKeyCode();
+void setTranscriptionKey(const QString &shown, quint32 code);
+
 // The Composio project API key, which is what lets the orb reach Gmail, Slack,
 // Notion, GitHub and the rest. Stored exactly like the OpenRouter key -
 // encrypted for this Windows user with DPAPI - because it is every bit as much

@@ -205,12 +205,10 @@ protected:
             BurnOS::Settings::setTranscriptionKey(QString(), 0);
             return;
         }
-        // A key that types something cannot be taken from every other program
-        // on its own: only a function key may stand without Ctrl, Alt or Win.
-        const bool functionKey = key >= Qt::Key_F1 && key <= Qt::Key_F24;
-        const bool anchored = held & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        // Any one key will do, alone or with Ctrl, Shift, Alt or Win. Alone, it
+        // is Burnos's while Burnos runs: it no longer types anywhere else.
         const quint32 vk = event->nativeVirtualKey() & 0xFFFF;
-        if (!vk || (!functionKey && !anchored))
+        if (!vk)
             return;
         // Windows' own flags: MOD_ALT 1, MOD_CONTROL 2, MOD_SHIFT 4, MOD_WIN 8.
         quint32 mods = 0;
@@ -457,11 +455,12 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     auto *dictateKey = new KeyField(this);
     dictateKey->setToolTip(tr("Hold this key and speak: the words are typed where "
                               "the cursor is, in any program, instead of being "
-                              "answered. A function key works on its own; any "
-                              "other key needs Ctrl, Alt or Win with it. "
+                              "answered. Any single key works, or a key with "
+                              "Ctrl, Shift, Alt or Win. A key on its own stops "
+                              "typing in other programs while Burnos runs. "
                               "Backspace removes it."));
     auto *dictateNote = new QLabel(tr("Hold it and speak, and the words are typed where the "
-                                      "cursor is. Or say \"turn on transcription mode\"."), this);
+                                      "cursor is. Or ask Burnos to start transcribing."), this);
     dictateNote->setWordWrap(true);
     dictateNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
     form->addRow(tr("Transcription key"), dictateKey);

@@ -109,6 +109,12 @@ private:
     void applyTranscriptionKey();
     void keyDown();
     void keyUp();
+    // Transcription is starting: the voice stops at once, and what it was
+    // saying is said again, from the start, when transcription is over.
+    void holdVoice();
+    // Reads the last transcription aloud: the last hold of the key, or all
+    // that was typed since transcription was last started by voice.
+    void readBack();
 
     // The BURNOS_ASK_SELFTEST rehearsal: the next scripted line, and the check
     // that lets an untimed one go once everything said so far has been
@@ -136,6 +142,8 @@ private:
     // That key's virtual key while it is registered with Windows, else 0, and
     // the timer that sees it come up again: a hot key only ever says "down".
     int m_keyVk = 0;
+    int m_keyMods = 0;       // the MOD_ flags that go with it
+    QString m_lastDictation; // what readBack() reads
     QTimer *m_keyWatch = nullptr;
 
     struct Speech

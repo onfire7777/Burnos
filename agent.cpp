@@ -761,6 +761,26 @@ QJsonArray talkTools(bool memory)
                      "The task's number. Leave it out to stop every task."))},
             }},
         }));
+    list.append(functionTool(
+        QStringLiteral("transcription"),
+        QStringLiteral("Typing out what the user says. Call it whenever the user "
+                       "asks, in any words, to start or stop transcribing, "
+                       "dictating or taking down what they say, or to hear back "
+                       "what was last transcribed. Never start a task for that."),
+        QJsonObject{
+            {"type", "object"},
+            {"properties", QJsonObject{
+                {"action", QJsonObject{
+                     {"type", "string"},
+                     {"enum", QJsonArray{"start", "stop", "read_back"}},
+                     {"description",
+                      "start: from now on what the user says is typed where "
+                      "their cursor is instead of being answered. stop: ends "
+                      "that. read_back: reads the last transcription aloud to "
+                      "them."}}},
+            }},
+            {"required", QJsonArray{"action"}},
+        }));
     return list;
 }
 
@@ -2286,6 +2306,18 @@ void Agent::onTalkAnswer(int turn, const OpenRouterClient::Reply &reply)
         }
     }
 
+    if (m_silentTurn) {
+        m_silentTurn = false;
+        m_asking.clear();
+        liveLog(QStringLiteral("talk %1 answered in %2 ms [%3] - transcription is the answer, "
+                               "nothing is said")
+                    .arg(turn)
+                    .arg(reply.ms)
+                    .arg(did.join(QStringLiteral(", "))));
+        emit thinkingChanged(false);
+        return;
+    }
+
     // A tool that could not do what was asked says so, whatever the model
     // wrote - "On it" over a task that never started would be a lie.
     if (!refusal.isEmpty())
@@ -2772,6 +2804,19 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
         }, kMemoryStoreMs);
         *acted = true;
         return tr("Forgotten.");
+    }
+
+    if (name == QLatin1String("transcription")) {
+        const QString action = args.value(QStringLiteral("action")).toString();
+        if (action != QLatin1String("start") && action != QLatin1String("stop")
+            && action != QLatin1String("read_back"))
+            return tr("I didn't catch that.");
+        *acted = true;
+        // The orb turning green, or the words being read back, is the answer:
+        // a word of the talker's own would only have to wait behind it.
+        m_silentTurn = action != QLatin1String("stop");
+        emit transcriptionAsked(action);
+        return tr("Okay.");
     }
 
     if (name == QLatin1String("start_task")) {

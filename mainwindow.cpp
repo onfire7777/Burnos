@@ -76,53 +76,70 @@ bool isSettingsCommand(const QString &text)
 // The id Windows hands back with WM_HOTKEY for the transcription key.
 constexpr int kTranscriptionHotKey = 1;
 
-// "Turn on transcription mode", "stop transcription" and the other ways of
-// saying it: +1 to turn it on, -1 to turn it off, 0 for anything else. Matched
-// here, like the settings command, so it works at once and needs no model.
-// While words are being typed it has to be the WHOLE phrase, so a dictated
-// sentence that merely ends with those words is still typed; otherwise the
-// tail is enough, as it is for the settings.
-int transcriptionCommand(const QString &text, bool wholeOnly)
+// TRANSCRIPTION, ASKED FOR IN THE USER'S OWN WORDS: +1 to start typing what is
+// said, -1 to stop, 2 to read the last of it back, 0 for anything else. Not a
+// list of phrases: a short thing to say that names transcription or dictation
+// and says which way. Matched here so it works at once and needs no model -
+// what this misses the talker still hears, and can ask for itself (see
+// Agent::transcriptionAsked). While words are being typed nothing goes to a
+// model, so this alone decides then, and all it looks for is a stop.
+int transcriptionCommand(const QString &text, bool dictating)
 {
     QString letters;
     for (const QChar c : text.toLower()) {
         if (c.isLetterOrNumber() || c.isSpace())
             letters.append(c);
     }
-    QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    for (const char *filler : {"please", "now", "okay", "ok", "hey", "burnos"})
-        words.removeAll(QString::fromLatin1(filler));
-    const QString said = words.join(QLatin1Char(' '));
-    if (said.isEmpty() || said.size() > 60)
+    const QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    // Longer than this is a sentence that happens to mention it.
+    if (words.isEmpty() || words.size() > (dictating ? 8 : 14))
         return 0;
-
-    static const QStringList things{
-        QStringLiteral("transcription mode"), QStringLiteral("transcription"),
-        QStringLiteral("transcribing"),       QStringLiteral("dictation mode"),
-        QStringLiteral("dictation"),
-    };
-    static const QStringList turnOn{
-        QStringLiteral("turn on %1"), QStringLiteral("turn %1 on"), QStringLiteral("start %1"),
-        QStringLiteral("%1 on"),      QStringLiteral("go to %1"),   QStringLiteral("go into %1"),
-        QStringLiteral("switch to %1"), QStringLiteral("enter %1"),
-    };
-    static const QStringList turnOff{
-        QStringLiteral("turn off %1"), QStringLiteral("turn %1 off"), QStringLiteral("stop %1"),
-        QStringLiteral("%1 off"),      QStringLiteral("end %1"),      QStringLiteral("exit %1"),
-        QStringLiteral("leave %1"),
-    };
-    const auto says = [&said, wholeOnly](const QStringList &forms) {
-        for (const QString &form : forms) {
-            for (const QString &thing : things) {
-                const QString phrase = form.arg(thing);
-                if (said == phrase
-                    || (!wholeOnly && said.endsWith(QLatin1Char(' ') + phrase)))
+    const QString said = QLatin1Char(' ') + words.join(QLatin1Char(' ')) + QLatin1Char(' ');
+    // A word that starts like one of these...
+    const auto has = [&words](std::initializer_list<const char *> stems) {
+        for (const QString &word : words) {
+            for (const char *stem : stems) {
+                if (word.startsWith(QLatin1String(stem)))
                     return true;
             }
         }
         return false;
     };
-    return says(turnOff) ? -1 : says(turnOn) ? 1 : 0;
+    // ...or exactly these words, side by side.
+    const auto says = [&said](std::initializer_list<const char *> phrases) {
+        for (const char *phrase : phrases) {
+            if (said.contains(QLatin1Char(' ') + QLatin1String(phrase) + QLatin1Char(' ')))
+                return true;
+        }
+        return false;
+    };
+
+    if (!has({"transcri", "dictat"}) && !(dictating && says({"typing"})))
+        return 0;
+    const bool off = words.last() == QLatin1String("off")
+                     || says({"turn off", "switch off", "shut off"})
+                     || (has({"turn", "switch"}) && says({"off"}));
+    if (dictating) {
+        const bool stop = off
+                          || has({"stop", "end", "finish", "quit", "exit", "cancel", "disable", "halt"})
+                          || says({"enough", "done", "no more", "thats all", "that is all"});
+        return stop ? -1 : 0;
+    }
+    // Outside it a stop is left to the talker: "how do I stop transcription?"
+    // is a question, and there is nothing here to stop.
+    if (off)
+        return 0;
+    const bool again = says({"back", "again", "last", "just", "what did", "what was", "what i",
+                             "what you"});
+    if (has({"repeat", "replay"})
+        || ((has({"read"}) || says({"say", "tell", "hear", "what did", "what was"})) && again))
+        return 2;
+    const bool on = words.last() == QLatin1String("on")
+                    || says({"turn on", "switch on", "go to", "go into", "switch to",
+                             "take dictation", "take a dictation"})
+                    || (has({"turn", "switch"}) && says({"on"}))
+                    || has({"start", "begin", "enable", "activate", "enter", "resume"});
+    return on ? 1 : 0;
 }
 
 // The replies the talker falls back on when a model calls a tool without a
@@ -224,7 +241,22 @@ MainWindow::MainWindow(QWidget *parent)
     m_keyWatch = new QTimer(this);
     m_keyWatch->setInterval(30);
     connect(m_keyWatch, &QTimer::timeout, this, [this]() {
-        if (!(GetAsyncKeyState(m_keyVk) & 0x8000))
+        // THE HOLD LASTS WHILE EVERY KEY OF THE COMBINATION IS DOWN, and letting
+        // go of any one ends it - the modifier too. Another program hooked on
+        // the same key (a second dictation tool on `, here) swallows the
+        // key's release once Ctrl is up, and Windows then goes on reporting
+        // the key down for ever: the hold never ended.
+        const auto down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+        bool held = down(m_keyVk);
+        if (m_keyMods & MOD_ALT)
+            held = held && down(VK_MENU);
+        if (m_keyMods & MOD_CONTROL)
+            held = held && down(VK_CONTROL);
+        if (m_keyMods & MOD_SHIFT)
+            held = held && down(VK_SHIFT);
+        if (m_keyMods & MOD_WIN)
+            held = held && (down(VK_LWIN) || down(VK_RWIN));
+        if (!held)
             keyUp();
     });
     // Registered once the window exists.
@@ -249,6 +281,9 @@ MainWindow::MainWindow(QWidget *parent)
             openMicrophone();
     });
     connect(m_orb, &OrbWidget::clicked, this, [this]() {
+        // A click always ends a hold of the transcription key, seen let go or not.
+        if (m_keyHeld)
+            keyUp();
         if (m_orb->isActive()) {
             openMicrophone();
             unmuted();
@@ -331,6 +366,14 @@ MainWindow::MainWindow(QWidget *parent)
     // --- THE BRAIN ----------------------------------------------------------
     connect(m_agent, &BurnOS::Agent::say, this, &MainWindow::queueSpeech);
     connect(m_agent, &BurnOS::Agent::retract, this, &MainWindow::retractSpeech);
+    // Asked of the talker in words this window did not recognise itself.
+    connect(m_agent, &BurnOS::Agent::transcriptionAsked, this, [this](const QString &action) {
+        BurnOS::liveLog(QStringLiteral("transcription: the talker asked for '%1'").arg(action));
+        if (action == QLatin1String("read_back"))
+            readBack();
+        else
+            setDictating(action == QLatin1String("start"));
+    }, Qt::QueuedConnection);
     connect(m_agent, &BurnOS::Agent::thinkingChanged, this, [this]() {
         refreshThinking();
         speakNext();
@@ -796,6 +839,11 @@ void MainWindow::forceStop()
     m_rehearsal.clear();
     m_rehearsalWaiting = false;
 
+    // Transcription too - a hold is ended and the mode is off, so there is
+    // always this way out without a word. What the hold caught is dropped below.
+    if (m_keyHeld)
+        keyUp();
+    setDictating(false);
     // A phrase still inside the recogniser comes out after this. It is dropped.
     m_dropHeard = m_stt->isReading();
     m_stt->stopLive();
@@ -955,9 +1003,37 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message,
     return QMainWindow::nativeEvent(eventType, message, result);
 }
 
+void MainWindow::holdVoice()
+{
+    m_speakRetry->stop();
+    if (!m_voiceBusy)
+        return;
+    // CUT OFF, NOT LOST: it goes back to the front of the queue and is said
+    // again from the start once transcription is over. One that was already
+    // audible has closed its turn, so it comes back as plain words.
+    m_speech.prepend(Speech{m_voice.text, m_voicePlaying ? 0 : m_voice.turn});
+    BurnOS::liveLog(QStringLiteral("voice: cut off for transcription - kept to be said afterwards"));
+    m_tts->stop();
+    voiceGone();
+    m_orb->setPreparing(false);
+}
+
+void MainWindow::readBack()
+{
+    // With the built-in voice, as news rather than an answer: it goes to no
+    // model and into no memory.
+    const QString last = m_lastDictation.simplified();
+    BurnOS::liveLog(QStringLiteral("transcription: read back %1 chars").arg(last.size()));
+    queueSpeech(last.isEmpty() ? tr("Nothing has been transcribed yet.") : last, 0);
+}
+
 void MainWindow::heard(const QString &text)
 {
     const int command = transcriptionCommand(text, m_dictating);
+    if (command == 2) {
+        readBack();
+        return;
+    }
     if (command != 0) {
         setDictating(command > 0);
         return;
@@ -979,6 +1055,10 @@ void MainWindow::setDictating(bool on)
     if (m_dictating == on)
         return;
     m_dictating = on;
+    if (on) {
+        m_lastDictation.clear();
+        holdVoice();
+    }
     m_orb->setDictating(on || m_keyHeld);
     BurnOS::liveLog(on ? QStringLiteral("TRANSCRIPTION MODE ON: what is said is typed where the "
                                         "caret is - not answered, not remembered")
@@ -993,6 +1073,7 @@ void MainWindow::typeOut(const QString &text)
 {
     // A space after every phrase, so the next one does not run into it.
     const QString words = text.trimmed() + QLatin1Char(' ');
+    m_lastDictation += words;
     // THE CHECK, without touching anybody's window: with BURNOS_DICTATE_FILE
     // set the words go to the end of that file instead. Never in a normal run.
     const QString file = qEnvironmentVariable("BURNOS_DICTATE_FILE");
@@ -1018,6 +1099,7 @@ void MainWindow::applyTranscriptionKey()
     // MOD_NOREPEAT: holding it is one press, not thirty a second.
     if (RegisterHotKey(window, kTranscriptionHotKey, (code >> 16) | MOD_NOREPEAT, vk)) {
         m_keyVk = int(vk);
+        m_keyMods = int(code >> 16);
         BurnOS::liveLog(QStringLiteral("transcription key: %1 - hold it and what is said is typed")
                             .arg(BurnOS::Settings::transcriptionKey()));
     } else {
@@ -1028,20 +1110,22 @@ void MainWindow::applyTranscriptionKey()
 
 void MainWindow::keyDown()
 {
-    if (m_keyHeld || m_settingsOpen || !m_keyVk)
+    if (m_settingsOpen || !m_keyVk)
         return;
-    // Not over our own voice: it stops, as it does when it is talked over. An
-    // answer nobody has heard yet goes back to the front of the queue.
-    if (m_voiceBusy) {
-        if (!m_voicePlaying)
-            m_speech.prepend(m_voice);
-        m_tts->stop();
-        voiceGone();
-        m_orb->setPreparing(false);
+    // A PRESS WHILE A HOLD IS STILL RUNNING means its release was never seen.
+    // This press is the way out: the hold ends here, and nothing can stay stuck.
+    if (m_keyHeld) {
+        BurnOS::liveLog(QStringLiteral("transcription key pressed again - the hold ends"));
+        keyUp();
+        return;
     }
-    if (!m_stt->beginHeld())
-        return; // failed() has said why
+    holdVoice();
+    if (!m_stt->beginHeld()) {
+        speakNext(); // failed() has said why; the voice is not left waiting
+        return;
+    }
     m_keyHeld = true;
+    m_lastDictation.clear();
     m_orb->setDictating(true);
     m_orb->setCapturing(true);
     m_keyWatch->start();

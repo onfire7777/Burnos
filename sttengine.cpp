@@ -535,18 +535,18 @@ bool SttEngine::beginHeld()
             return false;
         m_heldOwnsMic = true;
     }
-    // What was being said as the key went down belongs to the hold: the phrase
-    // the detector had started, or else the moment before the key.
-    m_heldPcm = m_capturing ? m_speech : m_preroll;
-    m_speech.clear();
-    m_preroll.clear();
-    m_silenceBytes = 0;
-    m_voicedBytes = 0;
-    m_attackBytes = 0;
+    // WHAT WAS BEING SAID TO THE AGENT STAYS THE AGENT'S. A phrase the detector
+    // had started ends here and goes to the recogniser as it is; only what
+    // comes after the key is the hold's. With nothing being said, the hold
+    // starts with the moment before the key, so no syllable is lost.
     if (m_capturing) {
-        m_capturing = false;
-        emit speechEnded();
+        endPhrase(false, 0);
+        m_heldPcm.clear();
+    } else {
+        m_heldPcm = m_preroll;
     }
+    m_preroll.clear();
+    m_attackBytes = 0;
     m_held = true;
     BurnOS::liveLog(QStringLiteral("push to talk DOWN%1")
                         .arg(m_heldOwnsMic ? QStringLiteral(" (microphone opened for it)")

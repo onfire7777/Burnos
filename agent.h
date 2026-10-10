@@ -178,6 +178,9 @@ signals:
     // Drop whatever was queued to be said for this turn: the user carried on
     // talking before it was said.
     void retract(int turn);
+    // The talker was asked, in whatever words, to start typing what is said
+    // ("start"), to stop ("stop"), or to read the last of it back ("read_back").
+    void transcriptionAsked(const QString &action);
     void thinkingChanged(bool thinking);
     void workingChanged(bool working);
     void failed(const QString &reason);
@@ -275,6 +278,9 @@ private:
     QJsonObject m_stats;
     int m_writes = 0;
     bool m_probe = false;
+    // This turn's answer is transcription starting or being read back: the
+    // talker's own words are not said.
+    bool m_silentTurn = false;
 
     // THERE IS NO CONVERSATION KEPT HERE. What was said lives in the memory
     // and is read back from it before every answer. These two are the

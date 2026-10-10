@@ -1,6 +1,7 @@
 #include "mcp.h"
 
 #include "livelog.h"
+#include "settings.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -52,6 +53,46 @@ constexpr int kLogEvery = 12;
 // is found at the same place.
 constexpr auto kMemoryHost = "127.0.0.1";
 constexpr auto kMemoryPort = "8765";
+
+// The memory server, whatever mcp.json called it.
+bool isMemoryServer(const QString &name, const QString &command)
+{
+    return name.compare(QLatin1String("memory"), Qt::CaseInsensitive) == 0
+           || command.contains(QLatin1String("mneme-mcp"), Qt::CaseInsensitive);
+}
+
+// MEMORIES FOUND BY MEANING. A memory server Burnos starts embeds every line
+// it stores, and every question, with qwen3-embedding-8b over OpenRouter - on
+// the key from Settings, the one the talking model already uses. It has no
+// setting of its own: with a key it is on, without one the memory searches by
+// words as it did before 0.17. The model and the instruction are the ones the
+// LongMemEval run was made with; the provider named first is the faster of the
+// two measured. Every line and every question goes to OpenRouter for this.
+QHash<QString, QString> embeddingEnv()
+{
+    const QString key = Settings::openRouterKey();
+    if (key.isEmpty())
+        return {};
+    const QString index = QFileInfo(McpClient::memoryStore()).absolutePath()
+                          + QStringLiteral("/embedding-index.sqlite");
+    return {
+        {QStringLiteral("OPENROUTER_API_KEY"), key},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_EMBEDDING_API_KEY_ENV"), QStringLiteral("OPENROUTER_API_KEY")},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_INDEX"), QDir::toNativeSeparators(index)},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_EMBEDDING_URL"),
+         QStringLiteral("https://openrouter.ai/api/v1/embeddings")},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_EMBEDDING_MODEL"), QStringLiteral("qwen/qwen3-embedding-8b")},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_EMBEDDING_DIMS"), QStringLiteral("1024")},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_EMBEDDING_BODY"),
+         QStringLiteral("{\"provider\":{\"order\":[\"DeepInfra\",\"Nebius\"]}}")},
+        {QStringLiteral("MNEMOSYNE_PASSAGE_QUERY_TASK"),
+         QStringLiteral("Given a question a user asks about their past conversations with an "
+                        "assistant, retrieve the conversation that contains the answer")},
+        // Burnos waits three seconds for its memory each turn. A question whose
+        // embedding has not come back by now is searched by words instead.
+        {QStringLiteral("MNEMOSYNE_PASSAGE_QUERY_TIMEOUT"), QStringLiteral("1.5")},
+    };
+}
 
 } // namespace
 
@@ -138,6 +179,15 @@ void McpServer::start()
     launch();
 }
 
+void McpServer::startAgain()
+{
+    if (!m_proc)
+        return;
+    // Asked for, not a crash: it must not count towards giving the server up.
+    m_deaths.clear();
+    m_proc->kill();
+}
+
 void McpServer::launch()
 {
     if (m_proc)
@@ -156,6 +206,14 @@ void McpServer::launch()
     env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     for (auto it = m_env.cbegin(); it != m_env.cend(); ++it)
         env.insert(it.key(), it.value());
+    // Read now, not when the list was loaded: a memory server started again
+    // after the key changed embeds on the new one. An mcp.json that sets up a
+    // passage index of its own is left exactly as written.
+    if (isMemoryServer(m_name, m_command) && !m_env.contains(QStringLiteral("MNEMOSYNE_PASSAGE_INDEX"))) {
+        const QHash<QString, QString> meaning = embeddingEnv();
+        for (auto it = meaning.cbegin(); it != meaning.cend(); ++it)
+            env.insert(it.key(), it.value());
+    }
     m_proc->setProcessEnvironment(env);
     if (!m_cwd.isEmpty())
         m_proc->setWorkingDirectory(m_cwd);
@@ -762,9 +820,7 @@ void McpClient::load()
             env.insert(v.key(), v.value().toString());
         // The memory server, however it was listed, gets the session secret
         // Burnos signs with - or its working memory answers nobody.
-        const bool memoryServer =
-            it.key().compare(QLatin1String("memory"), Qt::CaseInsensitive) == 0
-            || command.contains(QLatin1String("mneme-mcp"), Qt::CaseInsensitive);
+        const bool memoryServer = isMemoryServer(it.key(), command);
         if (memoryServer && !env.contains(QStringLiteral("MNEMOSYNE_MCP_SESSION_SECRET")))
             env.insert(QStringLiteral("MNEMOSYNE_MCP_SESSION_SECRET"), sessionSecret());
 

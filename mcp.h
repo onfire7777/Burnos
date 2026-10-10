@@ -77,6 +77,9 @@ public:
     QString build() const { return m_build; }
 
     void start();
+    // Stops the process Burnos started for it; it is then started again, with
+    // the environment as it is now. Somebody else's server is left as found.
+    void startAgain();
     // One tools/call. `done` is called exactly once, and never from inside
     // this call.
     void call(const QString &tool, const QJsonObject &arguments, Done done,

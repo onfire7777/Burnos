@@ -3,6 +3,7 @@
 #include "installer.h"
 #include "livelog.h"
 #include "mainwindow.h"
+#include "mcp.h"
 #include "openrouter.h"
 #include "orbwidget.h"
 #include "settings.h"
@@ -760,6 +761,7 @@ void MainWindow::openSettings()
     voiceGone();
     m_orb->setPreparing(false);
 
+    const QString keyBefore = BurnOS::Settings::openRouterKey();
     SettingsDialog dialog(this);
 
     // LIVE, while it is open. There is no Save button on that dialog: every
@@ -781,6 +783,12 @@ void MainWindow::openSettings()
 
     applyAlwaysOnTop();
     applyOrbSize();
+    // The memory finds by meaning on the same OpenRouter key: with another
+    // key, a memory server Burnos started is started again to take it up.
+    if (BurnOS::Settings::openRouterKey() != keyBefore) {
+        if (BurnOS::McpServer *memory = m_agent->mcp()->memory())
+            memory->startAgain();
+    }
     // An app may have been connected or dropped in Manage integrations, and
     // what the tasks are told they can reach comes from that list.
     if (ComposioClient::isConfigured())

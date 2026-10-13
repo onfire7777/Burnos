@@ -1,4 +1,5 @@
 #include "installer.h"
+#include "livelog.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -37,6 +38,37 @@ constexpr qint64 kVadBytes = 885098;
 constexpr auto kVadSha256 =
     "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987";
 
+// The voice check: 3D-Speaker's ERes2Net trained on VoxCeleb (Apache 2.0), as
+// sherpa-onnx publishes it, with the fingerprint from that release's own
+// checksum file. Burnos starts without it - only the voice check needs it.
+constexpr auto kVoiceUrl =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/"
+    "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx";
+constexpr auto kVoiceFile = "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx";
+constexpr qint64 kVoiceBytes = 26485263;
+constexpr auto kVoiceSha256 =
+    "c59158379255ad66e161679cca6af8d52d51e389e3224ab7d7a7baae295c2db5";
+
+// The wake word: sherpa-onnx's small English keyword model (a zipformer trained
+// on GigaSpeech, Apache 2.0), with the fingerprint from that release's own
+// checksum file. An archive of 17 MB that unpacks into a folder of its own
+// name; three of its files are the model, and tokens.txt and bpe.model say how
+// a keyword is spelled. Burnos starts without it - only the wake word needs it.
+constexpr auto kWakeUrl =
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/"
+    "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2";
+constexpr auto kWakeFolder = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
+constexpr auto kWakeSha256 =
+    "f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a";
+constexpr auto kWakeEncoder = "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+constexpr auto kWakeDecoder = "decoder-epoch-12-avg-2-chunk-16-left-64.onnx";
+constexpr auto kWakeJoiner = "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx";
+constexpr qint64 kWakeEncoderBytes = 4807159;
+constexpr qint64 kWakeDecoderBytes = 1063189;
+constexpr qint64 kWakeJoinerBytes = 163380;
+constexpr qint64 kWakeTokensBytes = 5006;
+constexpr qint64 kWakeSpellingBytes = 244837;
+
 QString root()
 {
     // %ProgramData% is the supported way to C:/ProgramData; the literal path
@@ -48,6 +80,10 @@ QString root()
 QString sttDir() { return root() + QStringLiteral("/STT"); }
 QString ttsDir() { return root() + QStringLiteral("/TTS"); }
 QString ttsArchive() { return ttsDir() + QStringLiteral("/kokoro-en-v0_19.tar.bz2"); }
+QString wakeArchive()
+{
+    return sttDir() + QLatin1Char('/') + QLatin1String(kWakeFolder) + QStringLiteral(".tar.bz2");
+}
 
 // Made if missing, and PROVED WRITABLE: a folder made by another user exists
 // and is still no use to download into.
@@ -66,7 +102,8 @@ bool ensureDir(const QString &path, QString *error)
     return true;
 }
 
-// The three downloads, in order. Each is skipped when it is on disk already.
+// The downloads, in order. Each is skipped when it is on disk already. One
+// that is an archive is unpacked into the folder it was downloaded to.
 struct Step
 {
     bool (*present)();
@@ -74,16 +111,21 @@ struct Step
     QString (*dest)();
     const char *stage;
     bool extract;
-    bool checked; // against kVadSha256
+    const char *sha256; // the fingerprint it must have, or null for none
+    bool optional;      // Burnos starts without it
 };
 
 const Step kSteps[] = {
     {BurnOS::Models::sttPresent, kSttUrl, BurnOS::Models::sttModel,
-     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading speech recognition"), false, false},
+     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading speech recognition"), false, nullptr, false},
     {BurnOS::Models::ttsPresent, kTtsUrl, ttsArchive,
-     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading voice"), true, false},
+     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading voice"), true, nullptr, false},
     {BurnOS::Models::vadPresent, kVadUrl, BurnOS::Models::vadModel,
-     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading voice detector"), false, true},
+     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading voice detector"), false, kVadSha256, false},
+    {BurnOS::Models::voicePresent, kVoiceUrl, BurnOS::Models::voiceModel,
+     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading voice check"), false, kVoiceSha256, true},
+    {BurnOS::Models::wakePresent, kWakeUrl, wakeArchive,
+     QT_TRANSLATE_NOOP("ModelInstaller", "Downloading wake word"), true, kWakeSha256, true},
 };
 constexpr int kStepCount = int(sizeof(kSteps) / sizeof(kSteps[0]));
 
@@ -94,6 +136,31 @@ namespace BurnOS::Models {
 QString sttModel() { return sttDir() + QLatin1Char('/') + QLatin1String(kSttFile); }
 QString vadModel() { return sttDir() + QLatin1Char('/') + QLatin1String(kVadFile); }
 QString kokoroDir() { return ttsDir() + QStringLiteral("/kokoro-en-v0_19"); }
+QString voiceModel() { return sttDir() + QLatin1Char('/') + QLatin1String(kVoiceFile); }
+
+QString wakeDir() { return sttDir() + QLatin1Char('/') + QLatin1String(kWakeFolder); }
+QString wakeEncoder() { return QString::fromLatin1(kWakeEncoder); }
+QString wakeDecoder() { return QString::fromLatin1(kWakeDecoder); }
+QString wakeJoiner() { return QString::fromLatin1(kWakeJoiner); }
+
+bool voicePresent()
+{
+    const QFileInfo info(voiceModel());
+    return info.isFile() && info.size() == kVoiceBytes;
+}
+
+bool wakePresent()
+{
+    const QString dir = wakeDir() + QLatin1Char('/');
+    const auto whole = [&dir](const QString &name, qint64 bytes) {
+        const QFileInfo info(dir + name);
+        return info.isFile() && info.size() == bytes;
+    };
+    return whole(wakeEncoder(), kWakeEncoderBytes) && whole(wakeDecoder(), kWakeDecoderBytes)
+           && whole(wakeJoiner(), kWakeJoinerBytes)
+           && whole(QStringLiteral("tokens.txt"), kWakeTokensBytes)
+           && whole(QStringLiteral("bpe.model"), kWakeSpellingBytes);
+}
 
 bool sttPresent()
 {
@@ -156,7 +223,9 @@ void ModelInstaller::next()
         emit failed(error);
         return;
     }
-    m_expectSha = step.checked ? QByteArray(kVadSha256) : QByteArray();
+    m_expectSha = QByteArray(step.sha256 ? step.sha256 : "");
+    m_optional = step.optional;
+    m_present = step.present;
     download(QUrl(QString::fromLatin1(step.url)), dest, tr(step.stage), step.extract);
 }
 
@@ -201,6 +270,12 @@ void ModelInstaller::onFinished()
     if (reply->error() != QNetworkReply::NoError) {
         m_file->close();
         m_file->remove();
+        if (m_optional) {
+            BurnOS::liveLog(QStringLiteral("setup: %1 failed (%2) - going on without it")
+                                .arg(m_stage, reply->errorString()));
+            next();
+            return;
+        }
         emit failed(reply->errorString());
         return;
     }
@@ -216,6 +291,12 @@ void ModelInstaller::onFinished()
         m_file->close();
         if (!read || hash.result().toHex() != m_expectSha) {
             m_file->remove();
+            if (m_optional) {
+                BurnOS::liveLog(QStringLiteral("setup: %1 arrived damaged - going on without it")
+                                    .arg(m_stage));
+                next();
+                return;
+            }
             emit failed(tr("The voice detector download was damaged. Restart Burnos "
                            "to fetch it again."));
             return;
@@ -229,9 +310,16 @@ void ModelInstaller::onFinished()
     }
 
     if (m_extractAfter) {
-        emit progress(tr("Unpacking voice"), -1.0);
+        emit progress(tr("Unpacking"), -1.0);
         QString error;
         if (!extract(m_destPath, &error)) {
+            if (m_optional) {
+                QFile::remove(m_destPath);
+                BurnOS::liveLog(QStringLiteral("setup: %1 would not unpack (%2) - going on "
+                                               "without it").arg(m_stage, error));
+                next();
+                return;
+            }
             emit failed(error);
             return;
         }
@@ -245,16 +333,18 @@ bool ModelInstaller::extract(const QString &archivePath, QString *error)
 {
     // Windows ships bsdtar, which reads .tar.bz2 without any extra tooling.
     QProcess tar;
+    // Into the folder the archive is in: each one holds a folder of its own.
     tar.start(QStringLiteral("tar"),
-              {QStringLiteral("-xf"), archivePath, QStringLiteral("-C"), ttsDir()});
+              {QStringLiteral("-xf"), archivePath, QStringLiteral("-C"),
+               QFileInfo(archivePath).absolutePath()});
     if (!tar.waitForStarted(10000)) {
-        *error = tr("tar is not available to unpack the voice.");
+        *error = tr("tar is not available to unpack the download.");
         return false;
     }
-    // 329 MB of model to write out; give it room.
+    // 329 MB of voice model to write out; give it room.
     if (!tar.waitForFinished(300000)) {
         tar.kill();
-        *error = tr("Unpacking the voice timed out.");
+        *error = tr("Unpacking timed out.");
         return false;
     }
     if (tar.exitCode() != 0) {
@@ -262,8 +352,8 @@ bool ModelInstaller::extract(const QString &archivePath, QString *error)
                      .arg(QString::fromUtf8(tar.readAllStandardError()).simplified().left(200));
         return false;
     }
-    if (!BurnOS::Models::ttsPresent()) {
-        *error = tr("The voice unpacked but is missing files.");
+    if (m_present && !m_present()) {
+        *error = tr("The download unpacked but is missing files.");
         return false;
     }
     return true;

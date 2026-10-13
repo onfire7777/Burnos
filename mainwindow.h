@@ -1,6 +1,9 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "keywordspotter.h"
+
+#include <QElapsedTimer>
 #include <QList>
 #include <QMainWindow>
 #include <QString>
@@ -83,11 +86,19 @@ private:
     // True only for a mute by the user - the one grey orb that holds the voice
     // back. Grey for want of a microphone still speaks, so answers are kept.
     bool voiceHeld() const;
-    // ONE CLICK MUTES, AND ONLY MUTES: the microphone shuts and the voice goes
-    // quiet, while the talker and every task carry on. What they have to say
-    // is kept, and said after the click that unmutes.
+    // ONE CLICK MUTES, AND ONLY MUTES: the voice goes quiet and nothing said
+    // is listened to any more - the microphone's sound goes to the keyword
+    // spotter alone - while the talker and every task carry on. What they have
+    // to say is kept, and said after the unmute.
     void mute();
     void unmuted();
+    // MUTED, AND A KEYWORD WAS SAID: the wake word or "unmute" does what the
+    // click that unmutes does, and the spoken commands that work when Burnos
+    // is listening work here too.
+    void keywordHeard(BurnOS::Wake::Command command);
+    // Unmutes as a click would. After the wake word, what was said in the same
+    // breath is heard as well.
+    void unmuteByVoice(bool afterWakeWord);
     // A DOUBLE CLICK STOPS EVERYTHING - microphone, talker, every task, the
     // voice and whatever was waiting to be said. It is not a mute: the orb goes
     // red for two seconds and is then listening, or muted, as it was before.
@@ -137,6 +148,9 @@ private:
     // A phrase was still inside the recogniser when everything was stopped:
     // what it turns out to say is dropped, not answered.
     bool m_dropHeard = false;
+    // Running since the wake word unmuted Burnos: the phrase that follows may
+    // begin with the wake word itself, or with the end of what came before it.
+    QElapsedTimer m_wokeAt;
     bool m_dictating = false; // transcription mode is on
     bool m_keyHeld = false;   // the transcription key is down
     // That key's virtual key while it is registered with Windows, else 0, and

@@ -26,6 +26,12 @@ constexpr auto kHangoverPath = "stt/hangoverMs";
 constexpr auto kSensitivityPath = "stt/sensitivity";
 constexpr auto kDictateKeyPath = "stt/transcriptionKey";
 constexpr auto kDictateCodePath = "stt/transcriptionKeyCode";
+constexpr auto kWakeWordPath = "wake/word";
+constexpr auto kDefaultWakeWord = "Hey Burnos";
+constexpr auto kVoicePrintPath = "voice/print";
+constexpr auto kVoiceLevelPath = "voice/level";
+constexpr auto kVoiceOnPath = "voice/onlyMe";
+constexpr auto kVoiceStrictPath = "voice/strictness";
 constexpr auto kVoicePath  = "tts/voice";
 constexpr auto kVolumePath = "tts/volume";
 constexpr auto kOnTopPath  = "ui/alwaysOnTop";
@@ -72,7 +78,13 @@ QSettings store()
 {
     // Per user, under HKCU. An API key has no business in the machine wide
     // ProgramData tree, which every account on the box can read.
-    return QSettings(QString::fromLatin1(kOrg), QString::fromLatin1(kApp));
+    //
+    // BURNOS_SETTINGS names another tree, for a copy under test: a rehearsal
+    // then neither reads nor changes the settings of the Burnos in use - its
+    // key, its taught voice, its volume. Never in a normal run.
+    const QString other = qEnvironmentVariable("BURNOS_SETTINGS");
+    return QSettings(QString::fromLatin1(kOrg),
+                     other.isEmpty() ? QString::fromLatin1(kApp) : other);
 }
 
 // Windows DPAPI. The ciphertext is bound to this Windows user, so copying
@@ -289,6 +301,85 @@ void setTranscriptionKey(const QString &shown, quint32 code)
     s.setValue(QString::fromLatin1(kDictateKeyPath), shown);
     s.setValue(QString::fromLatin1(kDictateCodePath), code);
     s.sync();
+}
+
+QString defaultWakeWord()
+{
+    return QString::fromLatin1(kDefaultWakeWord);
+}
+
+QString wakeWord()
+{
+    const QString stored = store().value(QString::fromLatin1(kWakeWordPath)).toString().simplified();
+    return stored.isEmpty() ? defaultWakeWord() : stored;
+}
+
+void setWakeWord(const QString &phrase)
+{
+    QSettings s = store();
+    const QString words = phrase.simplified();
+    if (words.isEmpty() || words.compare(defaultWakeWord(), Qt::CaseInsensitive) == 0)
+        s.remove(QString::fromLatin1(kWakeWordPath));
+    else
+        s.setValue(QString::fromLatin1(kWakeWordPath), words);
+    s.sync();
+}
+
+QList<float> voicePrint()
+{
+    const QByteArray raw = store().value(QString::fromLatin1(kVoicePrintPath)).toByteArray();
+    QList<float> print(raw.size() / qsizetype(sizeof(float)));
+    const auto *values = reinterpret_cast<const float *>(raw.constData());
+    for (qsizetype i = 0; i < print.size(); ++i)
+        print[i] = values[i];
+    return print;
+}
+
+double voiceLevel()
+{
+    return store().value(QString::fromLatin1(kVoiceLevelPath), 0.0).toDouble();
+}
+
+void setVoicePrint(const QList<float> &print, double level)
+{
+    QSettings s = store();
+    s.setValue(QString::fromLatin1(kVoicePrintPath),
+               QByteArray(reinterpret_cast<const char *>(print.constData()),
+                          print.size() * qsizetype(sizeof(float))));
+    s.setValue(QString::fromLatin1(kVoiceLevelPath), level);
+    s.sync();
+}
+
+bool voiceCheckOn()
+{
+    return store().value(QString::fromLatin1(kVoiceOnPath), true).toBool();
+}
+
+void setVoiceCheckOn(bool on)
+{
+    QSettings s = store();
+    s.setValue(QString::fromLatin1(kVoiceOnPath), on);
+    s.sync();
+}
+
+int voiceStrictness()
+{
+    return qBound(0, store().value(QString::fromLatin1(kVoiceStrictPath), 50).toInt(), 100);
+}
+
+void setVoiceStrictness(int percent)
+{
+    QSettings s = store();
+    s.setValue(QString::fromLatin1(kVoiceStrictPath), qBound(0, percent, 100));
+    s.sync();
+}
+
+double voiceThreshold()
+{
+    // 0.50 in the middle. Measured with eleven stand-in voices: their own long
+    // phrases never scored under 0.80, and at 0.50 about one long phrase in a
+    // hundred from another voice still passed (three in a hundred at 0.425).
+    return 0.30 + 0.40 * voiceStrictness() / 100.0;
 }
 
 int hangoverMs()

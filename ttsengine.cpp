@@ -16,9 +16,193 @@
 #include <QUrl>
 #include <QtEndian>
 
+#include <QElapsedTimer>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QPointer>
+#include <QThreadPool>
+
+#include <atomic>
 #include <cmath>
+#include <cstring>
+#include <memory>
+
+// Last, and only for loading the voice's library from its own folder.
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace {
+
+// THE VOICE, KEPT LOADED. sherpa-onnx-offline-tts.exe reads the 330 MB Kokoro
+// model in again for every answer - a second before the first syllable is even
+// worked on. The same engine is in sherpa-onnx-c-api.dll beside it: loaded
+// once when Burnos opens and kept until it closes (measured: "Okay." in 0.4 s
+// instead of 1.5). Found by name at run time; if the library is not there, or
+// is the build without a voice, every answer goes through the program as
+// before. BURNOS_TTS_CLI forces that, for comparing the two.
+//
+// The structures are sherpa-onnx v1.13.8's own (c-api.h), field for field.
+struct VitsConfig { const char *model, *lexicon, *tokens, *data_dir; float noise_scale, noise_scale_w, length_scale; const char *dict_dir; };
+struct MatchaConfig { const char *acoustic_model, *vocoder, *lexicon, *tokens, *data_dir; float noise_scale, length_scale; const char *dict_dir; };
+struct KokoroConfig { const char *model, *voices, *tokens, *data_dir; float length_scale; const char *dict_dir, *lexicon, *lang; };
+struct KittenConfig { const char *model, *voices, *tokens, *data_dir; float length_scale; };
+struct ZipvoiceConfig { const char *tokens, *encoder, *decoder, *vocoder, *data_dir, *lexicon; float feat_scale, t_shift, target_rms, guidance_scale; };
+struct PocketConfig { const char *lm_flow, *lm_main, *encoder, *decoder, *text_conditioner, *vocab_json, *token_scores_json; qint32 voice_embedding_cache_capacity; };
+struct SupertonicConfig { const char *duration_predictor, *text_encoder, *vector_estimator, *vocoder, *tts_json, *unicode_indexer, *voice_style; };
+struct TtsModelConfig { VitsConfig vits; qint32 num_threads; qint32 debug; const char *provider; MatchaConfig matcha; KokoroConfig kokoro; KittenConfig kitten; ZipvoiceConfig zipvoice; PocketConfig pocket; SupertonicConfig supertonic; };
+struct TtsConfig { TtsModelConfig model; const char *rule_fsts; qint32 max_num_sentences; const char *rule_fars; float silence_scale; };
+struct GeneratedAudio { const float *samples; qint32 n; qint32 sample_rate; };
+
+struct LoadedVoice
+{
+    QMutex lock;
+    bool tried = false;
+    std::atomic_bool failed{false};
+    QString error;
+    const void *tts = nullptr;
+    const GeneratedAudio *(*generate)(const void *, const char *, qint32, float,
+                                      qint32 (*)(const float *, qint32, float, void *), void *) = nullptr;
+    void (*destroy)(const GeneratedAudio *) = nullptr;
+
+    static QString library()
+    {
+        return QCoreApplication::applicationDirPath()
+               + QStringLiteral("/kokoro-tts/sherpa-onnx-c-api.dll");
+    }
+
+    bool usable() const
+    {
+        return !failed && !qEnvironmentVariableIsSet("BURNOS_TTS_CLI")
+               && QFileInfo::exists(library());
+    }
+
+    // Between sentences: 0 stops a voice nobody wants any more.
+    static qint32 carryOn(const float *, qint32, float, void *cancelled)
+    {
+        return static_cast<std::atomic_bool *>(cancelled)->load() ? 0 : 1;
+    }
+
+    // Called with the lock held.
+    bool load()
+    {
+        if (tried)
+            return tts != nullptr;
+        tried = true;
+        const QString path = QDir::toNativeSeparators(library());
+        HMODULE lib = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
+                                     LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!lib) {
+            error = QStringLiteral("%1 would not load (error %2)").arg(path).arg(GetLastError());
+            return false;
+        }
+        const void *(*create)(const TtsConfig *) = nullptr;
+        create = reinterpret_cast<decltype(create)>(
+            reinterpret_cast<void *>(GetProcAddress(lib, "SherpaOnnxCreateOfflineTts")));
+        generate = reinterpret_cast<decltype(generate)>(reinterpret_cast<void *>(
+            GetProcAddress(lib, "SherpaOnnxOfflineTtsGenerateWithProgressCallbackWithArg")));
+        destroy = reinterpret_cast<decltype(destroy)>(reinterpret_cast<void *>(
+            GetProcAddress(lib, "SherpaOnnxDestroyOfflineTtsGeneratedAudio")));
+        if (!create || !generate || !destroy) {
+            error = QStringLiteral("%1 is the build without a voice").arg(path);
+            return false;
+        }
+        const QString dir = QDir::toNativeSeparators(BurnOS::Models::kokoroDir());
+        const QByteArray model = (dir + QStringLiteral("\\model.onnx")).toLocal8Bit();
+        const QByteArray voices = (dir + QStringLiteral("\\voices.bin")).toLocal8Bit();
+        const QByteArray tokens = (dir + QStringLiteral("\\tokens.txt")).toLocal8Bit();
+        const QByteArray data = (dir + QStringLiteral("\\espeak-ng-data")).toLocal8Bit();
+        TtsConfig config;
+        std::memset(&config, 0, sizeof config);
+        config.model.kokoro.model = model.constData();
+        config.model.kokoro.voices = voices.constData();
+        config.model.kokoro.tokens = tokens.constData();
+        config.model.kokoro.data_dir = data.constData();
+        config.model.num_threads = 4;
+        config.model.provider = "cpu";
+        config.max_num_sentences = 1;
+        tts = create(&config);
+        if (!tts)
+            error = QStringLiteral("the Kokoro model would not load");
+        return tts != nullptr;
+    }
+
+    // One answer into a 16 bit WAV, on whichever thread calls. False when it
+    // was cancelled, or when it has to go through the program instead - and
+    // then `failed` is set and every later answer does too.
+    bool say(const QString &text, int voice, const QString &wavPath, std::atomic_bool *cancelled)
+    {
+        QMutexLocker locker(&lock);
+        if (!load()) {
+            if (!failed.exchange(true))
+                BurnOS::liveLog(QStringLiteral("voice: not kept loaded - %1. Each answer starts "
+                                               "the Kokoro program instead.").arg(error));
+            return false;
+        }
+        if (cancelled->load())
+            return false;
+        const GeneratedAudio *audio =
+            generate(tts, text.toUtf8().constData(), voice, 1.0f, carryOn, cancelled);
+        if (cancelled->load()) {
+            if (audio)
+                destroy(audio);
+            return false;
+        }
+        if (!audio || audio->n <= 0) {
+            if (audio)
+                destroy(audio);
+            failed = true;
+            BurnOS::liveLog(QStringLiteral("voice: the loaded Kokoro gave nothing - each answer "
+                                           "starts the program from now on"));
+            return false;
+        }
+        QByteArray wav(44 + qsizetype(audio->n) * 2, '\0');
+        char *h = wav.data();
+        const auto put32 = [h](int at, quint32 v) { qToLittleEndian<quint32>(v, h + at); };
+        const auto put16 = [h](int at, quint16 v) { qToLittleEndian<quint16>(v, h + at); };
+        std::memcpy(h, "RIFF", 4);
+        put32(4, quint32(36 + audio->n * 2));
+        std::memcpy(h + 8, "WAVEfmt ", 8);
+        put32(16, 16);
+        put16(20, 1);
+        put16(22, 1);
+        put32(24, quint32(audio->sample_rate));
+        put32(28, quint32(audio->sample_rate) * 2);
+        put16(32, 2);
+        put16(34, 16);
+        std::memcpy(h + 36, "data", 4);
+        put32(40, quint32(audio->n * 2));
+        for (qint32 i = 0; i < audio->n; ++i) {
+            const float s = qBound(-1.0f, audio->samples[i], 1.0f);
+            qToLittleEndian<qint16>(qint16(std::lround(s * 32767.0f)), h + 44 + qsizetype(i) * 2);
+        }
+        destroy(audio);
+        QFile out(wavPath);
+        if (!out.open(QIODevice::WriteOnly) || out.write(wav) != wav.size()) {
+            failed = true;
+            return false;
+        }
+        return true;
+    }
+};
+
+LoadedVoice &loadedVoice()
+{
+    static LoadedVoice one;
+    return one;
+}
+
+// One answer at a time.
+QThreadPool &voicePool()
+{
+    static QThreadPool *one = [] {
+        auto *made = new QThreadPool(QCoreApplication::instance());
+        made->setMaxThreadCount(1);
+        return made;
+    }();
+    return *one;
+}
 
 // One sherpa-onnx run: the Kokoro model, the voice chosen in Settings, and the
 // WAV to write. The live voice gets four threads, the cache two.
@@ -90,6 +274,36 @@ bool TtsEngine::speak(const QString &text)
     // A fresh file each time: the player keeps a handle on the previous one.
     m_wavPath = QDir::temp().filePath(
         QStringLiteral("burnos-tts-%1.wav").arg(++m_counter));
+
+    // THE LOADED VOICE, off this thread. Only when it cannot be used does the
+    // answer go the old way, through the Kokoro program.
+    if (loadedVoice().usable()) {
+        BurnOS::liveLog(QStringLiteral("kokoro synthesising %1 chars with voice %2")
+                            .arg(spoken.size())
+                            .arg(BurnOS::Settings::ttsVoice()));
+        m_busy = true;
+        m_saying = std::make_shared<std::atomic_bool>(false);
+        const std::shared_ptr<std::atomic_bool> cancelled = m_saying;
+        const QPointer<TtsEngine> self(this);
+        const QString wav = m_wavPath;
+        const int voice = BurnOS::Settings::ttsVoice();
+        voicePool().start([self, spoken, wav, voice, cancelled]() {
+            const bool ok = loadedVoice().say(spoken, voice, wav, cancelled.get());
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [self, spoken, wav, ok, cancelled]() {
+                if (!self || cancelled->load())
+                    return; // stopped meanwhile: nobody is waiting for it
+                if (!ok) {
+                    self->m_busy = false;
+                    self->speak(spoken); // usable() is false now: the program
+                    return;
+                }
+                BurnOS::liveLog(QStringLiteral("kokoro wrote %1 bytes of wav")
+                                    .arg(QFileInfo(wav).size()));
+                self->play(wav);
+            }, Qt::QueuedConnection);
+        });
+        return true;
+    }
 
     if (!m_proc) {
         m_proc = new QProcess(this);
@@ -287,6 +501,10 @@ void TtsEngine::stop()
     // state change; neither is a failure or a completed answer here.
     m_cancelled = true;
     m_busy = false;
+    // A voice still being made in the loaded model stops at its next sentence
+    // and is dropped when it arrives.
+    if (m_saying)
+        m_saying->store(true);
 
     if (m_proc && m_proc->state() != QProcess::NotRunning) {
         m_proc->kill();
@@ -296,6 +514,25 @@ void TtsEngine::stop()
         m_player->stop();
 
     m_cancelled = false;
+}
+
+void TtsEngine::preload()
+{
+    if (!loadedVoice().usable() || !BurnOS::Models::ttsPresent())
+        return;
+    voicePool().start([]() {
+        QElapsedTimer timer;
+        timer.start();
+        LoadedVoice &voice = loadedVoice();
+        QMutexLocker locker(&voice.lock);
+        if (voice.load()) {
+            BurnOS::liveLog(QStringLiteral("voice: Kokoro loaded at startup in %1 ms - it stays "
+                                           "loaded").arg(timer.elapsed()));
+        } else if (!voice.failed.exchange(true)) {
+            BurnOS::liveLog(QStringLiteral("voice: not kept loaded - %1. Each answer starts the "
+                                           "Kokoro program instead.").arg(voice.error));
+        }
+    });
 }
 
 void TtsEngine::prepare(const QStringList &phrases)

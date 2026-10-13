@@ -13,7 +13,7 @@ CONFIG += c++17
 # resource, Qt reads it back as applicationVersion(), and the live log's first
 # line says it - so every report names its build. Raised with each release,
 # which is also a git tag (v0.6.0) and a branch (v0.6) to roll back to.
-VERSION = 0.18.1
+VERSION = 0.19.0
 
 SOURCES += \
     agent.cpp \
@@ -21,6 +21,7 @@ SOURCES += \
     composio.cpp \
     computeruse.cpp \
     installer.cpp \
+    keywordspotter.cpp \
     main.cpp \
     mainwindow.cpp \
     mcp.cpp \
@@ -29,7 +30,8 @@ SOURCES += \
     settings.cpp \
     settingsdialog.cpp \
     sttengine.cpp \
-    ttsengine.cpp
+    ttsengine.cpp \
+    voicecheck.cpp
 
 HEADERS += \
     agent.h \
@@ -37,6 +39,7 @@ HEADERS += \
     composio.h \
     computeruse.h \
     installer.h \
+    keywordspotter.h \
     livelog.h \
     mainwindow.h \
     mcp.h \
@@ -45,7 +48,8 @@ HEADERS += \
     settings.h \
     settingsdialog.h \
     sttengine.h \
-    ttsengine.h
+    ttsengine.h \
+    voicecheck.h
 
 # DPAPI, used to encrypt the stored OpenRouter key for the current user.
 # User32 for GetWindowRect, used by the window hit test that keeps everything

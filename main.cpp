@@ -38,6 +38,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Test helper: is each WAV after the first the same voice as the first?
+    // One line a file - how alike, and how long the voiceprint took - written
+    // to the text file named first. Burnos.exe --voice-probe out.txt a.wav b.wav
+    const int voiceAt = args.indexOf(QStringLiteral("--voice-probe"));
+    if (voiceAt >= 0 && voiceAt + 2 < args.size())
+        return SttEngine::voiceProbe(args.mid(voiceAt + 2), args.at(voiceAt + 1)) ? 0 : 1;
+
     // Test helpers: the real conversation path with no microphone, no voice
     // and no window. --talk-probe says each line of a script and writes what
     // was answered; --context-probe writes what would be sent for one

@@ -1,8 +1,20 @@
 #include "composio.h"
+#include "keywordspotter.h"
 #include "livelog.h"
 #include "openrouter.h"
 #include "settings.h"
 #include "settingsdialog.h"
+#include "sttengine.h"
+#include "voicecheck.h"
+
+#include <QAudioDevice>
+#include <QAudioFormat>
+#include <QAudioSource>
+#include <QElapsedTimer>
+#include <QMediaDevices>
+#include <QProgressBar>
+
+#include <cmath>
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -226,6 +238,215 @@ protected:
         BurnOS::Settings::setTranscriptionKey(shown, (mods << 16) | vk);
     }
 };
+
+// TEACHING BURNOS A VOICE. The person reads a few lines for 25 seconds; the
+// pauses are taken out, and what is left becomes the voiceprint every later
+// phrase is held against, with how loud their speech is in this microphone.
+// Only those are kept, never the recording. The two halves of the reading have
+// to sound like ONE person, or a room that talked over it would be learned as
+// the voice.
+class VoiceLesson : public QDialog
+{
+public:
+    explicit VoiceLesson(QWidget *parent = nullptr);
+
+private:
+    void begin();
+    void finish();
+    void fail(const QString &why);
+
+    QLabel *m_status = nullptr;
+    QProgressBar *m_bar = nullptr;
+    QPushButton *m_start = nullptr;
+    QAudioSource *m_source = nullptr;
+    QTimer *m_clock = nullptr;
+    QElapsedTimer m_since;
+    QByteArray m_pcm;
+    // THE CHECK, without a microphone: BURNOS_VOICE_LESSON_WAV names a 16 kHz
+    // mono WAV that is taken for the reading, and the dialog starts and closes
+    // by itself. Never in a normal run.
+    const QString m_rehearsal = qEnvironmentVariable("BURNOS_VOICE_LESSON_WAV");
+};
+
+namespace {
+constexpr int kLessonMs = 25000;
+// At least this much of the reading has to be speech.
+constexpr int kLessonSpeechMs = 8000;
+// How alike its two halves have to be to count as one voice.
+constexpr float kOneVoice = 0.5f;
+} // namespace
+
+VoiceLesson::VoiceLesson(QWidget *parent)
+    : QDialog(parent)
+{
+    setWindowTitle(tr("Teach Burnos my voice"));
+    setModal(true);
+    setMinimumWidth(470);
+    setStyleSheet(QString::fromLatin1(kStyle));
+    setWindowFlag(Qt::WindowStaysOnTopHint, true);
+
+    auto *how = new QLabel(tr("Press Start and read the lines below aloud, in your normal "
+                              "voice and at your normal distance from the microphone. It "
+                              "takes 25 seconds. Keep the room quiet while you read: no "
+                              "television, nobody else talking."), this);
+    how->setWordWrap(true);
+    how->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+
+    auto *lines = new QLabel(
+        tr("Hello Burnos, this is my voice. I am reading these lines so that you can "
+           "learn how I sound. When I speak to you, I want you to listen to me, and "
+           "not to the television or to anyone else in the room. I talk like this when "
+           "I ask you a question, when I give you something to do, and when I am just "
+           "thinking out loud. If I pause for a moment, wait for me, and then carry on "
+           "with what I asked. Thank you for listening."), this);
+    lines->setWordWrap(true);
+    lines->setStyleSheet(QStringLiteral("font-size: 14px; padding: 8px;"));
+
+    m_bar = new QProgressBar(this);
+    m_bar->setRange(0, kLessonMs);
+    m_bar->setTextVisible(false);
+    m_status = new QLabel(this);
+    m_status->setWordWrap(true);
+
+    m_start = new QPushButton(tr("Start"), this);
+    m_start->setAutoDefault(false);
+    auto *close = new QPushButton(tr("Close"), this);
+    close->setAutoDefault(false);
+    connect(m_start, &QPushButton::clicked, this, &VoiceLesson::begin);
+    connect(close, &QPushButton::clicked, this, &QDialog::accept);
+
+    auto *buttons = new QHBoxLayout;
+    buttons->addWidget(m_status, 1);
+    buttons->addWidget(m_start);
+    buttons->addWidget(close);
+
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(18, 18, 18, 14);
+    root->setSpacing(12);
+    root->addWidget(how);
+    root->addWidget(lines);
+    root->addWidget(m_bar);
+    root->addLayout(buttons);
+
+    m_clock = new QTimer(this);
+    m_clock->setInterval(100);
+    connect(m_clock, &QTimer::timeout, this, [this]() {
+        m_bar->setValue(int(qMin<qint64>(m_since.elapsed(), kLessonMs)));
+        if (m_since.elapsed() >= kLessonMs)
+            finish();
+    });
+
+    if (!m_rehearsal.isEmpty())
+        QTimer::singleShot(0, this, &VoiceLesson::begin);
+}
+
+void VoiceLesson::begin()
+{
+    m_start->setEnabled(false);
+    m_pcm.clear();
+    if (!m_rehearsal.isEmpty()) {
+        QString error;
+        m_pcm = SttEngine::pcmFromWav(m_rehearsal, &error);
+        finish();
+        return;
+    }
+
+    QAudioFormat format;
+    format.setSampleRate(16000);
+    format.setChannelCount(1);
+    format.setSampleFormat(QAudioFormat::Int16);
+    const QAudioDevice device = QMediaDevices::defaultAudioInput();
+    if (device.isNull() || !device.isFormatSupported(format)) {
+        fail(tr("No microphone is available."));
+        return;
+    }
+    m_source = new QAudioSource(device, format, this);
+    QIODevice *in = m_source->start();
+    if (!in) {
+        fail(tr("The microphone would not open."));
+        return;
+    }
+    connect(in, &QIODevice::readyRead, this, [this, in]() { m_pcm.append(in->readAll()); });
+    m_status->setText(tr("Listening. Read the lines now."));
+    m_since.start();
+    m_clock->start();
+}
+
+void VoiceLesson::finish()
+{
+    m_clock->stop();
+    if (m_source) {
+        m_source->stop();
+        m_source->deleteLater();
+        m_source = nullptr;
+    }
+    m_bar->setValue(kLessonMs);
+    m_status->setText(tr("Working it out..."));
+
+    const BurnOS::Voice::Spoken spoken = BurnOS::Voice::spoken(m_pcm);
+    BurnOS::liveLog(QStringLiteral("voice check: the reading was %1 s long, %2 s of it speech")
+                        .arg(m_pcm.size() / 32000.0, 0, 'f', 1)
+                        .arg(spoken.pcm.size() / 32000.0, 0, 'f', 1));
+    m_pcm.clear(); // the recording itself is not kept
+    const int spokenMs = int(spoken.pcm.size() / 32); // 16 kHz, 16 bit: 32 bytes a millisecond
+    if (spokenMs < kLessonSpeechMs) {
+        fail(tr("I only heard %1 seconds of speech. Try again, a little closer to the "
+                "microphone.").arg(spokenMs / 1000));
+        return;
+    }
+
+    // Two voiceprints, one of each half, so the whole reading is used and the
+    // halves can be held against each other.
+    const qsizetype half = (spoken.pcm.size() / 2) & ~qsizetype(1);
+    const QByteArray second = spoken.pcm.mid(half);
+    const double level = double(spoken.level);
+    BurnOS::Voice::print(this, spoken.pcm.left(half),
+                         [this, second, level, spokenMs](const BurnOS::Voice::Print &a) {
+        BurnOS::Voice::print(this, second,
+                             [this, a, level, spokenMs](const BurnOS::Voice::Print &b) {
+            if (a.isEmpty() || b.isEmpty()) {
+                fail(tr("The voice model could not be run. The log says why."));
+                return;
+            }
+            const float same = BurnOS::Voice::alike(a, b);
+            if (same < kOneVoice) {
+                fail(tr("The two halves of that did not sound like one voice. Try again "
+                        "with the room quiet."));
+                return;
+            }
+            BurnOS::Voice::Print both(a.size());
+            double square = 0.0;
+            for (qsizetype i = 0; i < a.size(); ++i) {
+                both[i] = a[i] + b[i];
+                square += double(both[i]) * double(both[i]);
+            }
+            const float norm = square > 0.0 ? float(std::sqrt(square)) : 1.0f;
+            for (float &value : both)
+                value /= norm;
+            BurnOS::Settings::setVoicePrint(both, level);
+            BurnOS::Settings::setVoiceCheckOn(true);
+            BurnOS::liveLog(QStringLiteral("voice check: a voice was TAUGHT from %1 s of speech - "
+                                           "its halves alike %2, loudness %3")
+                                .arg(spokenMs / 1000.0, 0, 'f', 1)
+                                .arg(double(same), 0, 'f', 2)
+                                .arg(level, 0, 'f', 4));
+            m_status->setText(tr("Done. Burnos now answers only this voice."));
+            m_start->setText(tr("Teach again"));
+            m_start->setEnabled(true);
+            if (!m_rehearsal.isEmpty())
+                accept();
+        });
+    });
+}
+
+void VoiceLesson::fail(const QString &why)
+{
+    BurnOS::liveLog(QStringLiteral("voice check: teaching FAILED - %1").arg(why));
+    m_status->setText(why);
+    m_start->setEnabled(true);
+    if (!m_rehearsal.isEmpty())
+        reject();
+}
 
 SettingsDialog::SettingsDialog(QWidget *parent)
     : QDialog(parent)
@@ -465,6 +686,111 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     dictateNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
     form->addRow(tr("Transcription key"), dictateKey);
     form->addRow(QString(), dictateNote);
+
+    // THE WAKE WORD. Muted, Burnos hears this and a few commands and nothing
+    // else, and saying it unmutes. It has to be something the keyword model
+    // can spell - plain letters - so one it cannot is refused here, and the
+    // word before it stays.
+    auto *wake = new QLineEdit(this);
+    wake->setMaxLength(40);
+    wake->setText(BurnOS::Settings::wakeWord());
+    wake->setPlaceholderText(BurnOS::Settings::defaultWakeWord());
+    wake->setEnabled(BurnOS::Wake::available());
+    wake->setToolTip(tr("Say it while Burnos is muted and it unmutes; what you say "
+                        "straight after it is your request. Two words work "
+                        "better than one. Empty goes back to \"%1\".")
+                         .arg(BurnOS::Settings::defaultWakeWord()));
+    auto *wakeNote = new QLabel(this);
+    wakeNote->setWordWrap(true);
+    wakeNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+    const auto showWake = [wakeNote](bool refused) {
+        wakeNote->setText(
+            !BurnOS::Wake::available()
+                ? tr("The wake word model is not here yet. Restart Burnos.")
+                : refused ? tr("That cannot be a wake word: plain letters only, four or "
+                               "more. The one before it was kept.")
+                          : tr("Muted, Burnos still hears \"%1\" - and \"unmute\" - and "
+                               "wakes up. Nothing else it hears then is kept.")
+                                .arg(BurnOS::Settings::wakeWord()));
+    };
+    showWake(false);
+    connect(wake, &QLineEdit::editingFinished, this, [wake, showWake]() {
+        const QString typed = wake->text().simplified();
+        if (typed.compare(BurnOS::Settings::wakeWord(), Qt::CaseInsensitive) == 0)
+            return;
+        const bool refused = !typed.isEmpty() && !BurnOS::Wake::canSpell(typed);
+        if (!refused)
+            BurnOS::Settings::setWakeWord(typed);
+        wake->setText(BurnOS::Settings::wakeWord());
+        showWake(refused);
+    });
+    form->addRow(tr("Wake word"), wake);
+    form->addRow(QString(), wakeNote);
+
+    // MY VOICE. Once taught, Burnos answers only phrases that sound like it:
+    // a television or somebody else in the room is neither answered nor
+    // remembered. The check can be switched off again without forgetting the
+    // voice, and how alike a phrase has to be is the slider.
+    auto *teach = new QPushButton(this);
+    teach->setAutoDefault(false);
+    auto *voiceState = new QLabel(this);
+    voiceState->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
+    auto *onlyMe = new QCheckBox(tr("Answer only my voice"), this);
+    onlyMe->setToolTip(tr("Other voices - a television, other people in the room - "
+                          "are ignored: not answered and not remembered. The "
+                          "transcription key is never checked."));
+    auto *strict = new QSlider(Qt::Horizontal, this);
+    strict->setRange(0, 100);
+    strict->setSingleStep(5);
+    strict->setPageStep(10);
+    strict->setToolTip(tr("How closely a phrase has to match your voice. Raise it if "
+                          "other voices still get through; lower it if Burnos "
+                          "ignores you."));
+    auto *strictValue = new QLabel(this);
+    strictValue->setMinimumWidth(44);
+    const auto showVoice = [teach, voiceState, onlyMe, strict]() {
+        const bool able = BurnOS::Voice::available();
+        const bool taught = !BurnOS::Settings::voicePrint().isEmpty();
+        teach->setEnabled(able);
+        teach->setText(taught ? tr("Teach it again...") : tr("Teach Burnos my voice..."));
+        voiceState->setText(!able ? tr("The voice model is not here yet. Restart Burnos.")
+                                  : taught ? tr("Burnos knows your voice.")
+                                           : tr("Not taught yet: every voice is answered."));
+        onlyMe->setEnabled(able && taught);
+        strict->setEnabled(able && taught);
+    };
+    onlyMe->setChecked(BurnOS::Settings::voiceCheckOn());
+    strict->setValue(BurnOS::Settings::voiceStrictness());
+    strictValue->setText(tr("%1 %").arg(strict->value()));
+    showVoice();
+    connect(teach, &QPushButton::clicked, this, [this, onlyMe, showVoice]() {
+        VoiceLesson lesson(this);
+        lesson.exec();
+        onlyMe->setChecked(BurnOS::Settings::voiceCheckOn());
+        showVoice();
+    });
+    connect(onlyMe, &QCheckBox::toggled, this,
+            [](bool on) { BurnOS::Settings::setVoiceCheckOn(on); });
+    // Written when the slider is let go, not on every step of a drag.
+    connect(strict, &QSlider::valueChanged, this, [strict, strictValue](int value) {
+        strictValue->setText(tr("%1 %").arg(value));
+        if (!strict->isSliderDown())
+            BurnOS::Settings::setVoiceStrictness(value);
+    });
+    connect(strict, &QSlider::sliderReleased, this,
+            [strict]() { BurnOS::Settings::setVoiceStrictness(strict->value()); });
+    auto *teachRow = new QHBoxLayout;
+    teachRow->setContentsMargins(0, 0, 0, 0);
+    teachRow->addWidget(teach);
+    teachRow->addWidget(voiceState, 1);
+    auto *strictRow = new QHBoxLayout;
+    strictRow->setContentsMargins(0, 0, 0, 0);
+    strictRow->addWidget(strict, 1);
+    strictRow->addWidget(strictValue);
+    form->addRow(tr("My voice"), teachRow);
+    form->addRow(QString(), onlyMe);
+    form->addRow(tr("How strict"), strictRow);
+
     form->addRow(tr("Voice"), m_voice);
     form->addRow(tr("Speech volume"), volumeRow);
     form->addRow(tr("Orb size"), orbSizeRow);

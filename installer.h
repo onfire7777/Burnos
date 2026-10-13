@@ -16,10 +16,19 @@ namespace BurnOS::Models {
 QString sttModel();   // Parakeet, for parakeet-cli -m
 QString vadModel();   // the Silero 6.2.0 weights sttengine.cpp computes by hand
 QString kokoroDir();  // model.onnx, voices.bin, tokens.txt and espeak-ng-data
+QString voiceModel(); // the speaker model voicecheck.cpp tells voices apart with
+// The keyword model keywordspotter.cpp hears the wake word with: its folder -
+// which also holds tokens.txt and bpe.model - and the names of its three parts.
+QString wakeDir();
+QString wakeEncoder();
+QString wakeDecoder();
+QString wakeJoiner();
 
 bool sttPresent();
 bool vadPresent();    // checked by size, so a truncated file does not count
 bool ttsPresent();
+bool voicePresent();  // checked by size; Burnos starts without it
+bool wakePresent();   // every part checked by size; Burnos starts without it
 
 } // namespace BurnOS::Models
 
@@ -57,6 +66,11 @@ private:
     QString m_stage;
     QString m_destPath;
     bool m_extractAfter = false;
+    // The file being downloaded is one Burnos can start without: a failure
+    // is logged and passed over, and tried again on the next start.
+    bool m_optional = false;
+    // Says whether what is being downloaded has arrived whole, once unpacked.
+    bool (*m_present)() = nullptr;
     // The SHA256 the file being downloaded must have, hex; empty for none.
     QByteArray m_expectSha;
     int m_step = 0;

@@ -93,6 +93,30 @@ QString transcriptionKey();
 quint32 transcriptionKeyCode();
 void setTranscriptionKey(const QString &shown, quint32 code);
 
+// THE WAKE WORD: said while Burnos is muted, it unmutes it, and what follows in
+// the same breath is a request. "Hey Burnos" until another is chosen; an empty
+// one goes back to that.
+QString wakeWord();
+QString defaultWakeWord();
+void setWakeWord(const QString &phrase);
+
+// THE OWNER'S VOICE, as taught in Settings: the voiceprint - empty until then -
+// and how loud their speech is in this microphone. With a voiceprint and the
+// check on, a phrase that does not sound like it is neither transcribed nor
+// answered nor remembered. Only these numbers are kept, never a recording.
+QList<float> voicePrint();
+double voiceLevel();
+void setVoicePrint(const QList<float> &print, double level);
+bool voiceCheckOn();
+void setVoiceCheckOn(bool on);
+// How alike a phrase has to be to the voiceprint, 0 to 100, and the same as
+// the number the check compares with: 0.30 at the most forgiving, 0.50 in the
+// middle, 0.70 at the strictest. One person scores about 0.6 and up against themselves, two
+// different people about 0.3 and down.
+int voiceStrictness();
+void setVoiceStrictness(int percent);
+double voiceThreshold();
+
 // The Composio project API key, which is what lets the orb reach Gmail, Slack,
 // Notion, GitHub and the rest. Stored exactly like the OpenRouter key -
 // encrypted for this Windows user with DPAPI - because it is every bit as much

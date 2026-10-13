@@ -1,12 +1,16 @@
 #ifndef STTENGINE_H
 #define STTENGINE_H
 
+#include "keywordspotter.h"
+
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QIODevice>
 #include <QList>
 #include <QObject>
 #include <QPair>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
 #include <vector>
@@ -50,7 +54,7 @@ public:
 
     bool isLive() const { return m_live; }           // armed
     bool isCapturing() const { return m_capturing; } // keeping a phrase
-    bool isReading() const { return m_pending; }     // a phrase is in the recogniser
+    bool isReading() const { return m_pending || m_checking > 0; }     // a phrase is in the recogniser
 
     // Arm live mode and open the microphone. False means it never opened and
     // failed() has been emitted.
@@ -62,6 +66,22 @@ public:
     void pauseListening();
     // Open it again after a turn, if live mode is still armed.
     bool resumeListening();
+
+    // MUTED, BUT NOT DEAF TO ITS NAME. With live mode off, the microphone is
+    // open for the keyword spotter and for nothing else: the voice detector,
+    // the recogniser and the voice check are not handed a sample, so nothing
+    // said is transcribed, kept or sent anywhere. A keyword - the wake word or
+    // a command - comes back through keyword(). False when there is no keyword
+    // model or no microphone, and then muted is simply deaf, as it always was.
+    bool startSpotting();
+    void stopSpotting();
+    bool isSpotting() const { return m_spotting; }
+    // AFTER THE WAKE WORD: the last two seconds heard while muted - the wake
+    // word and whatever was said straight after it - go through live mode as
+    // if they were being said now, so "Hey Burnos, what time is it?" in one
+    // breath is one question. Called right after startLive(). Those two
+    // seconds only ever exist in memory, and are dropped when not asked for.
+    void replayHeard();
 
     // TALKING OVER THE VOICE. While the orb speaks, the microphone stays open
     // and hears the orb's own voice come back from the speakers. That echo is
@@ -79,6 +99,18 @@ public:
     bool beginHeld();
     bool endHeld();
 
+    // Loads the speech model now, off the main thread, and keeps it for as
+    // long as Burnos runs, so no phrase waits for it. Called when Burnos opens.
+    static void preload();
+
+    // The voice check on its own: how alike each 16 kHz mono WAV after the
+    // first is to the first, one line a file. Run as Burnos.exe --voice-probe
+    // out.txt a.wav b.wav ..., never in normal use.
+    static bool voiceProbe(const QStringList &wavs, const QString &outPath);
+    // The samples of a 16 kHz mono 16 bit WAV, for the checks that stand a
+    // file in for the microphone.
+    static QByteArray pcmFromWav(const QString &wavPath, QString *error) { return readPcm(wavPath, error); }
+
     // THE CHECK on the phrase logic: the 16 kHz mono WAV named by
     // BURNOS_VAD_SELFTEST is fed through it as if it were the microphone -
     // with BURNOS_VAD_OVERVOICE, as if the orb were talking over it. Never in
@@ -95,14 +127,26 @@ signals:
     void transcribed(const QString &text);
     // The same, for a phrase taken between beginHeld() and endHeld().
     void dictated(const QString &text);
+    // A phrase ended and was nobody the orb answers to: the voice check
+    // turned it away. Nothing was transcribed and nothing will follow.
+    void ignored();
     void failed(const QString &reason);
     void levelChanged(qreal level);
     void speechStarted();
     void speechEnded();
     // The user started talking over the orb's voice. Stop the voice now.
     void bargeIn();
+    // Heard by the keyword spotter while muted.
+    void keyword(BurnOS::Wake::Command command);
 
 private:
+    // Hands the microphone's sound to the keyword spotter from now on.
+    void listenForKeywords();
+    // A new stretch of listening: no phrase, no pre-roll, a detector with no
+    // memory of the last one.
+    void resetPhrase();
+    // BURNOS_MIC_WAV: the next of the file's sound that is due by the clock.
+    void fileMicTick();
     QString cliPath() const;
     bool openMicrophone();
     void closeMicrophone();
@@ -115,6 +159,9 @@ private:
     void endPhrase(bool tooLong, int hangoverMs);
     // Raw 16 kHz mono 16 bit samples out of a WAV, for the self test and probe.
     static QByteArray readPcm(const QString &wavPath, QString *error);
+    // A phrase the detector has ended: through the voice check, when a voice
+    // has been taught, and only then to the recogniser.
+    void admit(const QByteArray &phrase, int voicedMs, float loudness);
     void transcribe(const QByteArray &pcm, bool held = false);
     void drainQueue();
     bool writeWav(const QByteArray &pcm, const QString &wavPath,
@@ -131,6 +178,20 @@ private:
     bool m_pendingHeld = false; // and it was taken by push to talk
     bool m_held = false;        // push to talk is down
     bool m_heldOwnsMic = false; // the microphone was opened just for this hold
+    int m_checking = 0;         // phrases whose voice is being checked right now
+    bool m_spotting = false;    // muted: the microphone feeds the keyword spotter only
+    QByteArray m_heard;         // the last two seconds heard while muted, in memory only
+    // THE CHECK on what takes sound over time - a mute, a wake word, a request
+    // after it: the WAV named by BURNOS_MIC_WAV stands in for the microphone,
+    // in real time, from the moment the microphone first opens, and the real
+    // microphone's sound is dropped. Never in a normal run.
+    QByteArray m_fileMic;
+    qint64 m_fileAt = 0;
+    QElapsedTimer m_fileClock;
+    // How loud the speech of the phrase being kept is: the loudness of every
+    // step the detector called speech, added up, and how many there were.
+    double m_loudSum = 0.0;
+    int m_loudSteps = 0;
     QByteArray m_heldPcm;       // what has been said while it is down
     // Phrases heard while the recogniser was busy, oldest first. The microphone
     // no longer closes while we work, so this can happen whenever somebody

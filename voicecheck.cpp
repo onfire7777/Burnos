@@ -1,0 +1,277 @@
+#include "voicecheck.h"
+
+#include "installer.h"
+#include "livelog.h"
+
+#include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFileInfo>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QPointer>
+#include <QThreadPool>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <vector>
+
+#ifndef NOMINMAX
+#  define NOMINMAX
+#endif
+#include <windows.h>
+
+namespace BurnOS::Voice {
+
+namespace {
+
+constexpr int kSampleRate = 16000;
+// A voice is plain within a few seconds; more of the phrase only costs time.
+constexpr int kMaxSeconds = 12;
+// The detector's own step, so a loudness measured here means what one
+// measured in sttengine.cpp means.
+constexpr int kFrame = 512;
+
+// As sherpa-onnx's C API lays it out (c-api.h, v1.13.8).
+struct ExtractorConfig
+{
+    const char *model;
+    int32_t numThreads;
+    int32_t debug;
+    const char *provider;
+};
+
+// In the folder of the voice, because the onnxruntime.dll it needs is there
+// already - the very same file - and Windows keeps an older one of its own in
+// System32 that must not be picked up instead.
+QString libraryPath()
+{
+    return QCoreApplication::applicationDirPath()
+           + QStringLiteral("/kokoro-tts/sherpa-onnx-c-api.dll");
+}
+
+// ONE ENGINE for the process, loaded the first time a voiceprint is wanted and
+// kept. The library is found by name at run time, so Burnos links nothing new
+// and starts exactly as before when the file is not there.
+struct Engine
+{
+    QMutex lock;
+    bool tried = false;
+    QString error;
+    const void *extractor = nullptr;
+    int dim = 0;
+
+    const void *(*create)(const ExtractorConfig *) = nullptr;
+    int32_t (*dimOf)(const void *) = nullptr;
+    const void *(*createStream)(const void *) = nullptr;
+    int32_t (*isReady)(const void *, const void *) = nullptr;
+    const float *(*compute)(const void *, const void *) = nullptr;
+    void (*destroyEmbedding)(const float *) = nullptr;
+    void (*accept)(const void *, int32_t, const float *, int32_t) = nullptr;
+    void (*inputFinished)(const void *) = nullptr;
+    void (*destroyStream)(const void *) = nullptr;
+
+    template <typename T>
+    static bool find(HMODULE lib, const char *name, T &fn)
+    {
+        fn = reinterpret_cast<T>(reinterpret_cast<void *>(GetProcAddress(lib, name)));
+        return fn != nullptr;
+    }
+
+    // Called with the lock held.
+    bool load()
+    {
+        if (tried)
+            return extractor != nullptr;
+        tried = true;
+        QElapsedTimer timer;
+        timer.start();
+
+        const QString path = QDir::toNativeSeparators(libraryPath());
+        // ALTERED SEARCH PATH: what the library needs is looked for in its own
+        // folder first.
+        HMODULE lib = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
+                                     LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (!lib) {
+            error = QStringLiteral("%1 would not load (error %2)").arg(path).arg(GetLastError());
+            return false;
+        }
+        const bool found =
+            find(lib, "SherpaOnnxCreateSpeakerEmbeddingExtractor", create)
+            && find(lib, "SherpaOnnxSpeakerEmbeddingExtractorDim", dimOf)
+            && find(lib, "SherpaOnnxSpeakerEmbeddingExtractorCreateStream", createStream)
+            && find(lib, "SherpaOnnxSpeakerEmbeddingExtractorIsReady", isReady)
+            && find(lib, "SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding", compute)
+            && find(lib, "SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding", destroyEmbedding)
+            && find(lib, "SherpaOnnxOnlineStreamAcceptWaveform", accept)
+            && find(lib, "SherpaOnnxOnlineStreamInputFinished", inputFinished)
+            && find(lib, "SherpaOnnxDestroyOnlineStream", destroyStream);
+        if (!found) {
+            error = QStringLiteral("%1 is not the library this was written for").arg(path);
+            return false;
+        }
+
+        const QByteArray model = QDir::toNativeSeparators(Models::voiceModel()).toUtf8();
+        const ExtractorConfig config{model.constData(), 2, 0, "cpu"};
+        extractor = create(&config);
+        if (!extractor) {
+            error = QStringLiteral("the voice model would not load from %1")
+                        .arg(QString::fromUtf8(model));
+            return false;
+        }
+        dim = dimOf(extractor);
+        liveLog(QStringLiteral("voice check: model loaded in %1 ms, %2 numbers to a voiceprint")
+                    .arg(timer.elapsed())
+                    .arg(dim));
+        return true;
+    }
+};
+
+Engine &engine()
+{
+    static Engine one;
+    return one;
+}
+
+// One at a time, in the order asked: a phrase must not overtake the one before.
+QThreadPool &pool()
+{
+    static QThreadPool *one = [] {
+        auto *made = new QThreadPool(QCoreApplication::instance());
+        made->setMaxThreadCount(1);
+        return made;
+    }();
+    return *one;
+}
+
+} // namespace
+
+bool available()
+{
+    return Models::voicePresent() && QFileInfo::exists(libraryPath());
+}
+
+void preload()
+{
+    if (!available())
+        return;
+    pool().start([]() {
+        // A second of faint noise: enough to load the model and run it once.
+        QByteArray warm(32000, '\0');
+        auto *samples = reinterpret_cast<qint16 *>(warm.data());
+        quint32 seed = 12345;
+        for (int i = 0; i < 16000; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            samples[i] = qint16(int(seed >> 22) - 512);
+        }
+        QElapsedTimer timer;
+        timer.start();
+        const Print made = printNow(warm);
+        liveLog(QStringLiteral("voice check: %1 at startup in %2 ms - it stays loaded")
+                    .arg(made.isEmpty() ? QStringLiteral("NOT ready") : QStringLiteral("ready"))
+                    .arg(timer.elapsed()));
+    });
+}
+
+Print printNow(const QByteArray &pcm, QString *error)
+{
+    Engine &e = engine();
+    QMutexLocker locker(&e.lock);
+    const bool firstTry = !e.tried;
+    if (!e.load()) {
+        if (firstTry)
+            liveLog(QStringLiteral("voice check: %1").arg(e.error));
+        if (error)
+            *error = e.error;
+        return {};
+    }
+    const qsizetype count = qMin<qsizetype>(pcm.size() / 2, qsizetype(kSampleRate) * kMaxSeconds);
+    const auto *raw = reinterpret_cast<const qint16 *>(pcm.constData());
+    std::vector<float> samples(static_cast<size_t>(count));
+    for (qsizetype i = 0; i < count; ++i)
+        samples[static_cast<size_t>(i)] = raw[i] / 32768.0f;
+
+    Print made;
+    const void *stream = e.createStream(e.extractor);
+    e.accept(stream, kSampleRate, samples.data(), int32_t(count));
+    e.inputFinished(stream);
+    if (e.isReady(e.extractor, stream)) {
+        if (const float *values = e.compute(e.extractor, stream)) {
+            double square = 0.0;
+            for (int i = 0; i < e.dim; ++i)
+                square += double(values[i]) * double(values[i]);
+            const double norm = square > 0.0 ? std::sqrt(square) : 1.0;
+            made.reserve(e.dim);
+            for (int i = 0; i < e.dim; ++i)
+                made.append(float(values[i] / norm));
+            e.destroyEmbedding(values);
+        }
+    } else if (error) {
+        *error = QStringLiteral("too little audio for a voiceprint");
+    }
+    e.destroyStream(stream);
+    return made;
+}
+
+void print(QObject *guard, const QByteArray &pcm, std::function<void(const Print &)> done)
+{
+    const QPointer<QObject> alive(guard);
+    pool().start([alive, pcm, done]() {
+        const Print made = printNow(pcm);
+        // Back on the main thread, and only there is the guard looked at.
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [alive, done, made]() {
+            if (alive)
+                done(made);
+        }, Qt::QueuedConnection);
+    });
+}
+
+float alike(const Print &a, const Print &b)
+{
+    if (a.isEmpty() || a.size() != b.size())
+        return -1.0f;
+    double dot = 0.0;
+    for (qsizetype i = 0; i < a.size(); ++i)
+        dot += double(a[i]) * double(b[i]);
+    return float(dot);
+}
+
+Spoken spoken(const QByteArray &pcm)
+{
+    Spoken result;
+    const auto *raw = reinterpret_cast<const qint16 *>(pcm.constData());
+    const qsizetype frames = pcm.size() / 2 / kFrame;
+    if (frames < 4)
+        return result;
+    std::vector<float> loud(static_cast<size_t>(frames));
+    for (qsizetype f = 0; f < frames; ++f) {
+        double square = 0.0;
+        for (int i = 0; i < kFrame; ++i) {
+            const double s = raw[f * kFrame + i] / 32768.0;
+            square += s * s;
+        }
+        loud[static_cast<size_t>(f)] = float(std::sqrt(square / kFrame));
+    }
+    // Speech is whatever comes within reach of the loud end of the recording;
+    // the gaps between sentences fall far below it.
+    std::vector<float> sorted = loud;
+    std::sort(sorted.begin(), sorted.end());
+    const float top = sorted[static_cast<size_t>(frames * 9 / 10)];
+    // A tenth of it: a quarter threw away two thirds of a real reading, whose
+    // soft consonants sit far below its vowels.
+    const float floor = std::max(top * 0.10f, 0.002f);
+    double sum = 0.0;
+    int kept = 0;
+    for (qsizetype f = 0; f < frames; ++f) {
+        if (loud[static_cast<size_t>(f)] < floor)
+            continue;
+        result.pcm.append(pcm.constData() + f * kFrame * 2, kFrame * 2);
+        sum += loud[static_cast<size_t>(f)];
+        ++kept;
+    }
+    result.level = kept ? float(sum / kept) : 0.0f;
+    return result;
+}
+
+} // namespace BurnOS::Voice

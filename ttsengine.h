@@ -7,6 +7,9 @@
 #include <QString>
 #include <QStringList>
 
+#include <atomic>
+#include <memory>
+
 class QAudioOutput;
 class QMediaPlayer;
 class QProcess;
@@ -32,6 +35,10 @@ public:
     // two seconds of Kokoro every time. Kept per voice. Making them happens in
     // the background and never holds up a real answer.
     void prepare(const QStringList &phrases);
+
+    // Loads the Kokoro model now, off the main thread, and keeps it for as
+    // long as Burnos runs, so no answer waits for it. Called when Burnos opens.
+    static void preload();
 
 signals:
     // Emitted the moment playback begins, carrying the text being spoken.
@@ -69,6 +76,8 @@ private:
     // deliberate cancellation, or the caller reports an error for something it
     // asked for itself.
     bool m_cancelled = false;
+    // Set when the answer being made in the loaded model is no longer wanted.
+    std::shared_ptr<std::atomic_bool> m_saying;
 
     // Making the short replies, one at a time, apart from the real voice.
     QProcess *m_warm = nullptr;

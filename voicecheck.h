@@ -1,0 +1,55 @@
+#ifndef VOICECHECK_H
+#define VOICECHECK_H
+
+#include <QByteArray>
+#include <QList>
+#include <QString>
+
+#include <functional>
+
+class QObject;
+
+// WHOSE VOICE IT IS. Silero says whether something is speech; a television is
+// speech too. This says whether a phrase sounds like the person who taught
+// Burnos their voice: a small speaker model (3D-Speaker ERes2Net, 25 MB) turns
+// a stretch of audio into a VOICEPRINT - 192 numbers for how a voice sounds,
+// nothing about what it said - and two voiceprints of the same person lie
+// close together. It runs on this machine, through sherpa-onnx's C library
+// beside the onnxruntime the voice already uses, and nothing leaves the PC.
+namespace BurnOS::Voice {
+
+using Print = QList<float>;
+
+// The library and the model are both on disk.
+bool available();
+
+// Loads the model now, off the main thread, and runs it once, so the first
+// phrase of the day is checked as quickly as every later one. Called when
+// Burnos opens; the model then stays loaded until Burnos closes.
+void preload();
+
+// The voiceprint of 16 kHz mono 16 bit audio, made off the main thread, one at
+// a time and in the order asked. `done` hears it on the main thread - empty
+// when none could be made - unless `guard` is gone by then.
+void print(QObject *guard, const QByteArray &pcm, std::function<void(const Print &)> done);
+
+// The same, here and now. Blocking; for the probe.
+Print printNow(const QByteArray &pcm, QString *error = nullptr);
+
+// How alike two voiceprints are: about 0.6 and up for one person, about 0.3
+// and down for two. -1 when either is missing.
+float alike(const Print &a, const Print &b);
+
+// The spoken part of a recording - the pauses taken out by loudness alone - and
+// how loud that speech is. For teaching Burnos a voice, where the person reads
+// for half a minute and the detector's opinion is not needed.
+struct Spoken
+{
+    QByteArray pcm;
+    float level = 0.0f;
+};
+Spoken spoken(const QByteArray &pcm);
+
+} // namespace BurnOS::Voice
+
+#endif // VOICECHECK_H

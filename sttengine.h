@@ -67,21 +67,37 @@ public:
     // Open it again after a turn, if live mode is still armed.
     bool resumeListening();
 
-    // MUTED, BUT NOT DEAF TO ITS NAME. With live mode off, the microphone is
-    // open for the keyword spotter and for nothing else: the voice detector,
-    // the recogniser and the voice check are not handed a sample, so nothing
-    // said is transcribed, kept or sent anywhere. A keyword - the wake word or
-    // a command - comes back through keyword(). False when there is no keyword
-    // model or no microphone, and then muted is simply deaf, as it always was.
-    bool startSpotting();
+    // THE KEYWORD SPOTTER AND NOTHING ELSE. With live mode off, the microphone
+    // is open for the keyword spotter alone: the voice detector, the recogniser
+    // and the voice check are not handed a sample, so nothing said is
+    // transcribed, kept or sent anywhere. A keyword comes back through
+    // keyword(). This is what MUTED is - the spoken commands, "unmute" among
+    // them, and no wake word - and, with `wakeWord`, what WAITING is in wake
+    // word mode: the commands and the wake word. Calling it again changes
+    // which, and takes up a wake word changed in Settings. False when there is
+    // no keyword model or no microphone; muted is then simply deaf.
+    bool startSpotting(bool wakeWord);
     void stopSpotting();
     bool isSpotting() const { return m_spotting; }
-    // AFTER THE WAKE WORD: the last two seconds heard while muted - the wake
-    // word and whatever was said straight after it - go through live mode as
-    // if they were being said now, so "Hey Burnos, what time is it?" in one
+    // AFTER THE WAKE WORD: the last two seconds the keyword spotter heard - the
+    // wake word and whatever was said straight after it - go through live mode
+    // as if they were being said now, so "Hey Burnos, what time is it?" in one
     // breath is one question. Called right after startLive(). Those two
     // seconds only ever exist in memory, and are dropped when not asked for.
     void replayHeard();
+
+    // WAKE WORD MODE, AWAKE: WHOEVER WOKE BURNOS WAS AT THE MICROPHONE. How
+    // loud the last phrase handed to the recogniser was; a floor under which a
+    // phrase is nobody Burnos answers - the room talking, a television - and
+    // is turned away before it is read, voice taught or not; and how loud the
+    // phrase being kept right now is. No floor unless one is set.
+    float lastLevel() const { return m_lastLevel; }
+    void setQuietFloor(float level) { m_quietFloor = level; }
+    // A phrase is being kept, and it may be somebody Burnos answers: with a
+    // voice taught it is known how loud its owner is, in wake word mode how
+    // loud whoever woke it was, and a phrase far quieter than that is the
+    // room's - a television. With neither known, any phrase may be.
+    bool isCapturingNear() const;
 
     // TALKING OVER THE VOICE. While the orb speaks, the microphone stays open
     // and hears the orb's own voice come back from the speakers. That echo is
@@ -161,7 +177,7 @@ private:
     static QByteArray readPcm(const QString &wavPath, QString *error);
     // A phrase the detector has ended: through the voice check, when a voice
     // has been taught, and only then to the recogniser.
-    void admit(const QByteArray &phrase, int voicedMs, float loudness);
+    void admit(const QByteArray &phrase, int farMs);
     void transcribe(const QByteArray &pcm, bool held = false);
     void drainQueue();
     bool writeWav(const QByteArray &pcm, const QString &wavPath,
@@ -179,8 +195,9 @@ private:
     bool m_held = false;        // push to talk is down
     bool m_heldOwnsMic = false; // the microphone was opened just for this hold
     int m_checking = 0;         // phrases whose voice is being checked right now
-    bool m_spotting = false;    // muted: the microphone feeds the keyword spotter only
-    QByteArray m_heard;         // the last two seconds heard while muted, in memory only
+    bool m_spotting = false;    // the microphone feeds the keyword spotter only
+    bool m_spotWake = false;    // and the wake word is among what it listens for
+    QByteArray m_heard;         // the last two seconds the spotter heard, in memory only
     // THE CHECK on what takes sound over time - a mute, a wake word, a request
     // after it: the WAV named by BURNOS_MIC_WAV stands in for the microphone,
     // in real time, from the moment the microphone first opens, and the real
@@ -188,10 +205,13 @@ private:
     QByteArray m_fileMic;
     qint64 m_fileAt = 0;
     QElapsedTimer m_fileClock;
-    // How loud the speech of the phrase being kept is: the loudness of every
-    // step the detector called speech, added up, and how many there were.
-    double m_loudSum = 0.0;
-    int m_loudSteps = 0;
+    // How loud the voice of the phrase being kept is, followed as it goes, and
+    // how much speech far quieter than that - somebody further away - has been
+    // heard in it and counted as quiet.
+    float m_nearLevel = 0.0f;
+    qint64 m_farBytes = 0;
+    float m_lastLevel = 0.0f;  // how loud the last phrase sent to the recogniser was
+    float m_quietFloor = 0.0f; // a phrase quieter than this is turned away; 0 for none
     QByteArray m_heldPcm;       // what has been said while it is down
     // Phrases heard while the recogniser was busy, oldest first. The microphone
     // no longer closes while we work, so this can happen whenever somebody

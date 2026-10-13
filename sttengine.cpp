@@ -70,6 +70,42 @@ constexpr int kMicChunkBytes = 640;
 // not, so it has to come in at this share of the owner's own loudness.
 constexpr int kShortPhraseMs = 1200;
 constexpr double kLoudShare = 0.5;
+// A LONGER PHRASE THAT IS AS LOUD AS THE OWNER may score this far under what
+// Settings asks for. With a television talking under him the owner's own score
+// drops - measured with stand-in voices, from 0.89 in a quiet room to 0.59 with
+// a television at a third of his loudness, and his own log shows the same -
+// while a television across the room never comes in at half his loudness.
+// The price is somebody else AT the microphone: with this margin about one of
+// their longer phrases in twenty gets through (one in eight at 0.20, none at
+// 0.10, where the owner loses one in fourteen of his own).
+constexpr double kLoudMargin = 0.15;
+// What is kept either side of the near voice when a phrase goes to the
+// recogniser: enough that no word is clipped, and no more of the television.
+constexpr int kKeepBeforeMs = 200;
+constexpr int kKeepAfterMs = 300;
+// This much speech far quieter than the phrase's own voice, and somebody else
+// was talking in the room while it was said.
+constexpr int kCrowdedMs = 500;
+
+// A FAR VOICE DOES NOT KEEP A PHRASE OPEN. Silero calls a television speech,
+// and rightly, so with one on a phrase used to run until the television paused
+// - seconds after the owner had finished - and the answer waited for it. Each
+// phrase now follows how loud its own voice is, and speech at less than this
+// share of that counts as quiet: one second of it ends the phrase, exactly as
+// silence does. A phrase that is only the television has the television as its
+// voice, and ends when the television pauses, as before. At a quarter, which
+// was tried first, a television at a fifth of the speaker's loudness still
+// kept phrases open: its loudest syllables got in, and the loudness being
+// followed sank towards it.
+constexpr float kFarShare = 0.40f;
+// How quickly that loudness follows the voice: a twentieth of the way each
+// 32 ms, so it settles within a second and one cough does not carry it off.
+constexpr float kNearFollow = 0.05f;
+// A phrase being kept at less than this share of the taught voice's loudness
+// is not the owner: the answer does not wait for it, and wake word mode does
+// not stay awake for it. The owner's own log has the television at 4 to 17
+// hundredths of his loudness and himself at 42 and up while it was on.
+constexpr float kOwnerShare = 0.25f;
 
 // Silero hears in steps of 512 samples, 32 ms at 16 kHz, and a phrase starts
 // once two steps in a row sound like speech - a keystroke is one step at most.
@@ -694,7 +730,7 @@ bool SttEngine::startLive()
         m_spotting = false;
         BurnOS::Wake::stop();
         resetPhrase();
-        BurnOS::liveLog(QStringLiteral("unmuted: the microphone stays open - the keyword spotter "
+        BurnOS::liveLog(QStringLiteral("listening: the microphone stays open - the keyword spotter "
                                        "hears no more of it"));
     } else {
         if (m_spotting) {
@@ -735,19 +771,24 @@ void SttEngine::stopLive()
     BurnOS::liveLog(QStringLiteral("live mode DISARMED (orb grey)"));
 }
 
-bool SttEngine::startSpotting()
+bool SttEngine::startSpotting(bool wakeWord)
 {
-    if (m_spotting)
-        return true;
     if (m_live || !BurnOS::Wake::available())
         return false;
-    if (!m_source && !openMicrophone())
+    if (!m_source && !openMicrophone()) {
+        if (m_spotting) {
+            m_spotting = false;
+            BurnOS::Wake::stop();
+        }
         return false;
+    }
     m_spotting = true;
+    m_spotWake = wakeWord;
     listenForKeywords();
-    BurnOS::liveLog(QStringLiteral("muted: the microphone is open for the keyword spotter ONLY - "
+    BurnOS::liveLog(QStringLiteral("%1: the microphone is open for the keyword spotter ONLY - "
                                    "the voice detector, the recogniser and the voice check hear "
-                                   "nothing"));
+                                   "nothing")
+                        .arg(wakeWord ? QStringLiteral("waiting") : QStringLiteral("muted")));
     return true;
 }
 
@@ -756,10 +797,13 @@ void SttEngine::listenForKeywords()
     m_heard.clear();
     // The orb does not move with a room it is not listening to.
     emit levelChanged(0.0);
-    BurnOS::Wake::start(this, [this](BurnOS::Wake::Command command, const QString &word) {
+    BurnOS::Wake::start(this, m_spotWake,
+                        [this](BurnOS::Wake::Command command, const QString &word) {
         if (!m_spotting)
             return;
-        BurnOS::liveLog(QStringLiteral("KEYWORD heard while muted: %1").arg(word));
+        BurnOS::liveLog(QStringLiteral("KEYWORD heard while %1: %2")
+                            .arg(m_spotWake ? QStringLiteral("waiting") : QStringLiteral("muted"),
+                                 word));
         emit keyword(command);
     });
 }
@@ -805,6 +849,12 @@ void SttEngine::pauseListening()
     m_silenceBytes = 0;
     m_voicedBytes = 0;
     m_attackBytes = 0;
+    // A phrase cut off here is over, and nothing will come of it.
+    if (m_capturing) {
+        m_capturing = false;
+        emit speechEnded();
+        emit ignored();
+    }
     BurnOS::liveLog(QStringLiteral("listening paused while we answer"));
 }
 
@@ -819,10 +869,10 @@ bool SttEngine::resumeListening()
         return false;
 
     if (m_spotting) {
-        // Muted all along: it is the keyword spotter that hears again - with
-        // the wake word as it is in Settings now.
+        // Muted or waiting all along: it is the keyword spotter that hears
+        // again - with the wake word as it is in Settings now.
         listenForKeywords();
-        BurnOS::liveLog(QStringLiteral("still muted: the keyword spotter listens again"));
+        BurnOS::liveLog(QStringLiteral("the keyword spotter listens again"));
         return true;
     }
     BurnOS::liveLog(QStringLiteral("listening again"));
@@ -886,6 +936,16 @@ bool SttEngine::endHeld()
     return true;
 }
 
+bool SttEngine::isCapturingNear() const
+{
+    if (!m_capturing)
+        return false;
+    float floor = m_quietFloor;
+    if (BurnOS::Settings::voiceCheckOn() && BurnOS::Voice::available())
+        floor = qMax(floor, float(BurnOS::Settings::voiceLevel()) * kOwnerShare);
+    return m_nearLevel >= floor;
+}
+
 void SttEngine::setOverVoice(bool on)
 {
     if (m_overVoice == on)
@@ -893,6 +953,23 @@ void SttEngine::setOverVoice(bool on)
     m_overVoice = on;
     m_bargeSteps = 0;
     m_overVoiceBytes = 0;
+    // THE ROOM'S VOICE IS LET GO WHEN BURNOS STARTS TO SPEAK. A television
+    // that was being kept as a phrase would otherwise go on being kept under
+    // the answer, and while a phrase is being kept nobody can talk over the
+    // voice: that takes the listening that follows here.
+    if (on && m_capturing && !isCapturingNear()) {
+        BurnOS::liveLog(QStringLiteral("let go: %1 ms of a far quieter voice, as the answer starts")
+                            .arg(bytesToMs(m_speech.size())));
+        m_capturing = false;
+        m_speech.clear();
+        m_preroll.clear();
+        m_silenceBytes = 0;
+        m_voicedBytes = 0;
+        m_farBytes = 0;
+        m_attackBytes = 0;
+        emit speechEnded();
+        emit ignored();
+    }
     if (on && m_source) {
         BurnOS::liveLog(QStringLiteral("listening over the voice (echo %1)")
                             .arg(double(m_echoLevel), 0, 'f', 4));
@@ -1080,8 +1157,8 @@ void SttEngine::decide(float speech, float rms)
             m_speech = m_preroll;
             m_preroll.clear();
             m_voicedBytes = qint64(kBargeSteps) * kVadChunkBytes;
-            m_loudSum = double(rms);
-            m_loudSteps = 1;
+            m_nearLevel = rms;
+            m_farBytes = 0;
             m_silenceBytes = 0;
             m_attackBytes = 0;
             emit bargeIn();
@@ -1143,8 +1220,8 @@ void SttEngine::decide(float speech, float rms)
         m_speech = m_preroll;
         m_preroll.clear();
         m_voicedBytes = m_attackBytes;
-        m_loudSum = double(rms);
-        m_loudSteps = 1;
+        m_nearLevel = rms;
+        m_farBytes = 0;
         m_silenceBytes = 0;
         m_attackBytes = 0;
         BurnOS::liveLog(QStringLiteral("speech STARTED, Silero %1 over %2")
@@ -1154,12 +1231,19 @@ void SttEngine::decide(float speech, float rms)
         return;
     }
 
-    if (speech >= closeAt) {
+    // How much of the phrase is speech at all is counted as it always was:
+    // that is what tells a word from a cough.
+    if (speech >= closeAt)
         m_voicedBytes += kVadChunkBytes;
-        m_loudSum += double(rms);
-        ++m_loudSteps;
+    if (speech >= closeAt && rms >= m_nearLevel * kFarShare) {
+        // The voice this phrase is made of. How loud it is follows it.
+        m_nearLevel += (rms - m_nearLevel) * kNearFollow;
         m_silenceBytes = 0;
     } else {
+        // Quiet - or speech far quieter than that voice, which is somebody
+        // further away and counts as quiet.
+        if (speech >= closeAt)
+            m_farBytes += kVadChunkBytes;
         m_silenceBytes += kVadChunkBytes;
     }
 
@@ -1174,82 +1258,139 @@ void SttEngine::endPhrase(bool tooLong, int hangoverMs)
 {
     const QByteArray phrase = m_speech;
     const int voicedMs = bytesToMs(m_voicedBytes);
-    const float loudness = m_loudSteps ? float(m_loudSum / m_loudSteps) : 0.0f;
+    const int farMs = bytesToMs(m_farBytes);
     m_speech.clear();
     m_capturing = false;
     m_silenceBytes = 0;
     m_voicedBytes = 0;
+    m_farBytes = 0;
     emit speechEnded();
 
     if (voicedMs < kMinSpeechMs) {
         BurnOS::liveLog(QStringLiteral("discarded: only %1 ms of voice").arg(voicedMs));
+        // Nothing will come of it, and whoever is waiting for this phrase to be
+        // read has to be told so - or the orb goes on thinking about a cough.
+        // Deferred: this is the audio device's own write call.
+        QTimer::singleShot(0, this, [this]() { emit ignored(); });
         return;
     }
 
-    BurnOS::liveLog(QStringLiteral("speech ENDED after %1 ms of quiet, %2 ms of voice%3")
+    BurnOS::liveLog(QStringLiteral("speech ENDED after %1 ms of quiet, %2 ms of voice%3%4")
                         .arg(tooLong ? 0 : hangoverMs)
                         .arg(voicedMs)
+                        .arg(farMs > 0 ? QStringLiteral(" (%1 ms of it a far quieter voice, which "
+                                                        "did not keep the phrase open)").arg(farMs)
+                                       : QString())
                         .arg(tooLong ? QStringLiteral(" (length cap)") : QString()));
 
     // The microphone STAYS OPEN: whatever the user adds while we work is folded
     // into the same question by the Agent. Deferred by one turn of the event
     // loop, because we are inside the audio device's own write call.
-    QTimer::singleShot(0, this, [this, phrase, voicedMs, loudness]() {
-        admit(phrase, voicedMs, loudness);
-    });
+    QTimer::singleShot(0, this, [this, phrase, farMs]() { admit(phrase, farMs); });
 }
 
-void SttEngine::admit(const QByteArray &phrase, int voicedMs, float loudness)
+void SttEngine::admit(const QByteArray &phrase, int farMs)
 {
+    // THE PART SAID AT THE MICROPHONE - the loud part of the phrase. With a
+    // television on, a phrase is often the television, then the owner, then
+    // the television again; half a second of a far quieter voice in it says
+    // that this is such a phrase.
+    const BurnOS::Voice::Near part = BurnOS::Voice::nearPart(phrase, farMs >= kCrowdedMs);
+
+    // WAKE WORD MODE, AWAKE: far quieter than whoever woke Burnos is the room
+    // talking, not somebody asking it the next thing.
+    if (m_quietFloor > 0.0f && part.level < m_quietFloor) {
+        BurnOS::liveLog(QStringLiteral("ignored: far quieter than whoever woke Burnos (%1% of the "
+                                       "least it answers) - somebody further away")
+                            .arg(int(100.0f * part.level / m_quietFloor)));
+        emit ignored();
+        return;
+    }
+
+    // WHAT GOES TO THE RECOGNISER IS WHAT WAS SAID AT THE MICROPHONE, with a
+    // moment either side: "mute", said into the middle of the television's
+    // sentence, is still the whole of what was said. Handed the television's
+    // words as well, the recogniser has been seen to write THOSE down and
+    // leave out the louder voice altogether. The pauses inside the near
+    // voice stay, so no word is run into the next; in a quiet room all this
+    // takes off is the silence at the end.
+    const qsizetype from = qMax<qsizetype>(0, part.from - msToBytes(kKeepBeforeMs));
+    const qsizetype to = qMin<qsizetype>(phrase.size(), part.to + msToBytes(kKeepAfterMs));
+    const int before = bytesToMs(from);
+    const int after = bytesToMs(phrase.size() - to);
+    const bool trimmed = before + after >= 300;
+    const QByteArray said = trimmed ? phrase.mid(from, to - from) : phrase;
+    const QString leftOut = trimmed ? QStringLiteral("%1 ms before it and %2 ms after it left out")
+                                          .arg(before).arg(after)
+                                    : QString();
+
     // No voice taught, the check switched off, or its model not on disk: every
-    // phrase goes to the recogniser, exactly as before there was a check.
+    // phrase goes to the recogniser, as before there was a check.
     const BurnOS::Voice::Print owner = BurnOS::Settings::voiceCheckOn()
                                            ? BurnOS::Settings::voicePrint()
                                            : BurnOS::Voice::Print();
     if (owner.isEmpty() || !BurnOS::Voice::available()) {
-        transcribe(phrase);
+        m_lastLevel = part.level;
+        // Said only when it is more than the silence that ends every phrase.
+        if (before + after >= 1500)
+            BurnOS::liveLog(QStringLiteral("to the recogniser: what was said at the microphone - %1")
+                                .arg(leftOut));
+        transcribe(said);
         return;
     }
 
-    // WHOSE VOICE WAS THAT. The voiceprint is made off this thread - tens of
-    // milliseconds - and the phrase waits for it, in order.
+    // WHOSE VOICE WAS THAT - AT THE MICROPHONE. Judged whole, a phrase with a
+    // television in it sounds like nobody: the owner was turned away. So it
+    // is the part said at the microphone that is judged, for whose voice it
+    // is and for how loud it is. The voiceprint is made off this thread -
+    // tens of milliseconds - and the phrase waits for it, in order.
     ++m_checking;
-    BurnOS::Voice::print(this, phrase, [this, phrase, voicedMs, loudness, owner](
-                                           const BurnOS::Voice::Print &print) {
+    BurnOS::Voice::print(this, part.pcm, [this, said, leftOut, part, owner](
+                                             const BurnOS::Voice::Print &print) {
         --m_checking;
         const double alike = double(BurnOS::Voice::alike(owner, print));
         const double needed = BurnOS::Settings::voiceThreshold();
         const double own = BurnOS::Settings::voiceLevel();
-        const double share = own > 0.0 ? double(loudness) / own : 0.0;
-        const bool isShort = voicedMs < kShortPhraseMs;
+        const double share = own > 0.0 ? double(part.level) / own : 0.0;
+        const bool isShort = part.ms < kShortPhraseMs;
+        const bool loud = share >= kLoudShare;
 
         bool mine = false;
         QString verdict;
-        if (print.isEmpty()) {
+        if (print.isEmpty() && !isShort) {
             // The check itself failed. Better heard than deaf: let it through.
+            // (Of a word or two there may simply be too little for a
+            // voiceprint; that is judged on loudness, below.)
             mine = true;
             verdict = QStringLiteral("NO VOICEPRINT could be made - let through");
         } else if (alike >= needed) {
             mine = true;
             verdict = QStringLiteral("YOU");
-        } else if (isShort && share >= kLoudShare) {
+        } else if (isShort && loud) {
             mine = true;
             verdict = QStringLiteral("short, and as loud as you - let through");
+        } else if (!isShort && loud && alike >= needed - kLoudMargin) {
+            mine = true;
+            verdict = QStringLiteral("close to your voice, and as loud as you - let through");
         } else {
             verdict = isShort ? QStringLiteral("short and too quiet to be you - IGNORED")
                               : QStringLiteral("NOT YOU - IGNORED");
         }
+
         BurnOS::liveLog(QStringLiteral("voice check: %1 (alike %2, needs %3; %4 ms of voice at "
-                                       "%5% of your loudness)")
+                                       "%5% of your loudness%6)")
                             .arg(verdict)
                             .arg(alike, 0, 'f', 2)
                             .arg(needed, 0, 'f', 2)
-                            .arg(voicedMs)
-                            .arg(int(share * 100.0)));
-        if (mine)
-            transcribe(phrase);
-        else
+                            .arg(part.ms)
+                            .arg(int(share * 100.0))
+                            .arg(leftOut.isEmpty() ? QString() : QStringLiteral("; ") + leftOut));
+        if (mine) {
+            m_lastLevel = part.level;
+            transcribe(said);
+        } else {
             emit ignored();
+        }
     });
 }
 

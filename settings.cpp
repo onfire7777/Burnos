@@ -27,6 +27,7 @@ constexpr auto kSensitivityPath = "stt/sensitivity";
 constexpr auto kDictateKeyPath = "stt/transcriptionKey";
 constexpr auto kDictateCodePath = "stt/transcriptionKeyCode";
 constexpr auto kWakeWordPath = "wake/word";
+constexpr auto kWakeModePath = "wake/mode";
 constexpr auto kDefaultWakeWord = "Hey Burnos";
 constexpr auto kVoicePrintPath = "voice/print";
 constexpr auto kVoiceLevelPath = "voice/level";
@@ -322,6 +323,18 @@ void setWakeWord(const QString &phrase)
         s.remove(QString::fromLatin1(kWakeWordPath));
     else
         s.setValue(QString::fromLatin1(kWakeWordPath), words);
+    s.sync();
+}
+
+bool wakeMode()
+{
+    return store().value(QString::fromLatin1(kWakeModePath), false).toBool();
+}
+
+void setWakeMode(bool on)
+{
+    QSettings s = store();
+    s.setValue(QString::fromLatin1(kWakeModePath), on);
     s.sync();
 }
 

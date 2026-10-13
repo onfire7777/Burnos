@@ -50,6 +50,28 @@ struct Spoken
 };
 Spoken spoken(const QByteArray &pcm);
 
+// THE PART OF A PHRASE THAT WAS SAID AT THE MICROPHONE. With a television on,
+// the detector cannot tell its speech from the owner's, so a phrase is often
+// the television, then the owner, then the television again - and a voiceprint
+// of all of that sounds like neither. The owner is the loud one: this is every
+// stretch of the phrase within reach of its loudest moment, with the instant
+// either side so that no consonant is cut off, and nothing of what was only
+// ever quiet. In a quiet room that is simply the speech, pauses out.
+struct Near
+{
+    QByteArray pcm;     // that part, for the voiceprint
+    float level = 0.0f; // how loud its loud moments are
+    int ms = 0;         // how much of it there is
+    // Where the near voice begins and ends in the phrase, in bytes: what lies
+    // outside was somebody further away, or nobody. Drawn generously, so that
+    // a soft first or last word is inside - unless the phrase is `crowded`,
+    // with a quieter voice heard in it as well, when it is drawn tightly
+    // enough to leave that voice out.
+    qsizetype from = 0;
+    qsizetype to = 0;
+};
+Near nearPart(const QByteArray &pcm, bool crowded = false);
+
 } // namespace BurnOS::Voice
 
 #endif // VOICECHECK_H

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -47,6 +48,21 @@ constexpr int kMaxWaiting = 50;
 // 66 ordinary sentences. A higher boost fires on more that was not meant.
 constexpr float kBoost = 1.0f;
 constexpr float kThreshold = 0.25f;
+
+// A CLEAN STREAM FOR WHAT IS SAID, see Engine::hear. Something begins when a
+// tenth of a second is this many times louder than the loudest tenth of the
+// 1.2 s before it, and at least this loud; the three tenths before it are
+// given to the stream again; and the stream is not reset again for a second,
+// so that a reset never falls into the keyword it was made for. The loudest
+// of the last 1.2 s, and not an average: with a television on, an average
+// sinks between its syllables and its own next syllable set the reset off
+// thirteen times a minute - the wake word was then missed more often over
+// the television than with no reset at all (kws_onset_check2.py).
+constexpr float kOnsetTimes = 4.0f;
+constexpr float kOnsetLeast = 0.003f;
+constexpr int kOnsetWindow = 12;
+constexpr int kOnsetLead = 3;
+constexpr int kOnsetHold = 10;
 
 // As sherpa-onnx's C API lays them out (c-api.h, v1.13.8). The layout was
 // proved against the shipped library with _research/wake-word/kws-probe.cpp.
@@ -342,6 +358,7 @@ struct Engine
     int streamTurn = 0; // the start() this stream was made for
 
     const void *(*create)(const SpotterConfig *) = nullptr;
+    const void *(*createPlain)(const void *) = nullptr;
     const void *(*createStream)(const void *, const char *) = nullptr;
     int32_t (*isReady)(const void *, const void *) = nullptr;
     void (*decode)(const void *, const void *) = nullptr;
@@ -381,6 +398,7 @@ struct Engine
         }
         const bool found =
             find(lib, "SherpaOnnxCreateKeywordSpotter", create)
+            && find(lib, "SherpaOnnxCreateKeywordStream", createPlain)
             && find(lib, "SherpaOnnxCreateKeywordStreamWithKeywords", createStream)
             && find(lib, "SherpaOnnxIsKeywordStreamReady", isReady)
             && find(lib, "SherpaOnnxDecodeKeywordStream", decode)
@@ -437,17 +455,42 @@ struct Engine
         return true;
     }
 
+    // EVERY KEYWORD STARTS ON A CLEAN STREAM. The library resets a keyword
+    // stream by itself after a second and a half without a word, again and
+    // again while the room is quiet - and a keyword that begins in the few
+    // tenths of a second before one of those resets loses its beginning and
+    // is missed: "unmute" said into a quiet room, about one time in six,
+    // always at the same place in that second and a half. So the reset is
+    // done HERE, at the right moment: when something far louder than the room
+    // has been begins, the stream is reset and given the last 300 ms again,
+    // and whatever was said starts at the start of a stream. Measured with
+    // nine keywords, three voices and every place in that second and a half:
+    // 48 of 48 for all but "mute", where it was 39 to 45 of 48 before
+    // (_research/wake-word/kws_onset_check.py).
+    QList<float> room;        // how loud each of the last tenths of a second was
+    int held = 0;             // pieces to go before another reset is allowed
+    QList<QByteArray> recent; // the last pieces heard, to be given again
+
     void dropStream()
     {
         if (stream)
             destroyStream(stream);
         stream = nullptr;
+        room.clear();
+        held = 0;
+        recent.clear();
     }
 
-    // A new stream that listens for the commands and for `wake`.
+    // A new stream that listens for the commands - and for `wake`, unless that
+    // is empty: the commands alone.
     bool newStream(const QString &wake, QString *listeningFor)
     {
         dropStream();
+        if (wake.isEmpty()) {
+            stream = createPlain(spotter);
+            listeningFor->clear();
+            return stream != nullptr;
+        }
         QList<QByteArray> lines;
         QStringList spelled;
         for (const QString &words : wakeSpellings(wake)) {
@@ -468,8 +511,7 @@ struct Engine
         return stream != nullptr;
     }
 
-    // What was said in `pcm`, if it was a keyword: its label, else nothing.
-    QString hear(const QByteArray &pcm)
+    void give(const QByteArray &pcm)
     {
         const qsizetype count = pcm.size() / 2;
         const auto *raw = reinterpret_cast<const qint16 *>(pcm.constData());
@@ -477,6 +519,39 @@ struct Engine
         for (qsizetype i = 0; i < count; ++i)
             samples[static_cast<size_t>(i)] = raw[i] / 32768.0f;
         accept(stream, kSampleRate, samples.data(), int32_t(count));
+    }
+
+    // What was said in `pcm` - a tenth of a second - if it was a keyword: its
+    // label, else nothing.
+    QString hear(const QByteArray &pcm)
+    {
+        const qsizetype count = pcm.size() / 2;
+        const auto *raw = reinterpret_cast<const qint16 *>(pcm.constData());
+        double square = 0.0;
+        for (qsizetype i = 0; i < count; ++i)
+            square += double(raw[i]) * double(raw[i]);
+        const float level = count ? float(std::sqrt(square / double(count)) / 32768.0) : 0.0f;
+
+        // Something far louder than the room has been begins: a clean stream
+        // for it, and what led up to it given again.
+        held = qMax(0, held - 1);
+        if (!room.isEmpty() && held == 0) {
+            const float loudest = *std::max_element(room.cbegin(), room.cend());
+            if (level > qMax(kOnsetTimes * loudest, kOnsetLeast)) {
+                reset(spotter, stream);
+                for (const QByteArray &old : std::as_const(recent))
+                    give(old);
+                held = kOnsetHold;
+            }
+        }
+        room.append(level);
+        if (room.size() > kOnsetWindow)
+            room.removeFirst();
+        recent.append(pcm);
+        if (recent.size() > kOnsetLead)
+            recent.removeFirst();
+
+        give(pcm);
         QString label;
         while (isReady(spotter, stream)) {
             decode(spotter, stream);
@@ -487,9 +562,9 @@ struct Engine
             if (hit && label.isEmpty())
                 label = QString::fromUtf8(r->keyword);
             destroyResult(r);
-            // Heard: the model starts on the next keyword with a clean slate.
-            if (hit)
-                reset(spotter, stream);
+            // The stream is not reset here, after a keyword: a keyword is
+            // reported once with or without that, and the one reset that
+            // matters is the one before a keyword, above.
         }
         return label;
     }
@@ -577,18 +652,20 @@ void preload()
                         .arg(e.error));
             return;
         }
-        // A second of faint noise through it, so the first real second is as
-        // quick as every later one.
+        // A second of faint noise through it, so that the model has run once
+        // and the first real second is as quick as every later one.
         QString listeningFor;
         if (e.newStream(Settings::wakeWord(), &listeningFor)) {
-            QByteArray warm(kSampleRate * 2, '\0');
+            QByteArray warm(int(kChunkBytes), '\0');
             auto *samples = reinterpret_cast<qint16 *>(warm.data());
             quint32 seed = 12345;
-            for (int i = 0; i < kSampleRate; ++i) {
-                seed = seed * 1664525u + 1013904223u;
-                samples[i] = qint16(int(seed >> 22) - 512);
+            for (int round = 0; round < 10; ++round) {
+                for (qsizetype i = 0; i < kChunkBytes / 2; ++i) {
+                    seed = seed * 1664525u + 1013904223u;
+                    samples[i] = qint16(int(seed >> 22) - 512);
+                }
+                e.hear(warm);
             }
-            e.hear(warm);
             e.dropStream();
         }
         liveLog(QStringLiteral("wake word: keyword model loaded at startup in %1 ms - it stays "
@@ -596,13 +673,13 @@ void preload()
     });
 }
 
-void start(QObject *guard, std::function<void(Command, const QString &)> heard)
+void start(QObject *guard, bool wakeWord, std::function<void(Command, const QString &)> heard)
 {
     g_guard = guard;
     g_heard = std::move(heard);
     g_pending.clear();
     const int turn = ++g_turn;
-    const QString wake = Settings::wakeWord();
+    const QString wake = wakeWord ? Settings::wakeWord() : QString();
     pool().start([turn, wake]() {
         Engine &e = engine();
         const bool wasLoaded = e.spotter != nullptr;
@@ -615,14 +692,26 @@ void start(QObject *guard, std::function<void(Command, const QString &)> heard)
         if (!wasLoaded)
             liveLog(QStringLiteral("wake word: keyword model loaded in %1 ms - it stays loaded")
                         .arg(timer.elapsed()));
+        // Stopped, or started afresh, before this came to its turn - a mute
+        // undone within the moment, the first click of a double click: there
+        // is nobody left to listen for.
+        if (g_turn.load() != turn)
+            return;
         QString listeningFor;
         if (!e.newStream(wake, &listeningFor)) {
             liveLog(QStringLiteral("wake word: the keyword list was refused"));
             return;
         }
+        if (g_turn.load() != turn) {
+            e.dropStream();
+            return;
+        }
         e.streamTurn = turn;
-        liveLog(QStringLiteral("wake word: the keyword spotter listens for '%1' and %2 command "
-                               "phrases").arg(listeningFor).arg(int(std::size(kPhrases))));
+        liveLog(listeningFor.isEmpty()
+                    ? QStringLiteral("keyword spotter: listens for %1 command phrases, and not for "
+                                     "the wake word").arg(int(std::size(kPhrases)))
+                    : QStringLiteral("keyword spotter: listens for '%1' and %2 command phrases")
+                          .arg(listeningFor).arg(int(std::size(kPhrases))));
     });
 }
 

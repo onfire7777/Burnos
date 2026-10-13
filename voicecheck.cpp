@@ -33,6 +33,25 @@ constexpr int kMaxSeconds = 12;
 // measured in sttengine.cpp means.
 constexpr int kFrame = 512;
 
+// THE NEAR VOICE, see nearPart(). The loud end of a phrase is its loudest 160 ms
+// - not a share of its frames, because "mute" said into ten seconds of
+// television is a twentieth of the phrase and still the loudest thing in it.
+// A frame belongs to the near voice at this share of that, and so do the
+// frames this close to one. Measured with stand-in voices and a television
+// voice before, under and after them (_research/voice-check/tv_bench.py).
+constexpr int kTopFrames = 5;
+constexpr float kNearShare = 0.30f;
+constexpr int kNearSpread = 4;
+// WHERE the near voice begins and ends is what goes to the recogniser, and a
+// soft first or last word must not be cut off: in a room with no other voice
+// it is drawn generously, at an eighth of the loud end, and all that falls
+// outside is silence. With another, quieter voice in the phrase - a
+// television - it is drawn where the near voice itself is, because at an
+// eighth, and at a fifth, the television's loudest syllables still got in and
+// its words were read along with the speaker's.
+constexpr float kSpanShare = 0.12f;
+constexpr float kSpanShareCrowded = 0.30f;
+
 // As sherpa-onnx's C API lays it out (c-api.h, v1.13.8).
 struct ExtractorConfig
 {
@@ -271,6 +290,77 @@ Spoken spoken(const QByteArray &pcm)
         ++kept;
     }
     result.level = kept ? float(sum / kept) : 0.0f;
+    return result;
+}
+
+Near nearPart(const QByteArray &pcm, bool crowded)
+{
+    Near result;
+    result.to = pcm.size();
+    const auto *raw = reinterpret_cast<const qint16 *>(pcm.constData());
+    const qsizetype frames = pcm.size() / 2 / kFrame;
+    if (frames < kTopFrames) {
+        // Too little to choose from: all of it.
+        result.pcm = pcm;
+        result.ms = int(pcm.size() / 2 * 1000 / kSampleRate);
+        return result;
+    }
+    std::vector<float> loud(static_cast<size_t>(frames));
+    for (qsizetype f = 0; f < frames; ++f) {
+        double square = 0.0;
+        for (int i = 0; i < kFrame; ++i) {
+            const double s = raw[f * kFrame + i] / 32768.0;
+            square += s * s;
+        }
+        loud[static_cast<size_t>(f)] = float(std::sqrt(square / kFrame));
+    }
+    // The loud end: the loudest run of five frames, so that one click is not it.
+    float top = 0.0f;
+    float run = 0.0f;
+    for (qsizetype f = 0; f < frames; ++f) {
+        run += loud[static_cast<size_t>(f)];
+        if (f >= kTopFrames)
+            run -= loud[static_cast<size_t>(f - kTopFrames)];
+        if (f >= kTopFrames - 1)
+            top = std::max(top, run / kTopFrames);
+    }
+    const float floor = std::max(top * kNearShare, 0.0005f);
+    const float spanFloor = std::max(top * (crowded ? kSpanShareCrowded : kSpanShare), 0.0005f);
+
+    std::vector<char> keep(static_cast<size_t>(frames), 0);
+    double sum = 0.0;
+    int nearFrames = 0;
+    qsizetype first = -1;
+    qsizetype last = -1;
+    for (qsizetype f = 0; f < frames; ++f) {
+        const float level = loud[static_cast<size_t>(f)];
+        if (level >= spanFloor) {
+            if (first < 0)
+                first = f;
+            last = f;
+        }
+        if (level < floor)
+            continue;
+        sum += level;
+        ++nearFrames;
+        const qsizetype from = std::max<qsizetype>(0, f - kNearSpread);
+        const qsizetype to = std::min<qsizetype>(frames - 1, f + kNearSpread);
+        for (qsizetype k = from; k <= to; ++k)
+            keep[static_cast<size_t>(k)] = 1;
+    }
+    int kept = 0;
+    for (qsizetype f = 0; f < frames; ++f) {
+        if (!keep[static_cast<size_t>(f)])
+            continue;
+        result.pcm.append(pcm.constData() + f * kFrame * 2, kFrame * 2);
+        ++kept;
+    }
+    result.level = nearFrames ? float(sum / nearFrames) : 0.0f;
+    result.ms = kept * kFrame * 1000 / kSampleRate;
+    if (first >= 0) {
+        result.from = std::max<qsizetype>(0, first - kNearSpread) * kFrame * 2;
+        result.to = std::min<qsizetype>(frames, last + 1 + kNearSpread) * kFrame * 2;
+    }
     return result;
 }
 

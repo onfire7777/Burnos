@@ -687,33 +687,50 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->addRow(tr("Transcription key"), dictateKey);
     form->addRow(QString(), dictateNote);
 
-    // THE WAKE WORD. Muted, Burnos hears this and a few commands and nothing
-    // else, and saying it unmutes. It has to be something the keyword model
+    // WAKE WORD MODE, and the wake word. With the mode on, Burnos answers only
+    // what is said after the wake word; until it hears it, a small keyword
+    // model is all that listens. The wake word has to be something that model
     // can spell - plain letters - so one it cannot is refused here, and the
-    // word before it stays.
+    // word before it stays. What changes here is taken up when the dialog
+    // closes.
     auto *wake = new QLineEdit(this);
     wake->setMaxLength(40);
     wake->setText(BurnOS::Settings::wakeWord());
     wake->setPlaceholderText(BurnOS::Settings::defaultWakeWord());
     wake->setEnabled(BurnOS::Wake::available());
-    wake->setToolTip(tr("Say it while Burnos is muted and it unmutes; what you say "
+    wake->setToolTip(tr("What you say to wake Burnos in wake word mode; what you say "
                         "straight after it is your request. Two words work "
                         "better than one. Empty goes back to \"%1\".")
                          .arg(BurnOS::Settings::defaultWakeWord()));
+    auto *wakeMode = new QCheckBox(tr("Answer only after the wake word"), this);
+    wakeMode->setChecked(BurnOS::Settings::wakeMode());
+    wakeMode->setEnabled(BurnOS::Wake::available());
+    wakeMode->setToolTip(tr("Wake word mode: Burnos waits, answering nothing, until it "
+                            "hears the wake word. It then answers what you ask and "
+                            "listens for a few seconds more before it waits again. "
+                            "\"Mute\" and \"unmute\" work by voice with or without it."));
     auto *wakeNote = new QLabel(this);
     wakeNote->setWordWrap(true);
     wakeNote->setStyleSheet(QStringLiteral("color: #8fa3bd;"));
-    const auto showWake = [wakeNote](bool refused) {
+    const auto showWake = [wakeNote, wakeMode](bool refused) {
         wakeNote->setText(
             !BurnOS::Wake::available()
                 ? tr("The wake word model is not here yet. Restart Burnos.")
                 : refused ? tr("That cannot be a wake word: plain letters only, four or "
                                "more. The one before it was kept.")
-                          : tr("Muted, Burnos still hears \"%1\" - and \"unmute\" - and "
-                               "wakes up. Nothing else it hears then is kept.")
-                                .arg(BurnOS::Settings::wakeWord()));
+                          : wakeMode->isChecked()
+                                ? tr("Burnos waits for \"%1\" and answers what you say after "
+                                     "it. Until then nothing it hears is kept.")
+                                      .arg(BurnOS::Settings::wakeWord())
+                                : tr("Off: Burnos answers whatever it hears, and \"%1\" is "
+                                     "not listened for.")
+                                      .arg(BurnOS::Settings::wakeWord()));
     };
     showWake(false);
+    connect(wakeMode, &QCheckBox::toggled, this, [showWake](bool on) {
+        BurnOS::Settings::setWakeMode(on);
+        showWake(false);
+    });
     connect(wake, &QLineEdit::editingFinished, this, [wake, showWake]() {
         const QString typed = wake->text().simplified();
         if (typed.compare(BurnOS::Settings::wakeWord(), Qt::CaseInsensitive) == 0)
@@ -725,6 +742,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         showWake(refused);
     });
     form->addRow(tr("Wake word"), wake);
+    form->addRow(QString(), wakeMode);
     form->addRow(QString(), wakeNote);
 
     // MY VOICE. Once taught, Burnos answers only phrases that sound like it:

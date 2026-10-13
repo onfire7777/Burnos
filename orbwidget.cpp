@@ -60,6 +60,12 @@ const QColor kOrbRedDeep(214, 36, 78);
 // green nothing else here uses.
 const QColor kOrbGreen(96, 236, 168);
 const QColor kOrbGreenDeep(30, 168, 150);
+// Waiting for the wake word. Wake word mode is on and the name has not been
+// said, so the keyword spotter is all that listens. A warm amber nothing else
+// here uses: one glance tells it from listening, which is blue, and from
+// muted, which is grey.
+const QColor kOrbAmber(255, 196, 104);
+const QColor kOrbAmberDeep(236, 138, 72);
 
 // Blend two colours, 0 gives the first and 1 the second. Used so the orb
 // CHANGES colour over a quarter of a second instead of snapping to it.
@@ -152,6 +158,13 @@ OrbWidget::OrbWidget(QWidget *parent)
             m_dictateMix = qMin(wantDictate, m_dictateMix + 0.08);
         else if (m_dictateMix > wantDictate)
             m_dictateMix = qMax(wantDictate, m_dictateMix - 0.06);
+
+        // Waiting for the wake word: the amber comes and goes the same way.
+        const qreal wantWait = m_waiting ? qreal(1.0) : qreal(0.0);
+        if (m_waitMix < wantWait)
+            m_waitMix = qMin(wantWait, m_waitMix + 0.08);
+        else if (m_waitMix > wantWait)
+            m_waitMix = qMax(wantWait, m_waitMix - 0.10);
 
         // The working arcs fade in and out rather than switching.
         const qreal wantWork = m_working ? qreal(1.0) : qreal(0.0);
@@ -415,6 +428,11 @@ void OrbWidget::paintEvent(QPaintEvent *)
     QColor glow = m_active ? (m_capturing ? QColor(140, 232, 255) : kOrbBlue)
                            : kOrbGrey;
     QColor aura = m_active ? kOrbViolet : kOrbGreyDeep;
+    // WAITING FOR THE WAKE WORD is amber: armed, but answering nobody yet.
+    if (m_waitMix > 0.0) {
+        glow = mixColour(glow, kOrbAmber, m_waitMix);
+        aura = mixColour(aura, kOrbAmberDeep, m_waitMix);
+    }
     if (m_speakMix > 0.0) {
         glow = mixColour(glow, kOrbDeepBlue, m_speakMix);
         aura = mixColour(aura, kOrbDeepViolet, m_speakMix);
@@ -769,8 +787,8 @@ void OrbWidget::setActive(bool active)
         m_speaking = false;
     }
     BurnOS::liveLog(QStringLiteral("orb is now %1")
-                        .arg(m_active ? QStringLiteral("BLUE (live mode armed)")
-                                      : QStringLiteral("GREY (live mode off)")));
+                        .arg(m_active ? QStringLiteral("BLUE (armed)")
+                                      : QStringLiteral("GREY (not armed)")));
     updateHint();
     update();
 }
@@ -834,6 +852,18 @@ void OrbWidget::setDictating(bool on)
     BurnOS::liveLog(on ? QStringLiteral("orb is GREEN: what is said is typed, not answered")
                        : QStringLiteral("orb: green gone"));
     updateHint();
+    update();
+}
+
+void OrbWidget::setWaiting(bool on)
+{
+    if (m_waiting == on)
+        return;
+    m_waiting = on;
+    if (on)
+        m_levelTarget = 0.0; // it is not following the room
+    BurnOS::liveLog(on ? QStringLiteral("orb is AMBER: waiting for the wake word")
+                       : QStringLiteral("orb: amber gone"));
     update();
 }
 

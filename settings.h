@@ -93,12 +93,18 @@ QString transcriptionKey();
 quint32 transcriptionKeyCode();
 void setTranscriptionKey(const QString &shown, quint32 code);
 
-// THE WAKE WORD: said while Burnos is muted, it unmutes it, and what follows in
-// the same breath is a request. "Hey Burnos" until another is chosen; an empty
-// one goes back to that.
+// THE WAKE WORD, for wake word mode: what follows it in the same breath is a
+// request. "Hey Burnos" until another is chosen; an empty one goes back to
+// that.
 QString wakeWord();
 QString defaultWakeWord();
 void setWakeWord(const QString &phrase);
+// WAKE WORD MODE, off unless switched on: Burnos answers only what is said
+// after the wake word, as a smart speaker does. Until it hears it, the keyword
+// spotter is all that listens. With it off the wake word plays no part at all
+// and Burnos answers whatever it hears, as it always has.
+bool wakeMode();
+void setWakeMode(bool on);
 
 // THE OWNER'S VOICE, as taught in Settings: the voiceprint - empty until then -
 // and how loud their speech is in this microphone. With a voiceprint and the

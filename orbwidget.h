@@ -109,6 +109,12 @@ public slots:
     // orb in another colour - whether it is listening or muted.
     void setDictating(bool on);
 
+    // True while Burnos is waiting for its wake word: wake word mode is on,
+    // nobody has said the name, and the keyword spotter is all that listens.
+    // The orb turns amber - neither the listening blue nor the muted grey -
+    // and says nothing.
+    void setWaiting(bool on);
+
     // First run setup: a ring and a caption over the orb. While this is on,
     // clicking does nothing, because there is nothing to talk to yet.
     void beginInitializing();
@@ -180,6 +186,9 @@ private:
 
     bool m_dictating = false;      // green: what is said is typed, not answered
     qreal m_dictateMix = 0.0;      // eased 0 to 1, so the green never snaps
+
+    bool m_waiting = false;        // amber: waiting for the wake word
+    qreal m_waitMix = 0.0;         // eased 0 to 1, so the amber never snaps
 
     bool m_noticeOn = false;       // a failure word is up on the orb
     QTimer *m_notice = nullptr;    // and this takes it away again

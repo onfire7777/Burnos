@@ -8,13 +8,14 @@
 
 class QObject;
 
-// THE ONE THING THAT LISTENS WHILE BURNOS IS MUTED. A keyword spotter is a very
-// small speech model (3.3 million weights, sherpa-onnx's English zipformer)
-// that knows only a short list of phrases and says when one of them was said.
-// It writes nothing down: what it hears that is not on the list leaves no
-// trace - no transcription, no memory, nothing sent anywhere. Muted, the
-// microphone's sound goes to this and to nothing else, so Burnos can still be
-// woken by its name.
+// THE ONE THING THAT LISTENS WHILE BURNOS IS MUTED, OR WAITING FOR ITS NAME. A
+// keyword spotter is a very small speech model (3.3 million weights,
+// sherpa-onnx's English zipformer) that knows only a short list of phrases and
+// says when one of them was said. It writes nothing down: what it hears that
+// is not on the list leaves no trace - no transcription, no memory, nothing
+// sent anywhere. Muted, the microphone's sound goes to this and to nothing
+// else, so "unmute" still works; in wake word mode the same is true until the
+// wake word is said.
 //
 // It runs on this machine, through the sherpa-onnx library the voice already
 // uses. The model is loaded when Burnos opens and kept until it closes.
@@ -39,10 +40,13 @@ bool available();
 void preload();
 
 // LISTEN from now on: every keyword in what is fed is handed to `heard` on the
-// main thread - unless `guard` is gone by then - until stop(). The wake word is
-// read from Settings here, so a changed one takes effect at the next start: a
-// new list on the loaded model, nothing is loaded again.
-void start(QObject *guard, std::function<void(Command, const QString &keyword)> heard);
+// main thread - unless `guard` is gone by then - until stop(). The commands
+// are always listened for; the wake word only with `wakeWord`, so that a muted
+// Burnos is not woken by its name. The wake word is read from Settings here,
+// so a changed one takes effect at the next start: a new list on the loaded
+// model, nothing is loaded again.
+void start(QObject *guard, bool wakeWord,
+           std::function<void(Command, const QString &keyword)> heard);
 // 16 kHz mono 16 bit audio, as the microphone hands it over. Main thread.
 void feed(const QByteArray &pcm);
 void stop();

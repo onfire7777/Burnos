@@ -26,6 +26,7 @@ namespace BurnOS {
 
 class Agent;
 class McpClient;
+class WebBrowser;
 
 // ONE PIECE OF BACKGROUND WORK - "open GitHub", "write a poem in Notepad".
 //
@@ -80,6 +81,7 @@ private:
     void runNextCall();
     void runAppAction(const QVariantMap &args);
     void runMcp(const QVariantMap &args);
+    void runWeb(const QVariantMap &args);
     void answerCall(const QString &result, const QByteArray &png = QByteArray());
     void flushShots();
     void pruneContext();
@@ -158,6 +160,8 @@ public:
     OpenRouterClient *ai() const { return m_ai; }
     ComposioClient *composio() const { return m_composio; }
     McpClient *mcp() const { return m_mcp; }
+    // The hidden browser the tasks look things up in.
+    WebBrowser *web() const { return m_web; }
 
     // FOR THE PROBES (--talk-probe, --context-probe), which run this very
     // class with no microphone and no voice.
@@ -170,6 +174,10 @@ public:
     bool isQuiet() const { return m_writes == 0 && m_held.isEmpty(); }
     // A probe starts no tasks: a test must never touch the desktop.
     void setProbe(bool on) { m_probe = on; }
+    // Except the one a probe script asks for by name, with "@task": started
+    // directly, with no talker in front of it, to try what a task does with
+    // an instruction - its research in the hidden browser, above all.
+    void startTask(const QString &title, const QString &instruction);
 
 signals:
     // Say this out loud. `turn` is the talker turn it answers, or 0 for news
@@ -252,6 +260,9 @@ private:
     ComposioClient *const m_composio;
     // The user's MCP servers, their long-term memory among them.
     McpClient *m_mcp = nullptr;
+    // A browser of Burnos's own, with no window: started the first time a
+    // task needs the web, one tab a task.
+    WebBrowser *m_web = nullptr;
     // Short ids the talker has been shown - of remembered lines and of profile
     // lines - and the full ids behind them.
     QHash<QString, QString> m_memoryIds;

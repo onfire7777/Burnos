@@ -85,6 +85,13 @@ void setOrbPosition(const QPoint &topLeft);
 bool alwaysOnTop();
 void setAlwaysOnTop(bool onTop);
 
+// THE WEB. Off, as it comes: a task that has to look something up does it in
+// Burnos's own hidden browser (webbrowser.h) and leaves the user's alone. On,
+// tasks have no hidden browser and use the user's own for everything, as they
+// did before 0.22.
+bool webInMyBrowser();
+void setWebInMyBrowser(bool mine);
+
 // THE TRANSCRIPTION KEY: while it is held, what is said is typed where the
 // caret is instead of being answered. Kept as the words Settings shows
 // ("Ctrl+Alt+Space") and as what Windows is asked to register - its MOD_ flags

@@ -2,6 +2,7 @@
 #include "mainwindow.h"
 #include "orbwidget.h"
 #include "sttengine.h"
+#include "webbrowser.h"
 
 #include <QApplication>
 #include <QFile>
@@ -61,6 +62,18 @@ int main(int argc, char *argv[])
     if (contextAt >= 0 && contextAt + 2 < args.size()) {
         return BurnOS::runProbe({QStringLiteral("@context ") + args.at(contextAt + 1)},
                                 args.at(contextAt + 2));
+    }
+
+    // Test helper: the hidden browser on its own - no model, no window, no
+    // microphone. Each line of the script is one action of the web tool, and
+    // what each came to is written to the file named second.
+    const int webAt = args.indexOf(QStringLiteral("--web-probe"));
+    if (webAt >= 0 && webAt + 2 < args.size()) {
+        QFile script(args.at(webAt + 1));
+        QStringList lines;
+        if (script.open(QIODevice::ReadOnly | QIODevice::Text))
+            lines = QString::fromUtf8(script.readAll()).split(QLatin1Char('\n'));
+        return BurnOS::runWebProbe(lines, args.at(webAt + 2));
     }
 
     MainWindow w;

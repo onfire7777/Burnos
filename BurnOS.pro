@@ -13,7 +13,7 @@ CONFIG += c++17
 # resource, Qt reads it back as applicationVersion(), and the live log's first
 # line says it - so every report names its build. Raised with each release,
 # which is also a git tag (v0.6.0) and a branch (v0.6) to roll back to.
-VERSION = 0.21.0
+VERSION = 0.22.0
 
 SOURCES += \
     agent.cpp \
@@ -31,7 +31,8 @@ SOURCES += \
     settingsdialog.cpp \
     sttengine.cpp \
     ttsengine.cpp \
-    voicecheck.cpp
+    voicecheck.cpp \
+    webbrowser.cpp
 
 HEADERS += \
     agent.h \
@@ -49,7 +50,12 @@ HEADERS += \
     settingsdialog.h \
     sttengine.h \
     ttsengine.h \
-    voicecheck.h
+    voicecheck.h \
+    webbrowser.h
+
+# PDF.js, which the hidden browser reads PDFs with: inside the executable, so
+# that nothing has to sit beside it. See third_party/pdfjs/README.txt.
+RESOURCES += web.qrc
 
 # DPAPI, used to encrypt the stored OpenRouter key for the current user.
 # User32 for GetWindowRect, used by the window hit test that keeps everything
@@ -57,7 +63,8 @@ HEADERS += \
 # Ole32 and OleAut32 for UI Automation, which is COM; Shell32 for ShellExecute,
 # which is how the computer use skill starts a program.
 # Gdi32 for the screenshot: PrintWindow draws into a DIB section, which is GDI.
-win32: LIBS += -lCrypt32 -lUser32 -lOle32 -lOleAut32 -lShell32 -lGdi32
+# Version for the hidden browser: which Edge or Chrome it is starting.
+win32: LIBS += -lCrypt32 -lUser32 -lOle32 -lOleAut32 -lShell32 -lGdi32 -lVersion
 
 # MinGW only: MSVC links uuid.lib by default, MinGW does not, and
 # computeruse.cpp needs BHID_EnumItems from it.

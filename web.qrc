@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/web">
+        <file alias="pdf.min.js">third_party/pdfjs/pdf.min.js</file>
+        <file alias="pdf.worker.min.js">third_party/pdfjs/pdf.worker.min.js</file>
+    </qresource>
+</RCC>

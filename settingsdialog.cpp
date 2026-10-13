@@ -659,6 +659,14 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     orbSizeRow->addWidget(m_orbSizeValue);
 
     m_onTop = new QCheckBox(tr("Keep the orb above other windows"), this);
+    // Off, as it comes: what Burnos looks up, it looks up in a hidden browser
+    // of its own (webbrowser.h), and the user's browser is left alone.
+    m_myBrowser = new QCheckBox(tr("Look things up in my own browser, not Burnos's hidden one"), this);
+    m_myBrowser->setToolTip(tr("Left off, Burnos searches and reads the web in a browser of its own "
+                               "that has no window: your browser, your tabs and your logins are "
+                               "not touched. It still opens a page in your browser when you ask "
+                               "to see one. Ticked, it uses your browser for everything, as it "
+                               "did before."));
 
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -813,6 +821,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->addRow(tr("Speech volume"), volumeRow);
     form->addRow(tr("Orb size"), orbSizeRow);
     form->addRow(QString(), m_onTop);
+    form->addRow(QString(), m_myBrowser);
 
     // A note where the Save button used to be, because a form with no Save
     // button looks like a form you have not finished with.
@@ -898,6 +907,7 @@ void SettingsDialog::load()
     m_orbSizeValue->setText(tr("%1 px").arg(orbSize));
 
     m_onTop->setChecked(BurnOS::Settings::alwaysOnTop());
+    m_myBrowser->setChecked(BurnOS::Settings::webInMyBrowser());
 }
 
 void SettingsDialog::wireLive()
@@ -926,6 +936,9 @@ void SettingsDialog::wireLive()
         BurnOS::Settings::setAlwaysOnTop(on);
         emit alwaysOnTopChanged();
     });
+    // Read by a task each time it asks the model, so the next step has it.
+    connect(m_myBrowser, &QCheckBox::toggled, this,
+            [](bool on) { BurnOS::Settings::setWebInMyBrowser(on); });
 
     // The two typed fields. A key or a model id is only worth storing once it
     // is whole, so these wait for Enter, for the focus to leave, or for the

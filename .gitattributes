@@ -1,0 +1,3 @@
+# PDF.js is built into the executable byte for byte as published: no line-ending conversion.
+third_party/pdfjs/*.js -text
+third_party/pdfjs/LICENSE -text

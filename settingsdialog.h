@@ -96,6 +96,7 @@ private:
     QSlider *m_orbSize = nullptr;
     QLabel *m_orbSizeValue = nullptr;
     QCheckBox *m_onTop = nullptr;
+    QCheckBox *m_myBrowser = nullptr;
 
     QTimer *m_save = nullptr;
 };

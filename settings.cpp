@@ -38,6 +38,7 @@ constexpr auto kVolumePath = "tts/volume";
 constexpr auto kOnTopPath  = "ui/alwaysOnTop";
 constexpr auto kOrbSizePath = "ui/orbSize";
 constexpr auto kOrbPosPath  = "ui/orbPosition";
+constexpr auto kWebMinePath = "web/myBrowser";
 
 // Composio: the key is encrypted like the OpenRouter one, the other two are
 // plain - a user id we made up and a list of app names.
@@ -525,6 +526,18 @@ void setAlwaysOnTop(bool onTop)
 {
     QSettings s = store();
     s.setValue(QString::fromLatin1(kOnTopPath), onTop);
+    s.sync();
+}
+
+bool webInMyBrowser()
+{
+    return store().value(QString::fromLatin1(kWebMinePath), false).toBool();
+}
+
+void setWebInMyBrowser(bool mine)
+{
+    QSettings s = store();
+    s.setValue(QString::fromLatin1(kWebMinePath), mine);
     s.sync();
 }
 

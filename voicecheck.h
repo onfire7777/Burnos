@@ -69,6 +69,13 @@ struct Near
     // enough to leave that voice out.
     qsizetype from = 0;
     qsizetype to = 0;
+    // Only for a crowded phrase: all of it, as long as it was, with whatever
+    // lies between the near voice's own sounds silenced - the other voice in
+    // the room, which the recogniser otherwise writes down as words in front
+    // of a lone "unmute". Turned down to a fifth it still wrote them: quiet
+    // speech in silence is as easy to read as loud. Empty for a phrase that
+    // is not crowded.
+    QByteArray gated;
 };
 Near nearPart(const QByteArray &pcm, bool crowded = false);
 

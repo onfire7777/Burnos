@@ -87,8 +87,10 @@ private:
     // in wake word mode - to nothing but its wake word.
     bool listen();
 
-    // WAKE WORD MODE, as a smart speaker works. WAITING, the keyword spotter is
-    // all that hears the microphone and nothing said is answered. The wake word
+    // WAKE WORD MODE, as a smart speaker works. WAITING, nothing said is
+    // answered: the keyword model listens for the wake word as it is said, and
+    // what the speech recogniser makes of each phrase is looked at for the wake
+    // word and for a spoken command, and dropped otherwise. The wake word
     // wakes Burnos: it is then listening exactly as it does with the mode off,
     // answers what was asked, and STAYS AWAKE for a few seconds after it has
     // finished - long enough to be answered back, or asked the next thing,
@@ -105,19 +107,21 @@ private:
     // back. Grey for want of a microphone still speaks, so answers are kept.
     bool voiceHeld() const;
     // ONE CLICK MUTES, AND ONLY MUTES: the voice goes quiet and nothing said
-    // is listened to any more - the microphone's sound goes to the keyword
-    // spotter alone, for "unmute" and the other spoken commands and NOT for
-    // the wake word - while the talker and every task carry on. What they
-    // have to say is kept, and said after the unmute.
+    // is listened to any more - it is read for a spoken command, "unmute"
+    // first among them, and for nothing else - while the talker and every
+    // task carry on. What they have to say is kept, and said after the unmute.
     void mute();
     void unmuted();
-    // THE KEYWORD SPOTTER HEARD SOMETHING, muted or waiting: "unmute" does
-    // what the click that unmutes does, "mute" what the click that mutes does,
-    // the wake word wakes a waiting Burnos, and the other spoken commands do
-    // what they do when Burnos is listening.
-    void keywordHeard(BurnOS::Wake::Command command);
-    // Unmutes as a click would.
-    void unmuteByVoice();
+    // The orb has just been armed again, by a click or by voice: listening -
+    // and in wake word mode awake for a few seconds before it waits.
+    void unmute();
+    // SAID WHILE MUTED, OR WHILE WAITING FOR THE WAKE WORD. Read by the speech
+    // recogniser like anything else, and looked at here for a command -
+    // "unmute" does what the click that unmutes does, "mute" what the click
+    // that mutes does, and the others do what they do when Burnos is
+    // listening - or, waiting, for the wake word at its front. Anything else
+    // is dropped: not answered, not remembered, not sent anywhere.
+    void overheard(const QString &text);
     // A DOUBLE CLICK STOPS EVERYTHING - microphone, talker, every task, the
     // voice and whatever was waiting to be said. It is not a mute: the orb goes
     // red for two seconds and is then listening, or muted, as it was before.

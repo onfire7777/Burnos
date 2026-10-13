@@ -41,11 +41,10 @@ constexpr qsizetype kChunkBytes = kSampleRate / 10 * 2;
 // dropped rather than answered seconds late.
 constexpr int kMaxWaiting = 50;
 
-// HOW READILY IT FIRES. Measured with BurnOS's eleven voices saying every
-// keyword, sentences with a keyword in them, near misses and ordinary
-// sentences (_research/wake-word/kws_bench.py): at these two, every keyword
-// alone was caught for 11 voices of 11 bar "mute" (9), and nothing fired on
-// 66 ordinary sentences. A higher boost fires on more that was not meant.
+// HOW READILY IT FIRES. Measured with BurnOS's eleven voices saying the wake
+// word, near misses and ordinary sentences (_research/wake-word/kws_bench.py):
+// at these two the wake word was caught for 11 voices of 11 and nothing fired
+// on 66 ordinary sentences. A higher boost fires on more that was not meant.
 constexpr float kBoost = 1.0f;
 constexpr float kThreshold = 0.25f;
 
@@ -126,26 +125,7 @@ struct KeywordResult
     const char *json;
 };
 
-// THE COMMANDS, as they are said. Every one of them is something Burnos
-// already does when the recogniser hears it; these are the wordings the
-// spotter knows, which is what works while Burnos is muted. A label is what
-// the model hands back when the phrase is heard.
-struct Phrase
-{
-    const char *words;
-    const char *label;
-    Command command;
-};
-const Phrase kPhrases[] = {
-    {"UNMUTE", "UNMUTE", Command::Unmute},
-    {"MUTE", "MUTE", Command::Mute},
-    {"STOP LISTENING", "MUTE", Command::Mute},
-    {"OPEN SETTINGS", "SETTINGS", Command::Settings},
-    {"OPEN APP SETTINGS", "SETTINGS", Command::Settings},
-    {"START TRANSCRIPTION", "START", Command::StartTranscription},
-    {"STOP TRANSCRIPTION", "STOP", Command::StopTranscription},
-    {"READ THAT BACK", "READ", Command::ReadBack},
-};
+// What the model hands back when the wake word is heard.
 constexpr auto kWakeLabel = "WAKE";
 
 // In the folder of the voice, for the reason voicecheck.cpp gives: the
@@ -352,14 +332,17 @@ QStringList wakeSpellings(const QString &phrase)
 struct Engine
 {
     bool failed = false; // the library or the model is there and will not load
+    bool bound = false;  // the library is loaded and its functions found
     QString error;
     const void *spotter = nullptr;
+    QString madeFor;     // the wake word the spotter was made with
+    QString listensFor;  // and how it is spelled for it, for the log
     const void *stream = nullptr;
     int streamTurn = 0; // the start() this stream was made for
 
     const void *(*create)(const SpotterConfig *) = nullptr;
-    const void *(*createPlain)(const void *) = nullptr;
-    const void *(*createStream)(const void *, const char *) = nullptr;
+    void (*destroy)(const void *) = nullptr;
+    const void *(*createStream)(const void *) = nullptr;
     int32_t (*isReady)(const void *, const void *) = nullptr;
     void (*decode)(const void *, const void *) = nullptr;
     void (*reset)(const void *, const void *) = nullptr;
@@ -375,9 +358,13 @@ struct Engine
         return fn != nullptr;
     }
 
-    bool load()
+    // The spotter for `wake`, made if there is none or it was made for another
+    // wake word. The wake word is the only thing the model listens for, and it
+    // is given its list when it is made, so another wake word is another
+    // spotter - a second and a half, once, off the main thread.
+    bool load(const QString &wake)
     {
-        if (spotter)
+        if (spotter && madeFor == wake)
             return true;
         if (failed)
             return false;
@@ -389,41 +376,55 @@ struct Engine
         }
         failed = true; // until proved otherwise below
 
-        const QString path = QDir::toNativeSeparators(libraryPath());
-        HMODULE lib = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
-                                     LOAD_WITH_ALTERED_SEARCH_PATH);
-        if (!lib) {
-            error = QStringLiteral("%1 would not load (error %2)").arg(path).arg(GetLastError());
-            return false;
+        if (!bound) {
+            const QString path = QDir::toNativeSeparators(libraryPath());
+            HMODULE lib = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
+                                         LOAD_WITH_ALTERED_SEARCH_PATH);
+            if (!lib) {
+                error = QStringLiteral("%1 would not load (error %2)").arg(path).arg(GetLastError());
+                return false;
+            }
+            const bool found =
+                find(lib, "SherpaOnnxCreateKeywordSpotter", create)
+                && find(lib, "SherpaOnnxDestroyKeywordSpotter", destroy)
+                && find(lib, "SherpaOnnxCreateKeywordStream", createStream)
+                && find(lib, "SherpaOnnxIsKeywordStreamReady", isReady)
+                && find(lib, "SherpaOnnxDecodeKeywordStream", decode)
+                && find(lib, "SherpaOnnxResetKeywordStream", reset)
+                && find(lib, "SherpaOnnxGetKeywordResult", result)
+                && find(lib, "SherpaOnnxDestroyKeywordResult", destroyResult)
+                && find(lib, "SherpaOnnxOnlineStreamAcceptWaveform", accept)
+                && find(lib, "SherpaOnnxDestroyOnlineStream", destroyStream);
+            if (!found) {
+                error = QStringLiteral("%1 has no keyword spotter in it").arg(path);
+                return false;
+            }
+            bound = true;
         }
-        const bool found =
-            find(lib, "SherpaOnnxCreateKeywordSpotter", create)
-            && find(lib, "SherpaOnnxCreateKeywordStream", createPlain)
-            && find(lib, "SherpaOnnxCreateKeywordStreamWithKeywords", createStream)
-            && find(lib, "SherpaOnnxIsKeywordStreamReady", isReady)
-            && find(lib, "SherpaOnnxDecodeKeywordStream", decode)
-            && find(lib, "SherpaOnnxResetKeywordStream", reset)
-            && find(lib, "SherpaOnnxGetKeywordResult", result)
-            && find(lib, "SherpaOnnxDestroyKeywordResult", destroyResult)
-            && find(lib, "SherpaOnnxOnlineStreamAcceptWaveform", accept)
-            && find(lib, "SherpaOnnxDestroyOnlineStream", destroyStream);
-        if (!found) {
-            error = QStringLiteral("%1 has no keyword spotter in it").arg(path);
+
+        // The wake word, in every way the model may hear it.
+        QByteArray keywords;
+        QStringList spelled;
+        for (const QString &words : wakeSpellings(wake)) {
+            const QByteArray line = keywordLine(words, kWakeLabel);
+            if (!line.isEmpty()) {
+                keywords += line + '\n';
+                spelled.append(words.toLower());
+            }
+        }
+        if (keywords.isEmpty()) {
+            // Settings refuses a wake word the model cannot spell; one that got
+            // in some other way is no reason to fail. The recogniser still
+            // finds it in what it writes.
+            failed = false;
+            error = QStringLiteral("the keyword model cannot spell '%1'").arg(wake);
             return false;
         }
 
-        // The commands are the model's own list, given once. The wake word is
-        // added per stream, so changing it loads nothing.
-        QByteArray commands;
-        for (const Phrase &phrase : kPhrases) {
-            const QByteArray line = keywordLine(QString::fromLatin1(phrase.words), phrase.label);
-            if (line.isEmpty()) {
-                error = QStringLiteral("the keyword model cannot spell '%1'")
-                            .arg(QString::fromLatin1(phrase.words));
-                return false;
-            }
-            commands += line + '\n';
-        }
+        dropStream();
+        if (spotter)
+            destroy(spotter);
+        spotter = nullptr;
 
         const QString dir = QDir::toNativeSeparators(Models::wakeDir());
         const QByteArray encoder = (dir + QStringLiteral("\\") + Models::wakeEncoder()).toUtf8();
@@ -444,28 +445,29 @@ struct Engine
         config.numTrailingBlanks = 1;
         config.keywordsScore = kBoost;
         config.keywordsThreshold = kThreshold;
-        config.keywordsBuf = commands.constData();
-        config.keywordsBufSize = int32_t(commands.size());
+        config.keywordsBuf = keywords.constData();
+        config.keywordsBufSize = int32_t(keywords.size());
         spotter = create(&config);
         if (!spotter) {
             error = QStringLiteral("the keyword model would not load from %1").arg(dir);
             return false;
         }
+        madeFor = wake;
+        listensFor = spelled.join(QStringLiteral("' or '"));
         failed = false;
         return true;
     }
 
-    // EVERY KEYWORD STARTS ON A CLEAN STREAM. The library resets a keyword
+    // THE WAKE WORD STARTS ON A CLEAN STREAM. The library resets a keyword
     // stream by itself after a second and a half without a word, again and
     // again while the room is quiet - and a keyword that begins in the few
     // tenths of a second before one of those resets loses its beginning and
-    // is missed: "unmute" said into a quiet room, about one time in six,
-    // always at the same place in that second and a half. So the reset is
-    // done HERE, at the right moment: when something far louder than the room
-    // has been begins, the stream is reset and given the last 300 ms again,
-    // and whatever was said starts at the start of a stream. Measured with
-    // nine keywords, three voices and every place in that second and a half:
-    // 48 of 48 for all but "mute", where it was 39 to 45 of 48 before
+    // is missed, about one time in six, always at the same place in that
+    // second and a half. So the reset is done HERE, at the right moment: when
+    // something far louder than the room has been begins, the stream is reset
+    // and given the last 300 ms again, and whatever was said starts at the
+    // start of a stream. Measured with three voices and every place in that
+    // second and a half: the wake word 48 of 48, where it was 44 before
     // (_research/wake-word/kws_onset_check.py).
     QList<float> room;        // how loud each of the last tenths of a second was
     int held = 0;             // pieces to go before another reset is allowed
@@ -481,33 +483,10 @@ struct Engine
         recent.clear();
     }
 
-    // A new stream that listens for the commands - and for `wake`, unless that
-    // is empty: the commands alone.
-    bool newStream(const QString &wake, QString *listeningFor)
+    bool newStream()
     {
         dropStream();
-        if (wake.isEmpty()) {
-            stream = createPlain(spotter);
-            listeningFor->clear();
-            return stream != nullptr;
-        }
-        QList<QByteArray> lines;
-        QStringList spelled;
-        for (const QString &words : wakeSpellings(wake)) {
-            const QByteArray line = keywordLine(words, kWakeLabel);
-            if (!line.isEmpty()) {
-                lines.append(line);
-                spelled.append(words.toLower());
-            }
-        }
-        if (lines.isEmpty()) {
-            // A wake word the model cannot spell would leave no way back from
-            // a mute by voice. Settings refuses one; this is the last line.
-            lines.append(keywordLine(QStringLiteral("HEY BURNOS"), kWakeLabel));
-            spelled = {QStringLiteral("hey burnos (the stored wake word cannot be spelled)")};
-        }
-        stream = createStream(spotter, lines.join('/').constData());
-        *listeningFor = spelled.join(QStringLiteral("' or '"));
+        stream = createStream(spotter);
         return stream != nullptr;
     }
 
@@ -521,9 +500,8 @@ struct Engine
         accept(stream, kSampleRate, samples.data(), int32_t(count));
     }
 
-    // What was said in `pcm` - a tenth of a second - if it was a keyword: its
-    // label, else nothing.
-    QString hear(const QByteArray &pcm)
+    // Whether the wake word was heard in `pcm`, a tenth of a second.
+    bool hear(const QByteArray &pcm)
     {
         const qsizetype count = pcm.size() / 2;
         const auto *raw = reinterpret_cast<const qint16 *>(pcm.constData());
@@ -552,21 +530,20 @@ struct Engine
             recent.removeFirst();
 
         give(pcm);
-        QString label;
+        bool heard = false;
         while (isReady(spotter, stream)) {
             decode(spotter, stream);
             const KeywordResult *r = result(spotter, stream);
             if (!r)
                 continue;
-            const bool hit = r->keyword && r->keyword[0];
-            if (hit && label.isEmpty())
-                label = QString::fromUtf8(r->keyword);
+            if (r->keyword && r->keyword[0])
+                heard = true;
             destroyResult(r);
-            // The stream is not reset here, after a keyword: a keyword is
-            // reported once with or without that, and the one reset that
-            // matters is the one before a keyword, above.
+            // The stream is not reset here, after a hit: it is reported once
+            // with or without that, and the one reset that matters is the one
+            // before the wake word, above.
         }
-        return label;
+        return heard;
     }
 };
 
@@ -593,23 +570,8 @@ std::atomic_int g_turn{0};
 std::atomic_int g_waiting{0};
 // Main thread only.
 QPointer<QObject> g_guard;
-std::function<void(Command, const QString &)> g_heard;
+std::function<void()> g_heard;
 QByteArray g_pending;
-
-bool commandFor(const QString &label, Command *command)
-{
-    if (label == QLatin1String(kWakeLabel)) {
-        *command = Command::Wake;
-        return true;
-    }
-    for (const Phrase &phrase : kPhrases) {
-        if (label == QLatin1String(phrase.label)) {
-            *command = phrase.command;
-            return true;
-        }
-    }
-    return false;
-}
 
 // How many single letters have to change to turn one word into the other.
 int lettersApart(const QString &a, const QString &b)
@@ -634,6 +596,11 @@ int lettersApart(const QString &a, const QString &b)
 
 bool available()
 {
+    // BURNOS_NO_KEYWORD_MODEL, for the check that the wake word is still found
+    // in what the recogniser writes when this model does not hear it - which,
+    // for some voices, it does not. Never set in a normal run.
+    if (qEnvironmentVariableIsSet("BURNOS_NO_KEYWORD_MODEL"))
+        return false;
     return Models::wakePresent() && QFileInfo::exists(libraryPath());
 }
 
@@ -641,21 +608,21 @@ void preload()
 {
     if (!available())
         return;
-    pool().start([]() {
+    const QString wake = Settings::wakeWord();
+    pool().start([wake]() {
         Engine &e = engine();
         if (e.spotter || e.failed)
             return;
         QElapsedTimer timer;
         timer.start();
-        if (!e.load()) {
-            liveLog(QStringLiteral("wake word: NOT ready - %1. Muted, only a click unmutes.")
-                        .arg(e.error));
+        if (!e.load(wake)) {
+            liveLog(QStringLiteral("wake word: NOT ready - %1. The wake word is still found in "
+                                   "what the recogniser writes.").arg(e.error));
             return;
         }
         // A second of faint noise through it, so that the model has run once
         // and the first real second is as quick as every later one.
-        QString listeningFor;
-        if (e.newStream(Settings::wakeWord(), &listeningFor)) {
+        if (e.newStream()) {
             QByteArray warm(int(kChunkBytes), '\0');
             auto *samples = reinterpret_cast<qint16 *>(warm.data());
             quint32 seed = 12345;
@@ -673,33 +640,34 @@ void preload()
     });
 }
 
-void start(QObject *guard, bool wakeWord, std::function<void(Command, const QString &)> heard)
+void start(QObject *guard, std::function<void()> heard)
 {
     g_guard = guard;
     g_heard = std::move(heard);
     g_pending.clear();
     const int turn = ++g_turn;
-    const QString wake = wakeWord ? Settings::wakeWord() : QString();
+    const QString wake = Settings::wakeWord();
     pool().start([turn, wake]() {
         Engine &e = engine();
-        const bool wasLoaded = e.spotter != nullptr;
-        QElapsedTimer timer;
-        timer.start();
-        if (!e.load()) {
-            liveLog(QStringLiteral("wake word: nothing is listening - %1").arg(e.error));
-            return;
-        }
-        if (!wasLoaded)
-            liveLog(QStringLiteral("wake word: keyword model loaded in %1 ms - it stays loaded")
-                        .arg(timer.elapsed()));
         // Stopped, or started afresh, before this came to its turn - a mute
         // undone within the moment, the first click of a double click: there
         // is nobody left to listen for.
         if (g_turn.load() != turn)
             return;
-        QString listeningFor;
-        if (!e.newStream(wake, &listeningFor)) {
-            liveLog(QStringLiteral("wake word: the keyword list was refused"));
+        const bool made = !e.spotter || e.madeFor != wake;
+        QElapsedTimer timer;
+        timer.start();
+        if (!e.load(wake)) {
+            liveLog(QStringLiteral("wake word: the keyword model is not listening - %1. The wake "
+                                   "word is still found in what the recogniser writes.")
+                        .arg(e.error));
+            return;
+        }
+        if (made)
+            liveLog(QStringLiteral("wake word: keyword model made for '%1' in %2 ms - it stays "
+                                   "loaded").arg(wake).arg(timer.elapsed()));
+        if (!e.newStream()) {
+            liveLog(QStringLiteral("wake word: the keyword model gave no stream"));
             return;
         }
         if (g_turn.load() != turn) {
@@ -707,11 +675,7 @@ void start(QObject *guard, bool wakeWord, std::function<void(Command, const QStr
             return;
         }
         e.streamTurn = turn;
-        liveLog(listeningFor.isEmpty()
-                    ? QStringLiteral("keyword spotter: listens for %1 command phrases, and not for "
-                                     "the wake word").arg(int(std::size(kPhrases)))
-                    : QStringLiteral("keyword spotter: listens for '%1' and %2 command phrases")
-                          .arg(listeningFor).arg(int(std::size(kPhrases))));
+        liveLog(QStringLiteral("wake word: the keyword model listens for '%1'").arg(e.listensFor));
     });
 }
 
@@ -733,14 +697,12 @@ void feed(const QByteArray &pcm)
         Engine &e = engine();
         if (!e.stream || e.streamTurn != turn)
             return;
-        const QString label = e.hear(chunk);
-        if (label.isEmpty())
+        if (!e.hear(chunk))
             return;
-        QMetaObject::invokeMethod(QCoreApplication::instance(), [turn, label]() {
-            Command command;
-            if (g_turn.load() != turn || !g_guard || !g_heard || !commandFor(label, &command))
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [turn]() {
+            if (g_turn.load() != turn || !g_guard || !g_heard)
                 return;
-            g_heard(command, label);
+            g_heard();
         }, Qt::QueuedConnection);
     });
 }
@@ -778,11 +740,14 @@ QString withoutWakeWord(const QString &text, bool anywhere, bool *found)
     if (wake.size() < 4)
         return text;
     // How far off the recogniser's writing of it may be. For any phrase, a
-    // letter in every five: "Hey Burn us" is it, "Hey, burn those" is not. For
-    // the phrase that woke Burnos it is known to be in there - the keyword
-    // spotter heard it - and the recogniser has been seen to write "Hey
-    // Bernows", so a letter in every three is let pass.
-    const int allowed = anywhere ? qMax(2, int(wake.size()) / 3) : qMax(1, int(wake.size()) / 5);
+    // letter in every four: "Hey Burn us" and "Hey Bernows" are it. For a
+    // phrase the keyword model has already heard the wake word in, it is known
+    // to be in there, and a letter in every three is let pass.
+    const int allowed = anywhere ? qMax(2, int(wake.size()) / 3) : qMax(1, int(wake.size()) / 4);
+    // And how much of it may be missing altogether. Unheard by the keyword
+    // model, the writing alone decides whether Burnos wakes, and "Hey, burn
+    // those old papers" must not: all but one letter of it has to be there.
+    const int missing = anywhere ? allowed : 1;
 
     // The words of what was said, each with where it ends in the text.
     struct Word
@@ -816,7 +781,7 @@ QString withoutWakeWord(const QString &text, bool anywhere, bool *found)
             run += words.at(start + count - 1).letters;
             if (run.size() > wake.size() + allowed)
                 break;
-            if (run.size() < wake.size() - allowed)
+            if (run.size() < wake.size() - missing)
                 continue;
             const int apart = lettersApart(run, wake);
             // The closest match; of two as close, the one that ends later.

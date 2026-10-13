@@ -51,6 +51,19 @@ constexpr int kNearSpread = 4;
 // its words were read along with the speaker's.
 constexpr float kSpanShare = 0.12f;
 constexpr float kSpanShareCrowded = 0.30f;
+// In a crowded phrase, what lies between the near voice's own sounds goes to
+// the recogniser at this share of its loudness: none of it. At a fifth the
+// recogniser still wrote the television's words down, at nothing a lone
+// "unmute" over a television came back as "Unmute." (tv-test.ps1).
+constexpr float kFarGain = 0.0f;
+// And what counts as the near voice's own sound there: anything within reach
+// of a moment at this share of its loudest. At 0.15 a television at 15% of
+// the speaker's loudness stayed in, and an "unmute" over it came back as
+// "Call the code"; at 0.30 it came back as "Unmute.". The price is a last
+// soft "s" - "Open settings" was written "Open setting" for two voices of
+// eleven - which is why only a phrase the length of a command is gated
+// (SttEngine::admit), and why the commands are matched without it.
+constexpr float kGateShare = 0.30f;
 
 // As sherpa-onnx's C API lays it out (c-api.h, v1.13.8).
 struct ExtractorConfig
@@ -328,6 +341,9 @@ Near nearPart(const QByteArray &pcm, bool crowded)
     const float spanFloor = std::max(top * (crowded ? kSpanShareCrowded : kSpanShare), 0.0005f);
 
     std::vector<char> keep(static_cast<size_t>(frames), 0);
+    // What stays audible in the gated copy: more than is kept for the voiceprint.
+    std::vector<char> open(static_cast<size_t>(frames), 0);
+    const float gateFloor = std::max(top * kGateShare, 0.0005f);
     double sum = 0.0;
     int nearFrames = 0;
     qsizetype first = -1;
@@ -338,6 +354,12 @@ Near nearPart(const QByteArray &pcm, bool crowded)
             if (first < 0)
                 first = f;
             last = f;
+        }
+        if (level >= gateFloor) {
+            const qsizetype a = std::max<qsizetype>(0, f - kNearSpread);
+            const qsizetype b = std::min<qsizetype>(frames - 1, f + kNearSpread);
+            for (qsizetype k = a; k <= b; ++k)
+                open[static_cast<size_t>(k)] = 1;
         }
         if (level < floor)
             continue;
@@ -357,6 +379,24 @@ Near nearPart(const QByteArray &pcm, bool crowded)
     }
     result.level = nearFrames ? float(sum / nearFrames) : 0.0f;
     result.ms = kept * kFrame * 1000 / kSampleRate;
+    if (crowded && nearFrames > 0) {
+        // The same phrase with the far voice turned down wherever the near one
+        // is not speaking. The loudness changes over a whole frame, 32 ms, so
+        // nothing clicks.
+        result.gated = pcm;
+        auto *out = reinterpret_cast<qint16 *>(result.gated.data());
+        float gain = open[0] ? 1.0f : kFarGain;
+        for (qsizetype f = 0; f < frames; ++f) {
+            const float target = open[static_cast<size_t>(f)] ? 1.0f : kFarGain;
+            for (int i = 0; i < kFrame; ++i) {
+                const float g = gain + (target - gain) * float(i + 1) / kFrame;
+                out[f * kFrame + i] = qint16(raw[f * kFrame + i] * g);
+            }
+            gain = target;
+        }
+        for (qsizetype i = frames * kFrame; i < pcm.size() / 2; ++i)
+            out[i] = qint16(raw[i] * gain);
+    }
     if (first >= 0) {
         result.from = std::max<qsizetype>(0, first - kNearSpread) * kFrame * 2;
         result.to = std::min<qsizetype>(frames, last + 1 + kNearSpread) * kFrame * 2;

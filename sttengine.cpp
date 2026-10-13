@@ -47,19 +47,16 @@ constexpr qint64 kBytesPerSecond = qint64(kSampleRate) * kBytesPerSample;
 // Always kept in front of a phrase, because loudness is only noticed once the
 // first syllable has already gone past.
 constexpr int kPrerollMs = 320;
-// Less voiced audio than this was a cough, a door or a keyboard.
-constexpr int kMinSpeechMs = 350;
+// Less voiced audio than this was a cough, a door or a keyboard. It was 350 ms
+// until a quick "mute" turned out to be about that long: the owner's own log
+// has them at 352 and 384 ms, and phrases of 256 and 320 ms thrown away.
+constexpr int kMinSpeechMs = 250;
 // Nobody asks a question for half a minute. This stops a noisy room from
 // recording for ever.
 constexpr int kMaxPhraseMs = 30000;
 // A push-to-talk hold shorter than this was a slip of the finger.
 constexpr int kMinHeldMs = 300;
 
-// MUTED: how much of what the microphone heard is kept, in memory, for the
-// moment a wake word is recognised. The spotter says so about half a second
-// after the word ends (measured: 1.2 to 1.4 s after it began), so two seconds
-// hold the wake word and the start of whatever followed it in the same breath.
-constexpr int kHeardMs = 2000;
 // What a real microphone hands over at a time: 20 ms.
 constexpr int kMicChunkBytes = 640;
 
@@ -86,6 +83,9 @@ constexpr int kKeepAfterMs = 300;
 // This much speech far quieter than the phrase's own voice, and somebody else
 // was talking in the room while it was said.
 constexpr int kCrowdedMs = 500;
+// This much of it in a phrase the length of a command, and that voice is
+// silenced around the near one before the recogniser reads it.
+constexpr int kGateFarMs = 1000;
 
 // A FAR VOICE DOES NOT KEEP A PHRASE OPEN. Silero calls a television speech,
 // and rightly, so with one on a phrase used to run until the television paused
@@ -691,19 +691,18 @@ QString SttEngine::cliPath() const
            + QStringLiteral("/parakeet-streaming/parakeet-cli.exe");
 }
 
-bool SttEngine::startLive()
+bool SttEngine::readyToHear(bool sayWhyNot)
 {
-    if (m_live)
-        return true;
-
     if (!BurnOS::Models::sttPresent()) {
-        emit failed(tr("No model at %1")
-                        .arg(QDir::toNativeSeparators(BurnOS::Models::sttModel())));
+        if (sayWhyNot)
+            emit failed(tr("No model at %1")
+                            .arg(QDir::toNativeSeparators(BurnOS::Models::sttModel())));
         return false;
     }
 
     if (!QFileInfo::exists(cliPath())) {
-        emit failed(tr("parakeet-cli.exe is missing from the parakeet-streaming folder."));
+        if (sayWhyNot)
+            emit failed(tr("parakeet-cli.exe is missing from the parakeet-streaming folder."));
         return false;
     }
 
@@ -714,7 +713,8 @@ bool SttEngine::startLive()
         auto vad = std::make_unique<BurnOS::SileroVad>();
         QString why;
         if (!vad->load(BurnOS::Models::vadModel(), &why)) {
-            emit failed(tr("The voice detector would not load: %1").arg(why));
+            if (sayWhyNot)
+                emit failed(tr("The voice detector would not load: %1").arg(why));
             return false;
         }
         m_vad = std::move(vad);
@@ -722,24 +722,30 @@ bool SttEngine::startLive()
                             .arg(m_vad->version())
                             .arg(BurnOS::Settings::vadThreshold(), 0, 'f', 2));
     }
+    return true;
+}
 
-    if (m_spotting && m_source) {
-        // FROM MUTED: the microphone is open for the keyword spotter already
-        // and stays open, so nothing is lost between a wake word and what is
-        // said after it. The spotter stops hearing it; live mode starts.
-        m_spotting = false;
-        BurnOS::Wake::stop();
-        resetPhrase();
-        BurnOS::liveLog(QStringLiteral("listening: the microphone stays open - the keyword spotter "
-                                       "hears no more of it"));
+bool SttEngine::startLive()
+{
+    if (m_live && !m_aside)
+        return true;
+    if (!readyToHear(true))
+        return false;
+
+    listenForWakeWord(false);
+    if (m_live && m_source) {
+        // FROM HEARING ONLY COMMANDS: the microphone is open already and stays
+        // open, and a phrase being kept goes on being kept - so nothing is
+        // lost between a wake word and what is said after it.
+        m_aside = false;
+        if (m_capturing)
+            emit speechStarted();
     } else {
-        if (m_spotting) {
-            m_spotting = false;
-            BurnOS::Wake::stop();
-        }
-        m_heard.clear();
-        if (!openMicrophone())
+        m_aside = false;
+        if (!openMicrophone()) {
+            m_live = false;
             return false;
+        }
     }
 
     m_live = true;
@@ -758,79 +764,76 @@ void SttEngine::stopLive()
     if (!m_live)
         return;
 
+    const bool wasListening = !m_aside;
     m_live = false;
+    m_aside = false;
+    listenForWakeWord(false);
     closeMicrophone();
     m_speech.clear();
     m_preroll.clear();
     m_queue.clear();
     if (m_capturing) {
         m_capturing = false;
-        emit speechEnded();
+        if (wasListening)
+            emit speechEnded();
     }
 
-    BurnOS::liveLog(QStringLiteral("live mode DISARMED (orb grey)"));
+    BurnOS::liveLog(QStringLiteral("live mode DISARMED: the microphone is shut"));
 }
 
-bool SttEngine::startSpotting(bool wakeWord)
+bool SttEngine::startAside(bool wakeWord)
 {
-    if (m_live || !BurnOS::Wake::available())
-        return false;
-    if (!m_source && !openMicrophone()) {
-        if (m_spotting) {
-            m_spotting = false;
-            BurnOS::Wake::stop();
-        }
+    if (!readyToHear(false) || (!m_source && !openMicrophone())) {
+        // Nothing to hear with: shut, and deaf to commands too.
+        m_live = false;
+        m_aside = false;
+        listenForWakeWord(false);
         return false;
     }
-    m_spotting = true;
-    m_spotWake = wakeWord;
-    listenForKeywords();
-    BurnOS::liveLog(QStringLiteral("%1: the microphone is open for the keyword spotter ONLY - "
-                                   "the voice detector, the recogniser and the voice check hear "
-                                   "nothing")
-                        .arg(wakeWord ? QStringLiteral("waiting") : QStringLiteral("muted")));
+    const bool wasListening = m_live && !m_aside;
+    m_live = true;
+    m_aside = true;
+    // The orb is told nothing of a room it is not listening to: a phrase
+    // being kept goes on being kept, but is no longer its business.
+    if (wasListening && m_capturing)
+        emit speechEnded();
+    emit levelChanged(0.0);
+    listenForWakeWord(wakeWord);
+    BurnOS::liveLog(QStringLiteral("NOT LISTENING: the microphone stays open for spoken commands%1 "
+                                   "- nothing else that is heard is answered, remembered or sent "
+                                   "anywhere")
+                        .arg(wakeWord ? QStringLiteral(" and the wake word") : QString()));
     return true;
 }
 
-void SttEngine::listenForKeywords()
+void SttEngine::listenForWakeWord(bool on)
 {
-    m_heard.clear();
-    // The orb does not move with a room it is not listening to.
-    emit levelChanged(0.0);
-    BurnOS::Wake::start(this, m_spotWake,
-                        [this](BurnOS::Wake::Command command, const QString &word) {
-        if (!m_spotting)
+    if (!on || !BurnOS::Wake::available()) {
+        if (m_wakeWord) {
+            m_wakeWord = false;
+            BurnOS::Wake::stop();
+        }
+        return;
+    }
+    // Started afresh each time: the wake word may have been changed.
+    m_wakeWord = true;
+    BurnOS::Wake::start(this, [this]() {
+        if (!m_live || !m_aside || !m_wakeWord)
             return;
-        BurnOS::liveLog(QStringLiteral("KEYWORD heard while %1: %2")
-                            .arg(m_spotWake ? QStringLiteral("waiting") : QStringLiteral("muted"),
-                                 word));
-        emit keyword(command);
+        BurnOS::liveLog(QStringLiteral("WAKE WORD heard by the keyword model"));
+        emit wakeWordHeard();
     });
 }
 
-void SttEngine::stopSpotting()
+bool SttEngine::isReading() const
 {
-    if (!m_spotting)
-        return;
-    m_spotting = false;
-    BurnOS::Wake::stop();
-    m_heard.clear();
-    if (!m_live && !m_held)
-        closeMicrophone();
-    BurnOS::liveLog(QStringLiteral("the keyword spotter hears nothing any more"));
-}
-
-void SttEngine::replayHeard()
-{
-    if (!m_live || m_heard.isEmpty())
-        return;
-    const QByteArray heard = m_heard;
-    m_heard.clear();
-    BurnOS::liveLog(QStringLiteral("wake word: the last %1 ms heard go through live mode - the "
-                                   "wake word and what was said after it")
-                        .arg(bytesToMs(heard.size())));
-    for (qsizetype at = 0; at + kMicChunkBytes <= heard.size() && m_live; at += kMicChunkBytes)
-        onAudio(heard.mid(at, kMicChunkBytes));
+    if (m_checking > 0 || (m_pending && m_pendingKind != Heard::Aside))
+        return true;
+    for (const Phrase &phrase : m_queue) {
+        if (phrase.kind != Heard::Aside)
+            return true;
+    }
+    return false;
 }
 
 void SttEngine::pauseListening()
@@ -839,10 +842,10 @@ void SttEngine::pauseListening()
         return;
 
     closeMicrophone();
-    // Muted: a keyword the spotter is still working out is nobody's now.
-    if (m_spotting)
+    // A wake word the keyword model is still working out is nobody's now.
+    // It listens again when the microphone opens again.
+    if (m_wakeWord)
         BurnOS::Wake::stop();
-    m_heard.clear();
     m_speech.clear();
     m_preroll.clear();
     m_queue.clear();
@@ -852,15 +855,17 @@ void SttEngine::pauseListening()
     // A phrase cut off here is over, and nothing will come of it.
     if (m_capturing) {
         m_capturing = false;
-        emit speechEnded();
-        emit ignored();
+        if (!m_aside) {
+            emit speechEnded();
+            emit ignored();
+        }
     }
-    BurnOS::liveLog(QStringLiteral("listening paused while we answer"));
+    BurnOS::liveLog(QStringLiteral("the microphone is shut for a moment"));
 }
 
 bool SttEngine::resumeListening()
 {
-    if (!m_live && !m_spotting)
+    if (!m_live)
         return false;
     if (m_source)
         return true;
@@ -868,11 +873,12 @@ bool SttEngine::resumeListening()
     if (!openMicrophone())
         return false;
 
-    if (m_spotting) {
-        // Muted or waiting all along: it is the keyword spotter that hears
-        // again - with the wake word as it is in Settings now.
-        listenForKeywords();
-        BurnOS::liveLog(QStringLiteral("the keyword spotter listens again"));
+    if (m_aside) {
+        // Muted or waiting all along: commands are heard again - and the wake
+        // word, as it is in Settings now.
+        if (m_wakeWord)
+            listenForWakeWord(true);
+        BurnOS::liveLog(QStringLiteral("spoken commands are heard again"));
         return true;
     }
     BurnOS::liveLog(QStringLiteral("listening again"));
@@ -921,8 +927,8 @@ bool SttEngine::endHeld()
     m_heldPcm.clear();
     if (m_heldOwnsMic) {
         m_heldOwnsMic = false;
-        // Unless live mode was armed while the key was down: then it is in use.
-        if (!m_live && !m_spotting)
+        // Unless it was armed while the key was down: then it is in use.
+        if (!m_live)
             closeMicrophone();
     }
     const int ms = bytesToMs(phrase.size());
@@ -932,7 +938,7 @@ bool SttEngine::endHeld()
                                              : QString()));
     if (ms < kMinHeldMs)
         return false;
-    transcribe(phrase, true);
+    transcribe(phrase, Heard::Held);
     return true;
 }
 
@@ -957,7 +963,7 @@ void SttEngine::setOverVoice(bool on)
     // that was being kept as a phrase would otherwise go on being kept under
     // the answer, and while a phrase is being kept nobody can talk over the
     // voice: that takes the listening that follows here.
-    if (on && m_capturing && !isCapturingNear()) {
+    if (on && m_capturing && !m_aside && !isCapturingNear()) {
         BurnOS::liveLog(QStringLiteral("let go: %1 ms of a far quieter voice, as the answer starts")
                             .arg(bytesToMs(m_speech.size())));
         m_capturing = false;
@@ -997,9 +1003,9 @@ bool SttEngine::openMicrophone()
     }
 
     m_tap = new AudioLevelTap(this);
-    // Muted, the orb is told nothing of how loud the room is.
+    // Not listening, the orb is told nothing of how loud the room is.
     connect(m_tap, &AudioLevelTap::levelChanged, this, [this](qreal level) {
-        if (!m_spotting)
+        if (!m_aside)
             emit levelChanged(level);
     });
     // With a file standing in for the microphone, the real one is not heard.
@@ -1074,29 +1080,17 @@ void SttEngine::onAudio(const QByteArray &pcm)
         if (m_heldPcm.size() >= msToBytes(kMaxPhraseMs)) {
             const QByteArray part = m_heldPcm;
             m_heldPcm.clear();
-            QTimer::singleShot(0, this, [this, part]() { transcribe(part, true); });
+            QTimer::singleShot(0, this, [this, part]() { transcribe(part, Heard::Held); });
         }
-        return;
-    }
-    // MUTED: the keyword spotter, and nothing else. No detector, no recogniser,
-    // no voice check - the sound goes nowhere but to a model that knows a
-    // handful of phrases, and the last two seconds of it are kept here, in
-    // memory, in case one of them was the wake word.
-    if (m_spotting) {
-        if (!m_source)
-            return;
-        m_heard.append(pcm);
-        const qint64 keep = msToBytes(kHeardMs);
-        if (m_heard.size() > keep)
-            m_heard.remove(0, static_cast<qsizetype>(m_heard.size() - keep));
-        BurnOS::Wake::feed(pcm);
         return;
     }
     if (!m_live || !m_source)
         return;
-    // What was kept while muted is not kept once it is no longer muted.
-    if (!m_heard.isEmpty())
-        m_heard.clear();
+    // WAITING FOR THE WAKE WORD: the keyword model is given the sound as well,
+    // so that it can say so the moment the wake word has been said - while
+    // the phrase it began goes on being kept below, like any other.
+    if (m_aside && m_wakeWord)
+        BurnOS::Wake::feed(pcm);
 
     // A short pre-roll while waiting, the whole phrase once one has started;
     // whether one HAS started is Silero's decision.
@@ -1162,7 +1156,8 @@ void SttEngine::decide(float speech, float rms)
             m_silenceBytes = 0;
             m_attackBytes = 0;
             emit bargeIn();
-            emit speechStarted();
+            if (!m_aside)
+                emit speechStarted();
             return;
         }
         m_bargeSteps = 0;
@@ -1227,7 +1222,8 @@ void SttEngine::decide(float speech, float rms)
         BurnOS::liveLog(QStringLiteral("speech STARTED, Silero %1 over %2")
                             .arg(double(speech), 0, 'f', 3)
                             .arg(double(openAt), 0, 'f', 2));
-        emit speechStarted();
+        if (!m_aside)
+            emit speechStarted();
         return;
     }
 
@@ -1259,19 +1255,24 @@ void SttEngine::endPhrase(bool tooLong, int hangoverMs)
     const QByteArray phrase = m_speech;
     const int voicedMs = bytesToMs(m_voicedBytes);
     const int farMs = bytesToMs(m_farBytes);
+    // Who it is for is settled as it ends: a phrase that the wake word was
+    // said in is for the agent, though it began while Burnos was waiting.
+    const Heard kind = m_aside ? Heard::Aside : Heard::Live;
     m_speech.clear();
     m_capturing = false;
     m_silenceBytes = 0;
     m_voicedBytes = 0;
     m_farBytes = 0;
-    emit speechEnded();
+    if (kind == Heard::Live)
+        emit speechEnded();
 
     if (voicedMs < kMinSpeechMs) {
         BurnOS::liveLog(QStringLiteral("discarded: only %1 ms of voice").arg(voicedMs));
         // Nothing will come of it, and whoever is waiting for this phrase to be
         // read has to be told so - or the orb goes on thinking about a cough.
         // Deferred: this is the audio device's own write call.
-        QTimer::singleShot(0, this, [this]() { emit ignored(); });
+        if (kind == Heard::Live)
+            QTimer::singleShot(0, this, [this]() { emit ignored(); });
         return;
     }
 
@@ -1286,10 +1287,10 @@ void SttEngine::endPhrase(bool tooLong, int hangoverMs)
     // The microphone STAYS OPEN: whatever the user adds while we work is folded
     // into the same question by the Agent. Deferred by one turn of the event
     // loop, because we are inside the audio device's own write call.
-    QTimer::singleShot(0, this, [this, phrase, farMs]() { admit(phrase, farMs); });
+    QTimer::singleShot(0, this, [this, phrase, farMs, kind]() { admit(phrase, farMs, kind); });
 }
 
-void SttEngine::admit(const QByteArray &phrase, int farMs)
+void SttEngine::admit(const QByteArray &phrase, int farMs, Heard kind)
 {
     // THE PART SAID AT THE MICROPHONE - the loud part of the phrase. With a
     // television on, a phrase is often the television, then the owner, then
@@ -1299,7 +1300,7 @@ void SttEngine::admit(const QByteArray &phrase, int farMs)
 
     // WAKE WORD MODE, AWAKE: far quieter than whoever woke Burnos is the room
     // talking, not somebody asking it the next thing.
-    if (m_quietFloor > 0.0f && part.level < m_quietFloor) {
+    if (kind == Heard::Live && m_quietFloor > 0.0f && part.level < m_quietFloor) {
         BurnOS::liveLog(QStringLiteral("ignored: far quieter than whoever woke Burnos (%1% of the "
                                        "least it answers) - somebody further away")
                             .arg(int(100.0f * part.level / m_quietFloor)));
@@ -1319,7 +1320,22 @@ void SttEngine::admit(const QByteArray &phrase, int farMs)
     const int before = bytesToMs(from);
     const int after = bytesToMs(phrase.size() - to);
     const bool trimmed = before + after >= 300;
-    const QByteArray said = trimmed ? phrase.mid(from, to - from) : phrase;
+    // In a crowded phrase the other voice is silenced as well, wherever the
+    // near one is not speaking: left in, in the moment before a lone
+    // "unmute", the recogniser wrote "Called the code".
+    // Only for a phrase the length of a command. A sentence is read well
+    // enough with the television under it, and silencing its soft sounds
+    // would cost a dictation its plurals.
+    // And only with a full second of the far voice in it: in a quiet room a
+    // short phrase has up to 600 ms of its own soft sounds counted as one,
+    // and gated there "Open my notes" lost its last letter for one voice.
+    const bool gate = part.ms < kShortPhraseMs && farMs >= kGateFarMs
+                      && part.gated.size() == phrase.size();
+    if (gate)
+        BurnOS::liveLog(QStringLiteral("to the recogniser: the other voice in the room silenced "
+                                       "around what was said (%1 ms of it)").arg(farMs));
+    const QByteArray &whole = gate ? part.gated : phrase;
+    const QByteArray said = trimmed ? whole.mid(from, to - from) : whole;
     const QString leftOut = trimmed ? QStringLiteral("%1 ms before it and %2 ms after it left out")
                                           .arg(before).arg(after)
                                     : QString();
@@ -1335,7 +1351,7 @@ void SttEngine::admit(const QByteArray &phrase, int farMs)
         if (before + after >= 1500)
             BurnOS::liveLog(QStringLiteral("to the recogniser: what was said at the microphone - %1")
                                 .arg(leftOut));
-        transcribe(said);
+        transcribe(said, kind);
         return;
     }
 
@@ -1344,10 +1360,12 @@ void SttEngine::admit(const QByteArray &phrase, int farMs)
     // is the part said at the microphone that is judged, for whose voice it
     // is and for how loud it is. The voiceprint is made off this thread -
     // tens of milliseconds - and the phrase waits for it, in order.
-    ++m_checking;
-    BurnOS::Voice::print(this, part.pcm, [this, said, leftOut, part, owner](
+    if (kind != Heard::Aside)
+        ++m_checking;
+    BurnOS::Voice::print(this, part.pcm, [this, said, leftOut, part, owner, kind](
                                              const BurnOS::Voice::Print &print) {
-        --m_checking;
+        if (kind != Heard::Aside)
+            --m_checking;
         const double alike = double(BurnOS::Voice::alike(owner, print));
         const double needed = BurnOS::Settings::voiceThreshold();
         const double own = BurnOS::Settings::voiceLevel();
@@ -1387,8 +1405,8 @@ void SttEngine::admit(const QByteArray &phrase, int farMs)
                             .arg(leftOut.isEmpty() ? QString() : QStringLiteral("; ") + leftOut));
         if (mine) {
             m_lastLevel = part.level;
-            transcribe(said);
-        } else {
+            transcribe(said, kind);
+        } else if (kind != Heard::Aside) {
             emit ignored();
         }
     });
@@ -1428,13 +1446,29 @@ void SttEngine::selfTest()
                                    "mono WAV"));
 }
 
-void SttEngine::transcribe(const QByteArray &pcm, bool held)
+void SttEngine::deliver(const QString &text, Heard kind)
+{
+    // What was heard while not listening is not written down here: whoever
+    // looks for a command in it says what came of it, and only that.
+    if (kind == Heard::Aside) {
+        emit overheard(text);
+        return;
+    }
+    BurnOS::liveLog(QStringLiteral("transcribed: %1")
+                        .arg(text.isEmpty() ? QStringLiteral("(nothing)") : text));
+    if (kind == Heard::Held)
+        emit dictated(text);
+    else
+        emit transcribed(text);
+}
+
+void SttEngine::transcribe(const QByteArray &pcm, Heard kind)
 {
     if (m_pending) {
         // One recogniser at a time. Now that the microphone stays open while we
         // work, a second phrase can arrive before the first has been read, and
         // it waits its turn rather than overwriting the wav that is still open.
-        m_queue.append({pcm, held});
+        m_queue.append({pcm, kind});
         BurnOS::liveLog(QStringLiteral("queued %1 ms behind the recogniser")
                             .arg(bytesToMs(pcm.size())));
         return;
@@ -1444,26 +1478,21 @@ void SttEngine::transcribe(const QByteArray &pcm, bool held)
     // the phrase go the old way, through a WAV file and parakeet-cli.
     if (recogniser().usable()) {
         m_pending = true;
-        m_pendingHeld = held;
+        m_pendingKind = kind;
         BurnOS::liveLog(QStringLiteral("transcribing %1 ms of audio").arg(bytesToMs(pcm.size())));
         const QPointer<SttEngine> self(this);
-        recogniserPool().start([self, pcm, held]() {
+        recogniserPool().start([self, pcm, kind]() {
             QString text;
             const bool ok = recogniser().run(pcm, &text);
-            QMetaObject::invokeMethod(QCoreApplication::instance(), [self, pcm, held, ok, text]() {
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [self, pcm, kind, ok, text]() {
                 if (!self)
                     return;
                 self->m_pending = false;
                 if (!ok) {
-                    self->transcribe(pcm, held); // usable() is false now: parakeet-cli
+                    self->transcribe(pcm, kind); // usable() is false now: parakeet-cli
                     return;
                 }
-                BurnOS::liveLog(QStringLiteral("transcribed: %1")
-                                    .arg(text.isEmpty() ? QStringLiteral("(nothing)") : text));
-                if (held)
-                    emit self->dictated(text);
-                else
-                    emit self->transcribed(text);
+                self->deliver(text, kind);
                 self->drainQueue();
             }, Qt::QueuedConnection);
         });
@@ -1497,18 +1526,13 @@ void SttEngine::transcribe(const QByteArray &pcm, bool held)
                         drainQueue();
                         return;
                     }
-                    BurnOS::liveLog(QStringLiteral("transcribed: %1")
-                                        .arg(out.isEmpty() ? QStringLiteral("(nothing)") : out));
-                    if (m_pendingHeld)
-                        emit dictated(out);
-                    else
-                        emit transcribed(out);
+                    deliver(out, m_pendingKind);
                     drainQueue();
                 });
     }
 
     m_pending = true;
-    m_pendingHeld = held;
+    m_pendingKind = kind;
 
     BurnOS::liveLog(QStringLiteral("transcribing %1 ms of audio").arg(bytesToMs(pcm.size())));
 
@@ -1525,8 +1549,8 @@ void SttEngine::drainQueue()
 {
     if (m_pending || m_queue.isEmpty())
         return;
-    const QPair<QByteArray, bool> next = m_queue.takeFirst();
-    transcribe(next.first, next.second);
+    const Phrase next = m_queue.takeFirst();
+    transcribe(next.pcm, next.kind);
 }
 
 bool SttEngine::writeWav(const QByteArray &pcm, const QString &wavPath,

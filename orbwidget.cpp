@@ -61,7 +61,7 @@ const QColor kOrbRedDeep(214, 36, 78);
 const QColor kOrbGreen(96, 236, 168);
 const QColor kOrbGreenDeep(30, 168, 150);
 // Waiting for the wake word. Wake word mode is on and the name has not been
-// said, so the keyword spotter is all that listens. A warm amber nothing else
+// said, so nothing is answered but the name and a spoken command. A warm amber nothing else
 // here uses: one glance tells it from listening, which is blue, and from
 // muted, which is grey.
 const QColor kOrbAmber(255, 196, 104);

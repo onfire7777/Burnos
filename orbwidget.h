@@ -110,7 +110,7 @@ public slots:
     void setDictating(bool on);
 
     // True while Burnos is waiting for its wake word: wake word mode is on,
-    // nobody has said the name, and the keyword spotter is all that listens.
+    // nobody has said the name, and only it and a spoken command are acted on.
     // The orb turns amber - neither the listening blue nor the muted grey -
     // and says nothing.
     void setWaiting(bool on);

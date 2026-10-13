@@ -100,8 +100,8 @@ QString wakeWord();
 QString defaultWakeWord();
 void setWakeWord(const QString &phrase);
 // WAKE WORD MODE, off unless switched on: Burnos answers only what is said
-// after the wake word, as a smart speaker does. Until it hears it, the keyword
-// spotter is all that listens. With it off the wake word plays no part at all
+// after the wake word, as a smart speaker does. Until it hears it, only the
+// wake word and a spoken command are acted on. With it off the wake word plays no part at all
 // and Burnos answers whatever it hears, as it always has.
 bool wakeMode();
 void setWakeMode(bool on);

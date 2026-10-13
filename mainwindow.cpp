@@ -47,6 +47,9 @@ bool isSettingsCommand(const QString &text)
     said = said.simplified();
     if (said.isEmpty() || said.size() > 40)
         return false;
+    // "Open setting." is how it was written for two voices of eleven.
+    if (said.endsWith(QLatin1String("setting")))
+        said.append(QLatin1Char('s'));
     static const QStringList exact{
         QStringLiteral("settings"),
         QStringLiteral("app settings"),
@@ -89,6 +92,12 @@ const QStringList &wordsAroundACommand()
         QStringLiteral("you"), QStringLiteral("just"), QStringLiteral("be"), QStringLiteral("for"),
         QStringLiteral("a"), QStringLiteral("bit"), QStringLiteral("moment"), QStringLiteral("while"),
         QStringLiteral("alright"), QStringLiteral("right"), QStringLiteral("yeah"),
+        // And what the recogniser makes of the breath after a single word: a
+        // lone "Mute." has come back as "Mute uh", "The mute, huh?", "Mute it."
+        // and "I'm a mute." (_research/wake-word/short-phrase-pad.txt).
+        QStringLiteral("uh"), QStringLiteral("huh"), QStringLiteral("um"), QStringLiteral("ah"),
+        QStringLiteral("oh"), QStringLiteral("eh"), QStringLiteral("hm"), QStringLiteral("hmm"),
+        QStringLiteral("mm"), QStringLiteral("er"), QStringLiteral("it"), QStringLiteral("im"),
     };
     return around;
 }
@@ -97,8 +106,17 @@ const QStringList &wordsAroundACommand()
 // it is spelled.
 bool isMuteWord(const QString &word)
 {
-    return word == QLatin1String("mute") || word == QLatin1String("muted")
-           || word == QLatin1String("miute") || word == QLatin1String("mewt");
+    // All but the first three are what it made of a lone "mute", by one voice
+    // or another, in _research/wake-word - the last two when it took the word
+    // for Russian.
+    static const QStringList spellings{
+        QStringLiteral("mute"), QStringLiteral("muted"), QStringLiteral("mutes"),
+        QStringLiteral("miute"), QStringLiteral("mewt"), QStringLiteral("muta"),
+        QStringLiteral("mutah"), QStringLiteral("mut"), QStringLiteral("myute"),
+        QStringLiteral("muter"), QString::fromUtf8("\xd0\xbc\xd1\x8c\xd1\x8e\xd1\x82"),
+        QString::fromUtf8("\xd0\xbc\xd1\x8c\xd1\x8e\xd1\x82\xd0\xb0"),
+    };
+    return spellings.contains(word);
 }
 
 // "Mute", "mute yourself", "go on mute", "stop listening": the WHOLE of a short
@@ -130,10 +148,16 @@ bool isMuteCommand(const QString &text)
     return true;
 }
 
-// "Unmute", said to a Burnos that is listening already - the whole of a short
-// thing to say, as with mute. There is nothing to do then, and it must not go
-// to the agent, which would look for something of the user's to unmute.
-// "Unmute Discord" is still work for it.
+bool isUnmuteWord(const QString &word)
+{
+    return word == QLatin1String("unmute") || word == QLatin1String("unmuted")
+           || word == QLatin1String("unmutes") || word == QLatin1String("unmuta")
+           || word == QLatin1String("unmut");
+}
+
+// "Unmute", and its other name "start listening" - the opposite of "stop
+// listening" - the whole of a short thing to say, as with mute. "Unmute
+// Discord" is still work for the agent.
 bool isUnmuteCommand(const QString &text)
 {
     QString letters;
@@ -144,15 +168,49 @@ bool isUnmuteCommand(const QString &text)
     const QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
     if (words.isEmpty() || words.size() > 8)
         return false;
-    if (!words.contains(QStringLiteral("unmute")) && !words.contains(QStringLiteral("unmuted")))
+    const QString said = QLatin1Char(' ') + words.join(QLatin1Char(' ')) + QLatin1Char(' ');
+    const bool startListening = said.contains(QLatin1String(" start listening "))
+                                || said.contains(QLatin1String(" resume listening "))
+                                || said.contains(QLatin1String(" begin listening "))
+                                || said.contains(QLatin1String(" listen again "));
+    if (!startListening && std::none_of(words.cbegin(), words.cend(), isUnmuteWord))
         return false;
+    static const QStringList listening{
+        QStringLiteral("start"), QStringLiteral("resume"), QStringLiteral("begin"),
+        QStringLiteral("listening"), QStringLiteral("listen"), QStringLiteral("again"),
+    };
     const QStringList &around = wordsAroundACommand();
     for (const QString &word : words) {
-        if (word != QLatin1String("unmute") && word != QLatin1String("unmuted")
-            && !around.contains(word))
+        const bool command = isUnmuteWord(word) || (startListening && listening.contains(word));
+        if (!command && !around.contains(word))
             return false;
     }
     return true;
+}
+
+// "Unmute" as the recogniser may write it when the first syllable is soft: two
+// words, "on mute" or "un mute" - it did, for one voice in a hurry. Those are
+// an unmute in every state: nobody says just "on mute" to be muted, and an
+// "unmute" that mutes is the opposite of what was asked. "A mute" and "and
+// mute" could as well be a "mute", so they count only for a Burnos that is
+// muted, where muting again would be nothing and unmuting is the one thing
+// wanted.
+bool soundsLikeUnmute(const QString &text, bool muted)
+{
+    QString letters;
+    for (const QChar c : text.toLower()) {
+        if (c.isLetterOrNumber() || c.isSpace())
+            letters.append(c);
+    }
+    const QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    static const QStringList first{
+        QStringLiteral("un"), QStringLiteral("on"), QStringLiteral("an"), QStringLiteral("in"),
+        QStringLiteral("im"), QStringLiteral("um"),
+    };
+    if (words.size() != 2 || !isMuteWord(words.last()))
+        return false;
+    return first.contains(words.first())
+           || (muted && (words.first() == QLatin1String("a") || words.first() == QLatin1String("and")));
 }
 
 // How long after the wake word a phrase still counts as the one it woke
@@ -237,6 +295,132 @@ int transcriptionCommand(const QString &text, bool dictating)
                     || (has({"turn", "switch"}) && says({"on"}))
                     || has({"start", "begin", "enable", "activate", "enter", "resume"});
     return on ? 1 : 0;
+}
+
+// "Read that back", "read it back to me": the whole of a short thing to say.
+// Asked of a Burnos that is listening it goes to the talker, which knows what
+// "that" is; one that is muted or waiting has no talker to ask, and there it
+// can only mean what was last typed.
+bool isReadBackCommand(const QString &text)
+{
+    QString letters;
+    for (const QChar c : text.toLower()) {
+        if (c.isLetterOrNumber() || c.isSpace())
+            letters.append(c);
+    }
+    const QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.size() < 2 || words.size() > 8 || !words.contains(QStringLiteral("back")))
+        return false;
+    static const QStringList reading{
+        QStringLiteral("read"), QStringLiteral("back"), QStringLiteral("that"), QStringLiteral("it"),
+        QStringLiteral("this"), QStringLiteral("what"), QStringLiteral("i"), QStringLiteral("said"),
+        QStringLiteral("typed"), QStringLiteral("last"), QStringLiteral("one"), QStringLiteral("again"),
+    };
+    bool read = false;
+    const QStringList &around = wordsAroundACommand();
+    for (const QString &word : words) {
+        read = read || word == QLatin1String("read");
+        if (!reading.contains(word) && !around.contains(word))
+            return false;
+    }
+    return read;
+}
+
+// EVERY SPOKEN COMMAND, in one place. Each is the whole of a short thing to
+// say, read by the speech recogniser - which, unlike the small keyword model
+// that was tried for this, writes the owner's commands down correctly every
+// time - and they are looked for in every state: listening, waiting for the
+// wake word, and muted.
+enum class Said { Nothing, Mute, Unmute, Settings, StartTyping, StopTyping, ReadBack };
+
+Said spokenCommand(const QString &text, bool dictating, bool muted)
+{
+    const int typing = transcriptionCommand(text, dictating);
+    if (typing == 2)
+        return Said::ReadBack;
+    if (typing != 0)
+        return typing > 0 ? Said::StartTyping : Said::StopTyping;
+    // While what is said is being typed, every other word is typed too -
+    // "open settings" as well - except a mute, which has to work everywhere.
+    if (dictating)
+        return isMuteCommand(text) ? Said::Mute : Said::Nothing;
+    if (isUnmuteCommand(text) || soundsLikeUnmute(text, muted))
+        return Said::Unmute;
+    if (isMuteCommand(text))
+        return Said::Mute;
+    if (isSettingsCommand(text))
+        return Said::Settings;
+    return Said::Nothing;
+}
+
+// What was heard while not listening, for the log: a few words in full - it
+// may be a command that was not understood, and that has to be seen to be put
+// right - and of anything longer only how long it was, because what is said
+// to a muted Burnos is nobody's business, the log's included.
+QString shown(const QString &text)
+{
+    const QString words = text.simplified();
+    const int count = int(words.count(QLatin1Char(' '))) + 1;
+    return count <= 6 ? QLatin1Char('\'') + words + QLatin1Char('\'')
+                      : QStringLiteral("%1 words").arg(count);
+}
+
+// The last sentence of what was said, without its full stop, and what came
+// before it. Empty when it is all one sentence.
+QString lastSentence(const QString &text, QString *before)
+{
+    const QString said = text.trimmed();
+    qsizetype end = said.size();
+    while (end > 0 && !said.at(end - 1).isLetterOrNumber())
+        --end;
+    qsizetype cut = -1;
+    for (qsizetype i = end - 1; i >= 0; --i) {
+        const QChar c = said.at(i);
+        if (c == QLatin1Char('.') || c == QLatin1Char('!') || c == QLatin1Char('?')) {
+            cut = i;
+            break;
+        }
+    }
+    if (cut < 0)
+        return QString();
+    if (before)
+        *before = said.left(cut + 1).trimmed();
+    return said.mid(cut + 1, end - cut - 1).trimmed();
+}
+
+// A COMMAND WITH A STRAY WORD OR TWO IN FRONT OF IT: "Hells stop listening" and
+// "Call the unmute" are what the recogniser wrote for a "stop listening" and
+// an "unmute" said over a television - the stray words are the television's.
+// Up to four words in all, none of them a "don't". "Stop listening" counts in
+// every state. An unmute counts only for a Burnos that is not `listening`,
+// where nothing else is being asked of it; and a lone "mute" at the end never
+// does - "Spotify mute" is work for the agent.
+Said commandAtTheEnd(const QString &text, bool listening)
+{
+    QString letters;
+    for (const QChar c : text.toLower()) {
+        if (c.isLetterOrNumber() || c.isSpace())
+            letters.append(c);
+    }
+    const QStringList words = letters.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.size() < 2 || words.size() > 4)
+        return Said::Nothing;
+    static const QStringList no{
+        QStringLiteral("dont"), QStringLiteral("not"), QStringLiteral("never"), QStringLiteral("no"),
+        QStringLiteral("cant"), QStringLiteral("wont"), QStringLiteral("didnt"),
+    };
+    for (const QString &word : words) {
+        if (no.contains(word))
+            return Said::Nothing;
+    }
+    const QString two = words.at(words.size() - 2) + QLatin1Char(' ') + words.last();
+    if (two == QLatin1String("stop listening"))
+        return Said::Mute;
+    if (!listening
+        && (isUnmuteWord(words.last()) || two == QLatin1String("start listening")
+            || two == QLatin1String("resume listening") || two == QLatin1String("listen again")))
+        return Said::Unmute;
+    return Said::Nothing;
 }
 
 // The replies the talker falls back on when a model calls a tool without a
@@ -385,18 +569,16 @@ MainWindow::MainWindow(QWidget *parent)
         if (m_orb->isActive())
             listen();
         else if (!m_micMissing)
-            m_stt->startSpotting(false);
+            m_stt->startAside(false);
     });
     connect(m_orb, &OrbWidget::clicked, this, [this]() {
         // A click always ends a hold of the transcription key, seen let go or not.
         if (m_keyHeld)
             keyUp();
-        if (m_orb->isActive()) {
-            listen();
-            unmuted();
-        } else {
+        if (m_orb->isActive())
+            unmute();
+        else
             mute();
-        }
     });
 
     // --- THE EARS -----------------------------------------------------------
@@ -442,8 +624,18 @@ MainWindow::MainWindow(QWidget *parent)
         }
         heard(text);
     });
-    // MUTED OR WAITING, and the keyword spotter heard a command or the wake word.
-    connect(m_stt, &SttEngine::keyword, this, &MainWindow::keywordHeard);
+    // MUTED OR WAITING: what was said is looked at for a command or the wake
+    // word, and is otherwise nobody's.
+    connect(m_stt, &SttEngine::overheard, this, &MainWindow::overheard);
+    // WAITING, and the keyword model heard the wake word - usually while the
+    // sentence it began is still being said. Burnos is awake from here, and
+    // that sentence, when it ends, is a request.
+    connect(m_stt, &SttEngine::wakeWordHeard, this, [this]() {
+        if (!m_waiting || !m_orb->isActive())
+            return;
+        BurnOS::liveLog(QStringLiteral("WOKEN BY THE WAKE WORD"));
+        wakeUp(true);
+    });
     // Somebody else's voice - a television, another person in the room - or a
     // sound too short to be anybody. Not transcribed, not answered, not
     // remembered: only the orb settles again.
@@ -452,6 +644,17 @@ MainWindow::MainWindow(QWidget *parent)
             m_dropHeard = false;
         m_transcribing = m_stt->isReading();
         refreshThinking();
+        // What the keyword model took for the wake word was nobody Burnos
+        // answers - a television saying it: back to waiting, at once.
+        if (m_wokeAt.isValid() && !m_stt->isReading() && !m_waiting && m_orb->isActive()
+            && BurnOS::Settings::wakeMode()) {
+            m_wokeAt.invalidate();
+            BurnOS::liveLog(QStringLiteral("wake word mode: what woke it was nobody it answers - "
+                                           "waiting again"));
+            if (!waitForWakeWord())
+                openMicrophone();
+            return;
+        }
         speakNext();
         if (m_sleepDue)
             sleepIfIdle();
@@ -474,9 +677,9 @@ MainWindow::MainWindow(QWidget *parent)
         if (!m_stt->isReading())
             m_dropHeard = false;
         m_transcribing = false;
-        if (!m_stt->isLive() && !m_stt->isSpotting()) {
-            // Live mode was on and the microphone has gone: the orb is grey for
-            // want of a microphone, which is not a mute.
+        if (!m_stt->isArmed()) {
+            // The microphone has gone: the orb is grey for want of a
+            // microphone, which is not a mute.
             if (m_orb->isActive())
                 m_micMissing = true;
             m_orb->setActive(false);
@@ -607,11 +810,10 @@ void MainWindow::armLiveMode()
     SttEngine::preload();
     // And the speaking voice.
     TtsEngine::preload();
-    // And the keyword model: it hears "unmute" while Burnos is muted, and the
-    // wake word in wake word mode.
+    // And the keyword model, which hears the wake word in wake word mode.
     BurnOS::Wake::preload();
 
-    if (m_stt->isLive() || m_stt->isSpotting())
+    if (m_stt->isArmed())
         return;
 
     // The orb is told first, so the colour and the hint change on the same
@@ -644,19 +846,19 @@ bool MainWindow::waitForWakeWord()
 {
     m_sleep->stop();
     m_sleepDue = false;
-    // Live mode off, and the keyword spotter - wake word and all - in its place.
-    m_stt->stopLive();
-    if (!m_stt->startSpotting(true)) {
-        BurnOS::liveLog(QStringLiteral("wake word mode: the keyword model or the microphone is "
-                                       "not there - listening to everything instead"));
+    m_wokeAt.invalidate();
+    // Not listening: what is said is looked at for the wake word and the
+    // spoken commands, and for nothing else.
+    if (!m_stt->startAside(true)) {
+        BurnOS::liveLog(QStringLiteral("wake word mode: the speech model or the microphone is "
+                                       "not there"));
         return false;
     }
     m_waiting = true;
     m_micMissing = false;
     m_orb->setCapturing(false);
     m_orb->setWaiting(true);
-    // A phrase cut off by this is gone; one the recogniser already has is
-    // still read and answered.
+    // A phrase the recogniser already has is still read and answered.
     m_transcribing = m_stt->isReading();
     refreshThinking();
     BurnOS::liveLog(QStringLiteral("WAITING for the wake word '%1': nothing else that is said is "
@@ -668,19 +870,18 @@ void MainWindow::wakeUp(bool afterWakeWord)
 {
     if (!m_waiting)
         return;
-    // The microphone was open for the keyword spotter and stays open, now for
-    // live mode: nothing is lost between the wake word and what follows it.
+    // The microphone was open already and stays open, and a phrase being said
+    // goes on being kept: nothing is lost between the wake word and what
+    // follows it.
     if (!openMicrophone())
         return;
     BurnOS::liveLog(afterWakeWord ? QStringLiteral("AWAKE: the wake word was said")
-                                  : QStringLiteral("AWAKE: there is something to say or to type"));
-    if (afterWakeWord) {
-        // "Hey Burnos, what time is it?" in one breath is one question: the
-        // last two seconds heard go through live mode as if said now. The
-        // wake word itself is taken off the front once it has been read.
+                                  : QStringLiteral("AWAKE: for the next few seconds no wake word "
+                                                   "is needed"));
+    // "Hey Burnos, what time is it?" in one breath is one question. The wake
+    // word itself is taken off the front once the phrase has been read.
+    if (afterWakeWord)
         m_wokeAt.start();
-        m_stt->replayHeard();
-    }
     stayAwake();
 }
 
@@ -1038,109 +1239,176 @@ void MainWindow::mute()
     if (m_voiceBusy && !m_voicePlaying)
         m_speech.prepend(m_voice);
 
-    m_stt->stopLive();
-    // MUTED STILL HEARS "UNMUTE": from here the microphone's sound goes to the
-    // keyword spotter and to nothing else, for the spoken commands - "unmute"
-    // first among them - and NOT for the wake word: muted, Burnos is not woken
-    // by its name. Without the keyword model the microphone simply stays shut,
-    // and only a click unmutes.
+    // MUTED STILL HEARS "UNMUTE": the microphone stays open, and what is said
+    // is read - on this machine - for a spoken command, "unmute" first among
+    // them, and for nothing else. It is not answered, not remembered and not
+    // sent anywhere, and the wake word is not listened for: muted, Burnos is
+    // not woken by its name. Without a speech model or a microphone it is
+    // simply deaf, and only a click unmutes.
     m_waiting = false;
+    m_wokeAt.invalidate();
     m_orb->setWaiting(false);
-    const bool spotting = m_stt->startSpotting(false);
+    m_orb->setCapturing(false);
+    const bool hearing = m_stt->startAside(false);
+    if (!hearing)
+        m_stt->stopLive();
     m_tts->stop();
     voiceGone();
     m_orb->setPreparing(false);
 
     // A phrase the recogniser already has is still read and still answered:
-    // it was said before the click. One cut off by the click is gone, and must
-    // not leave "transcribing" standing with nothing to end it.
+    // it was said before the mute.
     m_transcribing = m_stt->isReading();
     refreshThinking();
 
     BurnOS::liveLog(QStringLiteral("muted: %1 and voice quiet - the talker and "
                                    "%2 task(s) carry on, %3 line(s) wait to be said")
-                        .arg(spotting ? QStringLiteral("only the keyword spotter hears the "
-                                                       "microphone")
-                                      : QStringLiteral("microphone shut"))
+                        .arg(hearing ? QStringLiteral("only a spoken command is heard")
+                                     : QStringLiteral("microphone shut"))
                         .arg(m_agent->liveTasks())
                         .arg(m_speech.size()));
 }
 
-void MainWindow::unmuteByVoice()
+void MainWindow::unmute()
 {
-    // Exactly what the click that unmutes does: listening again - or, in wake
-    // word mode, waiting for the wake word.
-    m_orb->setActive(true);
-    if (!listen())
+    // The orb is armed again - by a click, or by "unmute". With wake word mode
+    // off that is listening. With it on, an unmute is as good as the wake
+    // word: Burnos is awake for the next few seconds, blue and listening, so
+    // that it is plain the unmute was heard and the next thing can be said at
+    // once - and then it waits for its wake word, as it does after an answer.
+    // Straight to listening, not by way of waiting: the orb goes from grey to
+    // blue, never through amber.
+    if (!openMicrophone())
         return;
+    if (BurnOS::Settings::wakeMode()) {
+        m_wokeAt.invalidate();
+        BurnOS::liveLog(QStringLiteral("AWAKE: for the next few seconds no wake word is needed"));
+        stayAwake();
+    }
     unmuted();
 }
 
-void MainWindow::keywordHeard(BurnOS::Wake::Command command)
+void MainWindow::overheard(const QString &text)
 {
-    using BurnOS::Wake::Command;
-    // The keyword spotter listens for a muted orb and for a waiting one. A
-    // listening orb hears its commands through the recogniser instead.
+    if (text.isEmpty())
+        return;
+    // What the log shows of it: all of it, or the command it ended in.
+    QString what = text;
     const bool muted = !m_orb->isActive();
-    if (!muted && !m_waiting)
-        return;
-    const QString state = muted ? QStringLiteral("muted") : QStringLiteral("waiting");
-    switch (command) {
-    case Command::Wake:
-        // Not listened for while muted; a muted Burnos is not woken by its name.
-        if (muted)
-            return;
-        BurnOS::liveLog(QStringLiteral("WOKEN BY THE WAKE WORD"));
-        wakeUp(true);
-        return;
-    case Command::Unmute:
-        if (!muted) {
-            BurnOS::liveLog(QStringLiteral("'unmute' said to an orb that is not muted: nothing "
-                                           "to do"));
+    if (!muted && !m_waiting) {
+        // Listening by now. If the wake word is why - the keyword model heard
+        // it just as this phrase ended - this is the phrase it was said in.
+        if (m_wokeAt.isValid()) {
+            heard(text);
             return;
         }
-        BurnOS::liveLog(QStringLiteral("UNMUTED BY VOICE"));
-        unmuteByVoice();
+        BurnOS::liveLog(QStringLiteral("said before Burnos was listening: %1 - dropped")
+                            .arg(shown(what)));
         return;
-    case Command::Mute:
+    }
+    const QString state = muted ? QStringLiteral("muted") : QStringLiteral("waiting");
+
+    // WAITING, AND THE WAKE WORD IS AT THE FRONT of what the recogniser wrote:
+    // the keyword model did not say so, or has not yet. Awake, and the rest
+    // of the phrase is the request.
+    if (!muted && !m_dictating) {
+        bool named = false;
+        BurnOS::Wake::withoutWakeWord(text, false, &named);
+        if (named) {
+            BurnOS::liveLog(QStringLiteral("WOKEN BY THE WAKE WORD, found in what was heard"));
+            wakeUp(true);
+            heard(text);
+            return;
+        }
+    }
+
+    Said command = spokenCommand(text, false, muted);
+    // "Stop transcription" counts as a command only while something is typed.
+    if (m_dictating && transcriptionCommand(text, true) < 0)
+        command = Said::StopTyping;
+    // And "read that back" has nobody but this to hear it.
+    if (command == Said::Nothing && isReadBackCommand(text))
+        command = Said::ReadBack;
+    // A COMMAND AT THE END OF WHAT WAS HEARD. With a television on, its last
+    // words are often the front of the phrase: "...if anything urgent came
+    // in. Stop listening." and "Call the unmute." are what the recogniser
+    // wrote for a "stop listening" and an "unmute" said over one. A command
+    // that is a sentence of its own at the end counts, and so does one with
+    // no more than a stray word or two in front of it.
+    if (command == Said::Nothing) {
+        const QString last = lastSentence(text, nullptr);
+        if (!last.isEmpty()) {
+            command = spokenCommand(last, false, muted);
+            if (command == Said::Nothing && isReadBackCommand(last))
+                command = Said::ReadBack;
+            if (command != Said::Nothing)
+                what = last;
+        }
+        if (command == Said::Nothing)
+            command = commandAtTheEnd(text, false);
+    }
+    switch (command) {
+    case Said::Unmute:
         if (muted) {
-            BurnOS::liveLog(QStringLiteral("'mute' said to a muted orb: it stays muted"));
+            BurnOS::liveLog(QStringLiteral("UNMUTED BY VOICE: %1").arg(shown(what)));
+            m_orb->setActive(true);
+            unmute();
+        } else {
+            // Not muted, only waiting: awake for it, so that it is plain it
+            // was heard.
+            BurnOS::liveLog(QStringLiteral("%1 said while waiting: awake for it").arg(shown(what)));
+            wakeUp(false);
+        }
+        return;
+    case Said::Mute:
+        if (muted) {
+            BurnOS::liveLog(QStringLiteral("%1 said to a muted orb: it stays muted")
+                                .arg(shown(what)));
             return;
         }
         // Exactly what one click on the orb does.
-        BurnOS::liveLog(QStringLiteral("MUTED BY VOICE: said while waiting for the wake word"));
+        BurnOS::liveLog(QStringLiteral("MUTED BY VOICE: %1, said while waiting").arg(shown(what)));
         m_orb->setActive(false);
         mute();
         return;
-    case Command::Settings:
-        BurnOS::liveLog(QStringLiteral("'open settings' said to a %1 orb: opened, still %1")
-                            .arg(state));
-        openSettings(); // the keyword spotter listens again once it closes
+    case Said::Settings:
+        BurnOS::liveLog(QStringLiteral("%1 said to a %2 orb: opened, still %2")
+                            .arg(shown(what), state));
+        openSettings(); // spoken commands are heard again once it closes
         return;
-    case Command::StartTranscription:
-        // Typing what is said takes the recogniser: a muted orb is unmuted
-        // for it, a waiting one woken. It stays awake while it types.
-        BurnOS::liveLog(QStringLiteral("'start transcription' said to a %1 orb: %2 for it")
-                            .arg(state, muted ? QStringLiteral("unmuted") : QStringLiteral("woken")));
-        if (muted)
-            unmuteByVoice();
+    case Said::StartTyping:
+        // Typing what is said takes listening: a muted orb is unmuted for
+        // it, a waiting one woken. It stays awake while it types.
+        BurnOS::liveLog(QStringLiteral("%1 said to a %2 orb: %3 for it")
+                            .arg(shown(what), state,
+                                 muted ? QStringLiteral("unmuted") : QStringLiteral("woken")));
+        if (muted) {
+            m_orb->setActive(true);
+            unmute();
+        }
         wakeUp(false);
         setDictating(true);
         return;
-    case Command::StopTranscription:
-        BurnOS::liveLog(QStringLiteral("'stop transcription' said to a %1 orb: %2")
-                            .arg(state, m_dictating ? QStringLiteral("stopped")
-                                                    : QStringLiteral("it was not on")));
+    case Said::StopTyping:
+        BurnOS::liveLog(QStringLiteral("%1 said to a %2 orb: typing stopped")
+                            .arg(shown(what), state));
         setDictating(false);
         return;
-    case Command::ReadBack:
+    case Said::ReadBack:
         // Reading aloud takes the voice, which a muted orb holds back; a
         // waiting one wakes to say it.
-        BurnOS::liveLog(QStringLiteral("'read that back' said to a %1 orb: %2 for it")
-                            .arg(state, muted ? QStringLiteral("unmuted") : QStringLiteral("woken")));
-        if (muted)
-            unmuteByVoice();
+        BurnOS::liveLog(QStringLiteral("%1 said to a %2 orb: %3 for it")
+                            .arg(shown(what), state,
+                                 muted ? QStringLiteral("unmuted") : QStringLiteral("woken")));
+        if (muted) {
+            m_orb->setActive(true);
+            unmute();
+        }
         readBack();
+        return;
+    case Said::Nothing:
+        BurnOS::liveLog(QStringLiteral("%1: heard %2 - not a command, dropped")
+                            .arg(state, shown(what)));
         return;
     }
 }
@@ -1269,7 +1537,7 @@ void MainWindow::openSettings()
     } else if (wasLive) {
         listenAgain();
     } else {
-        m_stt->resumeListening(); // muted: the keyword spotter again
+        m_stt->resumeListening(); // muted: spoken commands are heard again
     }
     speakNext();
 }
@@ -1401,37 +1669,64 @@ void MainWindow::heard(const QString &said)
             text = rest;
         }
     }
-    const int command = transcriptionCommand(text, m_dictating);
-    if (command == 2) {
+    Said command = spokenCommand(text, m_dictating, false);
+    // "... Mute." - A MUTE THAT IS A SENTENCE OF ITS OWN AT THE END of what was
+    // said. With a television on, the last words of its sentence are often the
+    // front of the phrase, and the mute was missed for them. What came before
+    // still goes to the agent, exactly as it would have: a mute must never
+    // cost the user the thing they asked for.
+    if (command == Said::Nothing && !m_dictating) {
+        QString before;
+        const QString last = lastSentence(text, &before);
+        if (!last.isEmpty() && spokenCommand(last, false, false) == Said::Mute) {
+            BurnOS::liveLog(QStringLiteral("a mute at the end of what was said: the %1 chars before it "
+                                           "go to the agent first").arg(before.size()));
+            m_agent->hear(before);
+            text = last;
+            command = Said::Mute;
+        } else if (commandAtTheEnd(text, true) == Said::Mute) {
+            // "Hells stop listening": a stray word of the television's in front.
+            command = Said::Mute;
+        }
+    }
+    switch (command) {
+    case Said::ReadBack:
         readBack();
         return;
-    }
-    if (command != 0) {
-        setDictating(command > 0);
+    case Said::StartTyping:
+        setDictating(true);
         return;
+    case Said::StopTyping:
+        setDictating(false);
+        return;
+    case Said::Mute:
+        // Exactly what one click on the orb does, and the orb going grey is the
+        // answer: nothing is said, and nothing of it reaches the agent or the
+        // memory. Unmuting takes a click, "unmute" or "start listening". Said
+        // while what is said is being typed, it ends the typing as well: a
+        // later unmute must not start typing into whatever is open by then.
+        BurnOS::liveLog(QStringLiteral("MUTED BY VOICE: '%1'%2")
+                            .arg(text.simplified().left(80),
+                                 m_dictating ? QStringLiteral(" - and the typing is over")
+                                             : QString()));
+        m_orb->setActive(false);
+        mute();
+        setDictating(false);
+        return;
+    case Said::Unmute:
+        BurnOS::liveLog(QStringLiteral("'%1' said to an orb that is listening: nothing to do")
+                            .arg(text.simplified().left(80)));
+        speakNext();
+        return;
+    case Said::Settings:
+        openSettings(); // resumes listening itself once it closes
+        return;
+    case Said::Nothing:
+        break;
     }
     // In transcription mode every other word is typed, "open settings" too.
     if (m_dictating) {
         typeOut(text);
-        return;
-    }
-    if (isMuteCommand(text)) {
-        // Exactly what one click on the orb does, and the orb going grey is the
-        // answer: nothing is said, and nothing of it reaches the agent or the
-        // memory. Unmuting takes a click or "unmute" - the keyword spotter
-        // is all that hears the microphone from here.
-        BurnOS::liveLog(QStringLiteral("MUTED BY VOICE: '%1'").arg(text.simplified().left(80)));
-        m_orb->setActive(false);
-        mute();
-        return;
-    }
-    if (isUnmuteCommand(text)) {
-        BurnOS::liveLog(QStringLiteral("'unmute' said to an orb that is listening: nothing to do"));
-        speakNext();
-        return;
-    }
-    if (isSettingsCommand(text)) {
-        openSettings(); // resumes listening itself once it closes
         return;
     }
     m_agent->hear(text);

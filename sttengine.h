@@ -40,7 +40,7 @@ protected:
     qint64 writeData(const char *data, qint64 size) override;
 };
 
-// Live mode. The microphone is held open, speech starts the recording by
+// The ears. The microphone is held open, speech starts the recording by
 // itself and a short silence ends it; the phrase is then handed to the bundled
 // parakeet-cli.exe. Nothing here blocks: the recogniser is a child process and
 // answers by signal.
@@ -52,39 +52,39 @@ public:
     explicit SttEngine(QObject *parent = nullptr);
     ~SttEngine() override;
 
-    bool isLive() const { return m_live; }           // armed
+    // Listening: what is said is for the agent.
+    bool isLive() const { return m_live && !m_aside; }
+    // Hearing at all - listening, or only listening out for commands.
+    bool isArmed() const { return m_live; }
     bool isCapturing() const { return m_capturing; } // keeping a phrase
-    bool isReading() const { return m_pending || m_checking > 0; }     // a phrase is in the recogniser
+    // A phrase that will be answered or typed is being checked or read.
+    bool isReading() const;
 
     // Arm live mode and open the microphone. False means it never opened and
-    // failed() has been emitted.
+    // failed() has been emitted. From listening out for commands, the
+    // microphone stays open and a phrase being kept goes on being kept - so
+    // nothing is lost between a wake word and what is said after it.
     bool startLive();
     // Disarm: close the microphone and throw away anything half heard.
     void stopLive();
     // Close the microphone but stay armed, so our own answer coming out of the
     // speakers can never be heard as the next question.
     void pauseListening();
-    // Open it again after a turn, if live mode is still armed.
+    // Open it again after a turn, if still armed.
     bool resumeListening();
 
-    // THE KEYWORD SPOTTER AND NOTHING ELSE. With live mode off, the microphone
-    // is open for the keyword spotter alone: the voice detector, the recogniser
-    // and the voice check are not handed a sample, so nothing said is
-    // transcribed, kept or sent anywhere. A keyword comes back through
-    // keyword(). This is what MUTED is - the spoken commands, "unmute" among
-    // them, and no wake word - and, with `wakeWord`, what WAITING is in wake
-    // word mode: the commands and the wake word. Calling it again changes
-    // which, and takes up a wake word changed in Settings. False when there is
-    // no keyword model or no microphone; muted is then simply deaf.
-    bool startSpotting(bool wakeWord);
-    void stopSpotting();
-    bool isSpotting() const { return m_spotting; }
-    // AFTER THE WAKE WORD: the last two seconds the keyword spotter heard - the
-    // wake word and whatever was said straight after it - go through live mode
-    // as if they were being said now, so "Hey Burnos, what time is it?" in one
-    // breath is one question. Called right after startLive(). Those two
-    // seconds only ever exist in memory, and are dropped when not asked for.
-    void replayHeard();
+    // NOT LISTENING, BUT STILL HEARING ITS COMMANDS. This is what MUTED is,
+    // and - with `wakeWord` - what WAITING for the wake word is. The
+    // microphone stays open and a phrase goes the way it always does - the
+    // voice detector, the voice check, the recogniser, all on this machine -
+    // but it comes back through overheard() instead of transcribed(), for
+    // whoever asked to look for a command or the wake word in it and to drop
+    // everything else: nothing of it is answered, remembered or sent
+    // anywhere, and the orb is told nothing of it. With `wakeWord` the
+    // keyword model listens too, and says wakeWordHeard() the moment the wake
+    // word has been said. Calling it again changes which. False when the
+    // speech model or the microphone is not there.
+    bool startAside(bool wakeWord);
 
     // WAKE WORD MODE, AWAKE: WHOEVER WOKE BURNOS WAS AT THE MICROPHONE. How
     // loud the last phrase handed to the recogniser was; a floor under which a
@@ -143,6 +143,8 @@ signals:
     void transcribed(const QString &text);
     // The same, for a phrase taken between beginHeld() and endHeld().
     void dictated(const QString &text);
+    // The same, for a phrase heard while not listening - see startAside().
+    void overheard(const QString &text);
     // A phrase ended and was nobody the orb answers to: the voice check
     // turned it away. Nothing was transcribed and nothing will follow.
     void ignored();
@@ -152,18 +154,29 @@ signals:
     void speechEnded();
     // The user started talking over the orb's voice. Stop the voice now.
     void bargeIn();
-    // Heard by the keyword spotter while muted.
-    void keyword(BurnOS::Wake::Command command);
+    // The keyword model heard the wake word, while waiting for it.
+    void wakeWordHeard();
 
 private:
-    // Hands the microphone's sound to the keyword spotter from now on.
-    void listenForKeywords();
+    // Who a phrase is for: the agent, the caret (push to talk), or nobody
+    // unless it is a command.
+    enum class Heard { Live, Held, Aside };
+    struct Phrase
+    {
+        QByteArray pcm;
+        Heard kind = Heard::Live;
+    };
+    // Hands the microphone's sound to the keyword model as well, or stops.
+    void listenForWakeWord(bool on);
     // A new stretch of listening: no phrase, no pre-roll, a detector with no
     // memory of the last one.
     void resetPhrase();
     // BURNOS_MIC_WAV: the next of the file's sound that is due by the clock.
     void fileMicTick();
     QString cliPath() const;
+    // The speech model, its program and the voice detector are all there.
+    // With `sayWhyNot`, a missing one is reported through failed().
+    bool readyToHear(bool sayWhyNot);
     bool openMicrophone();
     void closeMicrophone();
     void onAudio(const QByteArray &pcm);
@@ -177,8 +190,10 @@ private:
     static QByteArray readPcm(const QString &wavPath, QString *error);
     // A phrase the detector has ended: through the voice check, when a voice
     // has been taught, and only then to the recogniser.
-    void admit(const QByteArray &phrase, int farMs);
-    void transcribe(const QByteArray &pcm, bool held = false);
+    void admit(const QByteArray &phrase, int farMs, Heard kind);
+    void transcribe(const QByteArray &pcm, Heard kind);
+    // The recogniser has read a phrase: to whoever it was for.
+    void deliver(const QString &text, Heard kind);
     void drainQueue();
     bool writeWav(const QByteArray &pcm, const QString &wavPath,
                   QString *error) const;
@@ -188,16 +203,15 @@ private:
     QProcess *m_proc = nullptr;
     QString m_wavPath;
 
-    bool m_live = false;      // live mode armed by the user
+    bool m_live = false;      // armed: the microphone is ours and phrases are taken
+    bool m_aside = false;     // and they are only looked at for commands
+    bool m_wakeWord = false;  // and the keyword model is given the sound too
     bool m_capturing = false; // a phrase is being kept right now
     bool m_pending = false;   // a phrase is inside the recogniser right now
-    bool m_pendingHeld = false; // and it was taken by push to talk
+    Heard m_pendingKind = Heard::Live; // and who it is for
     bool m_held = false;        // push to talk is down
     bool m_heldOwnsMic = false; // the microphone was opened just for this hold
-    int m_checking = 0;         // phrases whose voice is being checked right now
-    bool m_spotting = false;    // the microphone feeds the keyword spotter only
-    bool m_spotWake = false;    // and the wake word is among what it listens for
-    QByteArray m_heard;         // the last two seconds the spotter heard, in memory only
+    int m_checking = 0;         // phrases for the agent whose voice is being checked
     // THE CHECK on what takes sound over time - a mute, a wake word, a request
     // after it: the WAV named by BURNOS_MIC_WAV stands in for the microphone,
     // in real time, from the moment the microphone first opens, and the real
@@ -216,7 +230,7 @@ private:
     // Phrases heard while the recogniser was busy, oldest first. The microphone
     // no longer closes while we work, so this can happen whenever somebody
     // carries on talking.
-    QList<QPair<QByteArray, bool>> m_queue; // each with whether it was held
+    QList<Phrase> m_queue;
     QByteArray m_speech;      // the phrase being kept
     QByteArray m_preroll;     // the moment before it, so no syllable is lost
     qint64 m_silenceBytes = 0;

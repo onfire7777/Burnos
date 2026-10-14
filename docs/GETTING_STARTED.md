@@ -1,0 +1,103 @@
+# Get Burnos running
+
+Burnos targets Windows x64. Start with a normal, non-administrator Windows account. This is a source checkout, not a one-click installer. Previous binary packages are being held as drafts while their dependency packaging and third-party notices are completed; the source build below is the supported evaluation path for this repository preparation.
+
+## 1. Build the native app
+
+Install Git and a Qt 6 Windows desktop kit with Qt Multimedia and its matching compiler. The documented build uses **Qt 6.11.2 + MinGW 13.1**. An MSVC kit can also be built from an x64 Visual Studio developer shell, but that path was not revalidated for this documentation update.
+
+```powershell
+git clone https://github.com/onfire7777/Burnos.git
+cd Burnos
+.\build.bat -QtRoot C:\Qt\6.11.2\mingw_64 -CompilerBin C:\Qt\Tools\mingw1310_64\bin
+```
+
+The script checks tools, builds under `build/win32-g++`, and runs `windeployqt`. Adjust paths for your installation. Keep this PowerShell window at the repository root for the following commands.
+
+```powershell
+$app = Join-Path (Get-Location) 'build/win32-g++/release'
+```
+
+For MSVC, use `-QtRoot` pointing at the MSVC kit and omit `-CompilerBin`; the developer shell must provide `nmake`. Its output is `build/win32-msvc/release`.
+
+## 2. Add speech recognition
+
+Use the **Parakeet implementation in ggml-org/whisper.cpp**, not a different project with a similarly named executable. Burnos expects `parakeet-cli -m … -ng -np -f …` and the whisper.cpp GGML model format.
+
+Install CMake, add the matching MinGW compiler to PATH, and build the pinned upstream release:
+
+```powershell
+$env:PATH = 'C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;' + $env:PATH
+New-Item -ItemType Directory -Force dependencies | Out-Null
+git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp.git dependencies/whisper.cpp
+cmake -S dependencies/whisper.cpp -B dependencies/whisper-build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_TESTS=OFF '-DCMAKE_C_FLAGS=-D_WIN32_WINNT=0x0601' '-DCMAKE_CXX_FLAGS=-D_WIN32_WINNT=0x0601'
+cmake --build dependencies/whisper-build --target parakeet-cli -j 4
+New-Item -ItemType Directory -Force "$app/parakeet-streaming" | Out-Null
+Copy-Item dependencies/whisper-build/bin/parakeet-cli.exe "$app/parakeet-streaming/"
+Copy-Item dependencies/whisper-build/bin/*.dll "$app/parakeet-streaming/"
+Copy-Item dependencies/whisper.cpp/LICENSE "$app/parakeet-streaming/"
+Copy-Item 'C:/Qt/Tools/mingw1310_64/bin/libgcc_s_seh-1.dll','C:/Qt/Tools/mingw1310_64/bin/libstdc++-6.dll','C:/Qt/Tools/mingw1310_64/bin/libwinpthread-1.dll' "$app/parakeet-streaming/"
+```
+
+Run each command only after the preceding command succeeds. Retain the compiler runtime DLLs deployed in step 1. The upstream tag resolves to `d1be6fde11ac6e0407606b4e42fe72d34add8037` in this setup review. [Upstream CLI documentation](https://github.com/ggml-org/whisper.cpp/tree/v1.9.5/examples/parakeet-cli).
+
+The Windows API target flags avoid an upstream thread-throttling API that is absent from the MinGW 13.1 headers. They disable that optional scheduling optimization, not speech recognition. Burnos itself still targets current Windows desktop systems.
+
+## 3. Add speech synthesis and voice tools
+
+Download the **shared, with-TTS** Windows x64 build of sherpa-onnx 1.13.8. The C API layout used in Burnos is version-specific; do not substitute a `no-tts` archive.
+
+```powershell
+$archive = 'dependencies/sherpa-onnx.tar.bz2'
+Invoke-WebRequest 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-shared-MT-Release.tar.bz2' -OutFile $archive
+if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '6DFFDC715A4465B989446A6105265D2CB345E7101591A17D35534B6758F6E8DF') { throw 'Archive checksum mismatch' }
+tar -xf $archive -C dependencies
+$sherpa = 'dependencies/sherpa-onnx-v1.13.8-win-x64-shared-MT-Release'
+New-Item -ItemType Directory -Force "$app/kokoro-tts" | Out-Null
+Copy-Item "$sherpa/bin/sherpa-onnx-offline-tts.exe" "$app/kokoro-tts/"
+Copy-Item "$sherpa/lib/*.dll" "$app/kokoro-tts/"
+```
+
+The checksum above was calculated from the upstream archive downloaded on October 14, 2026; it is an integrity pin, not a vendor signature. [Upstream Windows downloads](https://k2-fsa.github.io/sherpa/onnx/install/windows/generated/download/windows_x64.html). Install Microsoft's current x64 Visual C++ Redistributable if a runtime reports a missing Microsoft DLL. Preserve upstream licenses if redistributing these binaries.
+
+## 4. Add persistent memory
+
+Install Python 3.12 or newer. Clone the public [Mnemosyne repository](https://github.com/onfire7777/Mnemosyne) beside the executable and install its MCP and graph extras into an isolated environment:
+
+```powershell
+git clone https://github.com/onfire7777/Mnemosyne.git "$app/mnemosyne"
+git -C "$app/mnemosyne" checkout be29799f462fab1b558b604ffaa4298b390cd614
+py -3.12 -m venv "$app/mnemosyne/.venv"
+& "$app/mnemosyne/.venv/Scripts/python.exe" -m pip install "$app/mnemosyne[mcp,graph]"
+```
+
+Burnos detects `mnemosyne/.venv/Scripts/mneme-mcp.exe`, starts it on loopback, and supplies its local session secret. The default store is `%LOCALAPPDATA%\BurnOS\memory`; keep it private. Port 8765 must be free or already hosting the correctly configured server. A pre-existing MCP configuration can override automatic discovery.
+
+To use your own MCP server configuration, copy [the example](../examples/mcp.example.json) to `%APPDATA%\BurnOS\mcp.json` and replace the placeholder URL. That example demonstrates the schema; it is not a substitute for a running memory server. `BURNOS_MCP_CONFIG` can point at a separate configuration for testing.
+
+## 5. Launch and configure
+
+```powershell
+& "$app/Burnos.exe"
+```
+
+On first launch, Burnos downloads required speech models into `%ProgramData%\BurnOS`. Allow several gigabytes of disk headroom and time for the download. Optional speaker and wake-word model failures are reported separately. A restrictive machine-wide data-folder policy can require an administrator to create that directory with appropriate write access; the app itself should normally run without elevation.
+
+Open Settings from the orb, enter your OpenRouter key, choose the talking and task models, and check microphone/output settings. Use a tool-capable model; desktop screenshots also require image input. Start with a harmless request and an empty test document. Composio is optional and requires its own configuration and authorized account connections.
+
+Check the app's live log for a ready memory server before relying on persistence. Do not record or share the log without removing private data. The [demo guide](hackathon/DEMO.md) contains a fictional end-to-end scenario.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Qt or compiler command missing | Qt kit and compiler architecture must match; pass both paths explicitly for MinGW |
+| Missing platform plugin or Qt DLL | Run the build script's deployment step; keep the generated DLL/plugin folders beside the EXE |
+| `parakeet-cli.exe` missing | Step 2 must produce `parakeet-streaming/parakeet-cli.exe` beside Burnos |
+| Speech executable exists but fails | Check dependent DLLs, model download completion, and the exact runtime project/version |
+| Kokoro fails to load | Use sherpa-onnx 1.13.8 with TTS, including DLLs from `lib` |
+| Memory disappears after restart | Confirm Mnemosyne is ready and both runs use the same store; check port 8765 and custom MCP config |
+| Research cannot read a site | The separate browser is not signed in; authentication, CAPTCHA, dynamic pages, and scanned PDFs may prevent extraction |
+| Image request is rejected | Select a model that supports image input and tools; do not assume every model can inspect screenshots |
+
+For a backend-only persistence check, install `httpx` into the Mnemosyne environment and run `scripts/verify-memory.py` with that environment's Python. It uses a temporary store and does not read your personal memory. This does not replace the live-app test.

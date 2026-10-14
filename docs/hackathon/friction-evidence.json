@@ -1,0 +1,82 @@
+{
+  "prepared": "2026-10-14",
+  "repository": "https://github.com/onfire7777/Burnos",
+  "reviewedHead": "405ef9eec7dd71854d9d6f3606ddfa2196bf6bc0",
+  "provenance": "Read from local Git objects. Commit messages are historical developer reports, not independently rerun test results. Relevant patches were inspected. Author identities omitted. Remote freshness was not checked.",
+  "commits": [
+    {
+      "commit": "13ded7ae01c2d40930e74200f768923766981128",
+      "url": "https://github.com/onfire7777/Burnos/commit/13ded7ae01c2d40930e74200f768923766981128",
+      "authorTimestamp": "2026-09-28T18:22:04-07:00",
+      "message": "Open websites in the user's own browser, and survive a model that cannot see\n\nTwo faults, one turn: \"open GitHub\" landed on the signed out page and the orb\nthen said Error even though the browser had opened.\n\nThe signed out page: the model opened a browser by name and typed the address\nin. launch starts a browser fresh out of the apps folder, which comes up on\nwhichever profile it likes - the log shows Edge opening on \"Profile 1, Please\nsign in\" - so the site loaded with none of the user's cookies. There is now an\nopen_url action that hands the address to the shell instead, so Windows gives\nit to the browser already running, in the session the user is signed in on.\nhttp and https only, so a misheard sentence cannot fire a protocol handler.\n\nThe Error: the system prompt makes the model screenshot to check its own work,\nand minimax/minimax-m2.7 has no endpoint that accepts an image, so OpenRouter\nthrew the whole request away with a 404 - \"No endpoints found that support\nimage input\". A turn that had done everything right died one step from\nanswering. That 404 is now caught: the picture is taken back out, the model is\ntold in words that it cannot see, the request is asked again, and no screenshot\nis attached to that model for the rest of the session.",
+      "changedFiles": [
+        "BurnOS.pro",
+        "composio.cpp",
+        "composio.h",
+        "computeruse.cpp",
+        "computeruse.h",
+        "integrationsdialog.cpp",
+        "integrationsdialog.h",
+        "mainwindow.cpp",
+        "mainwindow.h",
+        "openrouter.cpp",
+        "openrouter.h",
+        "settings.cpp",
+        "settings.h",
+        "settingsdialog.cpp",
+        "settingsdialog.h"
+      ]
+    },
+    {
+      "commit": "d2e08ffa58cfc83c70270dd3c90f3bdf7bd73e3d",
+      "url": "https://github.com/onfire7777/Burnos/commit/d2e08ffa58cfc83c70270dd3c90f3bdf7bd73e3d",
+      "authorTimestamp": "2026-09-28T18:31:15-07:00",
+      "message": "Only ever run on a model that can actually do the job\n\nThe orb saying Error was a symptom of something worse: the settings list\nrecommended minimax-m2.7 for driving the machine, and that model takes text\nonly. Every turn that took a screenshot to check its own work was refused by\nOpenRouter with a 404. jev-router was on the list too and advertises no tool\nsupport at all. A shortlist written by hand cannot know these things.\n\nSo it no longer guesses. ModelCatalogue fetches OpenRouter's own /models once\nper run - no key needed - and records, per model, whether it takes images and\nwhether it supports tools. Burnos needs both: it operates the machine through a\ntool call and it checks its work by looking.\n\n- Settings only offers models the catalogue says can do the job, and a line\n  under the box says in plain words what the chosen one can and cannot do.\n- A model typed in by hand that cannot do the job is refused, not stored.\n- At startup, a stored model that cannot do the job is swapped for one that\n  can, and the swap is logged with the reason.\n- Offline, nothing is known and nothing is refused: the user's own choice\n  stands exactly as before.\n\nAlso: the model is now told plainly which tool to reach for. Anything living in\na connected account - mail, calendar, chat, docs, repos, issues, web lookups -\ngoes through app_action even when a browser is open, because it is faster and\ncannot misclick. Anything on this machine goes through computer_use, and simply\nputting a page in front of the user is open_url.",
+      "changedFiles": [
+        "BurnOS.pro",
+        "mainwindow.cpp",
+        "mainwindow.h",
+        "modelcatalogue.cpp",
+        "modelcatalogue.h",
+        "openrouter.cpp",
+        "settingsdialog.cpp",
+        "settingsdialog.h"
+      ]
+    },
+    {
+      "commit": "4dd9b1490063d65e221466d0924742ac3179fff9",
+      "url": "https://github.com/onfire7777/Burnos/commit/4dd9b1490063d65e221466d0924742ac3179fff9",
+      "authorTimestamp": "2026-09-29T21:01:07-07:00",
+      "message": "v0.8: shortcuts read as shortcuts, text typed behind windows, zoom\n\nFound by the test suite on the real desktop:\n- A background ctrl+a arrived as a bare 'a' - 4 times out of 4 in a Win32\n  text box, and \"aC:\\Users...\" in a Save dialog's file name - because the\n  modifiers were let go the moment the keys were queued. They are now held\n  until the window has taken the keys (a sent WM_NULL is delivered before its\n  next queued message): 6 out of 6 select all.\n- WinUI 3 apps (the new Notepad) ignore a posted ctrl+s however it is sent,\n  so a shortcut for one goes through the real keyboard and says so.\n- The new Notepad behind another window reports no focus and drops text\n  posted to its frame: text now goes to the window of its document or\n  field. Typed into Notepad behind File Explorer, focus never moved.\n- screenshot with x, y, to_x and to_y zooms into part of the last picture;\n  a 5120 pixel wide monitor shrinks a maximized window four times, and a\n  shrunk picture now says so.\n- The talker writes numbers in a brief as they are written - 0.8, not\n  zero point eight - because the task types what it is given.\n\nProbes: _research/chord-probe.ps1, notepad-probe.ps1, spotify-probe.ps1.",
+      "changedFiles": [
+        "agent.cpp",
+        "computeruse.cpp"
+      ]
+    },
+    {
+      "commit": "6b3f32ad54038615adbca2f6855ef14c6c1e878d",
+      "url": "https://github.com/onfire7777/Burnos/commit/6b3f32ad54038615adbca2f6855ef14c6c1e878d",
+      "authorTimestamp": "2026-10-01T13:20:21-07:00",
+      "message": "v0.10: none of Burnos's own lines is lost, and a crowded profile shows what matters\n\n- The memory keeps sixteen records authored by the assistant per store, for\n  good: the seventeenth capture answers with an id and stores nothing. From\n  its sixteenth answer on, Burnos's half of the conversation was missing from\n  the ledger and from working memory, hidden until a restart by the lines\n  still shown from the program's own queue. Burnos's lines are now marked as\n  suggested to the user (metadata.reality_class), which the memory keeps\n  without limit and still ranks below the user's own words. Every capture's\n  answer is checked, and a line the memory did not keep is logged as lost.\n- With more in the profile than is shown at once, standing instructions come\n  first, then what shares a word with what was just said, then the newest.\n  Taken as they came - oldest first - the newest were never shown.\n- A fact asked to be remembered twice is kept once.\n\nSuite: a check per group that every spoken line reached the memory (it fails\non the commit before this one), and a group with a crowded profile. 41 and 40\nof 42.",
+      "changedFiles": [
+        "agent.cpp",
+        "agent.h"
+      ]
+    },
+    {
+      "commit": "5689d3f52bf8796850d8e12ab3754d52d8bfaf3c",
+      "url": "https://github.com/onfire7777/Burnos/commit/5689d3f52bf8796850d8e12ab3754d52d8bfaf3c",
+      "authorTimestamp": "2026-10-10T15:28:54-07:00",
+      "message": "v0.18.1: transcription that cannot get stuck, commands in any words, the voice waits\n\nA HOLD OF THE TRANSCRIPTION KEY NEVER ENDED when Ctrl was let go before the key: another dictation tool hooked on the same key swallowed the key's release once Ctrl was up, and Windows went on reporting the key down - 92 seconds of speech were held for typing and the agent heard none of it. The hold now lasts while every key of the combination is down and ends when any one comes up (mainwindow.cpp m_keyWatch). Two ways out besides: a press of the key while a hold is running ends it, and so does a click on the orb. A double click ends a hold and transcription by voice too.\n\nCOMMANDS IN THE USER'S OWN WORDS. transcriptionCommand is no longer a list of phrases: a short thing to say that names transcription or dictation and says which way - start, stop, or read back what was transcribed last. What it does not recognise the talker hears as usual, and the talker has a new tool, transcription(start | stop | read_back), which it calls for any wording (Agent::transcriptionAsked); a turn that starts transcription or reads it back says nothing of its own. While words are being typed nothing goes to a model, so stopping is decided here alone, on a phrase of eight words or fewer.\n\nREAD BACK (MainWindow::readBack): the last hold of the key, or all that was typed since transcription was started by voice, said with the built-in voice as news - to no model and into no memory.\n\nTHE VOICE WAITS, THE WORK CONTINUES (holdVoice): the moment transcription starts, by key or by voice, whatever was being said is cut off and put back at the front of the queue, and it is said again from the start when transcription is over. Tasks are not touched and their news waits.\n\nTHE AGENT AND TRANSCRIPTION DO NOT MIX: a phrase being said to the agent as the key goes down ends there and stays the agent's (SttEngine::beginHeld), where 0.18.0 folded it into the hold and typed it.\n\nTHE KEY may be any single key, or a key with Ctrl, Shift, Alt or Win (settingsdialog.cpp KeyField): 0.18.0 wanted Ctrl, Alt or Win for anything but a function key.\n\nProved on the test copy: the Ctrl-first release that stuck now ends the hold and the next press works; a click ends a hold still down; a bare key and Shift+key hold; start, stop and read back said five different ways, two of them through the talker's tool; an answer cut off by transcription said after it; a task that ran a 13 second command through a dictation and reported afterwards; the Settings field storing F9, D, F8, Shift+A and Ctrl+Alt+D.",
+      "changedFiles": [
+        "BurnOS.pro",
+        "agent.cpp",
+        "agent.h",
+        "mainwindow.cpp",
+        "mainwindow.h",
+        "settingsdialog.cpp",
+        "sttengine.cpp"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,255 @@
+1
+00:00:00,550 --> 00:00:03,688
+What if your next great idea didn't have to start
+
+2
+00:00:03,688 --> 00:00:04,315
+from scratch?
+
+3
+00:00:04,565 --> 00:00:08,061
+Meet Burnos. The voice on your desktop, with a memory
+
+4
+00:00:08,061 --> 00:00:08,760
+that stays.
+
+5
+00:00:12,550 --> 00:00:15,603
+Let's launch Aurora: a design workshop for beginners.
+
+6
+00:00:15,853 --> 00:00:19,209
+Tell Burnos the goal while you keep working. It listens,
+
+7
+00:00:19,209 --> 00:00:21,894
+answers out loud, and lets you interrupt naturally.
+
+8
+00:00:21,894 --> 00:00:24,243
+One small orb. Your ideas keep moving.
+
+9
+00:00:25,550 --> 00:00:28,152
+Remember: six hundred dollars, a blue and violet
+
+10
+00:00:28,152 --> 00:00:30,104
+style, and a workshop for beginners.
+
+11
+00:00:30,354 --> 00:00:33,831
+Mnemosyne is already built into Burnos. It brings
+
+12
+00:00:33,831 --> 00:00:36,004
+together recent conversation, saved preferences,
+
+13
+00:00:36,004 --> 00:00:37,308
+and relevant memories.
+
+14
+00:00:37,558 --> 00:00:40,384
+Come back later: let's plan Aurora. Meaning based
+
+15
+00:00:40,384 --> 00:00:42,858
+recall brings the relevant context with you.
+
+16
+00:00:43,108 --> 00:00:46,032
+Change the palette? Correct it. Need something forgotten?
+
+17
+00:00:46,032 --> 00:00:48,225
+Ask. You stay in the loop.
+
+18
+00:00:49,550 --> 00:00:51,888
+Here's the real memory backend in action.
+
+19
+00:00:52,138 --> 00:00:55,734
+Save a project through M C P. Restart the server.
+
+20
+00:00:55,734 --> 00:00:56,453
+Search again.
+
+21
+00:00:56,703 --> 00:01:00,366
+The same source returns from local storage. Persistent
+
+22
+00:01:00,366 --> 00:01:02,197
+context, with traceable evidence.
+
+23
+00:01:03,550 --> 00:01:06,813
+Next, research workshop options while we shape the
+
+24
+00:01:06,813 --> 00:01:07,220
+agenda.
+
+25
+00:01:07,470 --> 00:01:10,693
+A fast conversation model keeps talking. Background
+
+26
+00:01:10,693 --> 00:01:12,074
+agents keep working.
+
+27
+00:01:12,324 --> 00:01:15,401
+Add keep it beginner friendly, mid task. Steer the
+
+28
+00:01:15,401 --> 00:01:18,137
+plan without restarting it. Interrupt an answer without
+
+29
+00:01:18,137 --> 00:01:21,214
+stopping the job, or stop everything when you choose.
+
+30
+00:01:22,550 --> 00:01:25,176
+Burnos's new browser searches workshop formats, opens
+
+31
+00:01:25,176 --> 00:01:29,302
+useful pages, and reads the event brief as a P D
+
+32
+00:01:29,302 --> 00:01:29,677
+F.
+
+33
+00:01:29,927 --> 00:01:32,933
+The brief calls for twelve people and ninety minutes.
+
+34
+00:01:33,183 --> 00:01:35,989
+Research stays in separate background tabs. Useful
+
+35
+00:01:35,989 --> 00:01:39,998
+context comes back to the same plan, while your own
+
+36
+00:01:39,998 --> 00:01:41,201
+browser stays yours.
+
+37
+00:01:42,550 --> 00:01:45,553
+Now turn that research into a launch brief: a ninety
+
+38
+00:01:45,553 --> 00:01:48,855
+minute agenda, and a budget that adds up to six hundred
+
+39
+00:01:48,855 --> 00:01:49,156
+dollars.
+
+40
+00:01:49,406 --> 00:01:52,322
+Then dictate the invitation into your writing app.
+
+41
+00:01:52,572 --> 00:01:56,367
+Burnos can work with files, commands, and desktop
+
+42
+00:01:56,367 --> 00:01:59,213
+controls, so conversation becomes useful output.
+
+43
+00:02:00,550 --> 00:02:03,467
+Next, check the calendar, prepare the event draft,
+
+44
+00:02:03,467 --> 00:02:05,656
+and organize the follow up tasks.
+
+45
+00:02:05,906 --> 00:02:09,102
+M C P servers and Composio connections bring your
+
+46
+00:02:09,102 --> 00:02:10,522
+apps into the workflow.
+
+47
+00:02:10,772 --> 00:02:13,848
+One project, from remembered context to a plan ready
+
+48
+00:02:13,848 --> 00:02:15,215
+for your next move.
+
+49
+00:02:16,550 --> 00:02:19,468
+Make it yours. Choose the models for conversation
+
+50
+00:02:19,468 --> 00:02:21,291
+and work. Pick a voice.
+
+51
+00:02:21,541 --> 00:02:24,585
+Use optional wake word mode and speaker matching.
+
+52
+00:02:24,585 --> 00:02:28,390
+Mute by voice, or with one click. Double click to
+
+53
+00:02:28,390 --> 00:02:29,151
+stop everything.
+
+54
+00:02:29,401 --> 00:02:32,558
+The orb changes color, so you can see what Burnos
+
+55
+00:02:32,558 --> 00:02:33,190
+is doing.
+
+56
+00:02:34,550 --> 00:02:38,095
+On Windows: local speech, local voices, and local
+
+57
+00:02:38,095 --> 00:02:38,538
+memory.
+
+58
+00:02:38,788 --> 00:02:42,160
+Cloud models handle reasoning and optional semantic
+
+59
+00:02:42,160 --> 00:02:42,642
+search.
+
+60
+00:02:42,892 --> 00:02:46,240
+Our Alexa Plus track demo combines a simulated assistant
+
+61
+00:02:46,240 --> 00:02:49,216
+with a working M C P memory server.
+
+62
+00:02:50,550 --> 00:02:53,387
+Remember the context. Keep the conversation. Move
+
+63
+00:02:53,387 --> 00:02:54,603
+the work forward.
+
+64
+00:02:54,853 --> 00:02:58,228
+Burnos. Your next idea already has a head start.

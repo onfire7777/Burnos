@@ -1,0 +1,4324 @@
+{
+  "recordedAt": "2026-10-14T00:14:59.357557+00:00",
+  "protocol": "2025-11-25",
+  "backend": "SQLite",
+  "fixture": "fictional project, isolated local store",
+  "reopenedServer": true,
+  "sameSourceId": true,
+  "toolCount": 60,
+  "trace": [
+    {
+      "label": "MCP handshake",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "burnos-video-proof",
+            "version": "1.0"
+          }
+        }
+      },
+      "httpStatus": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {
+            "experimental": {},
+            "tools": {
+              "listChanged": false
+            }
+          },
+          "serverInfo": {
+            "name": "mnemosyne-memory",
+            "version": "1.0.1+be29799f"
+          }
+        }
+      }
+    },
+    {
+      "label": "Discover memory tools",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+      },
+      "httpStatus": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "tools": [
+            {
+              "name": "working_seed",
+              "description": "Seed tenant/session-scoped working memory with bounded TTL and evidence provenance.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "evidence_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "ttl_seconds": {
+                    "type": "integer"
+                  },
+                  "created_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {}
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 3
+                  },
+                  "item_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "session_id",
+                  "user_id",
+                  "agent_id",
+                  "task_id",
+                  "branch",
+                  "kind",
+                  "content",
+                  "evidence_ids",
+                  "ttl_seconds",
+                  "created_at"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "working_query",
+              "description": "List live working-memory items in an explicit authenticated subject scope, newest first. limit keeps only the newest `limit` items after the scope filter; kinds keeps only items of those kinds. With neither, every live item of the scope is returned.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "as_of": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {}
+                    ]
+                  },
+                  "limit": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 1,
+                    "description": "Return only the newest `limit` items after the scope filter."
+                  },
+                  "kinds": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Return only items whose kind is in this list."
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "session_id",
+                  "user_id",
+                  "agent_id",
+                  "task_id",
+                  "branch",
+                  "as_of"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "working_promote",
+              "description": "Promote one working item through the regression-backed promotion gate.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "item_id": {
+                    "type": "string"
+                  },
+                  "as_of": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {}
+                    ]
+                  },
+                  "cases": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "session_id",
+                  "user_id",
+                  "agent_id",
+                  "task_id",
+                  "branch",
+                  "item_id",
+                  "as_of",
+                  "cases",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "working_expire",
+              "description": "Expire due working-memory items in an explicit authenticated subject scope.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string"
+                  },
+                  "expired_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {}
+                    ]
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "session_id",
+                  "user_id",
+                  "agent_id",
+                  "task_id",
+                  "branch",
+                  "expired_at",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "capture",
+              "description": "Append verbatim evidence to the content-addressed ledger. created=true only when this call inserted a live row; idempotent=true only when that live row was already present. A blocked erased replay or a deferred write sets both to false. tenant_id must not be empty.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "actor": {
+                    "type": "string"
+                  },
+                  "source_type": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "source_identity": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "session_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "metadata": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "actor",
+                  "source_type",
+                  "content"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "ingest",
+              "description": "Run the ingestion pipeline with provenance verification and optional object externalization.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "actor": {
+                    "type": "string"
+                  },
+                  "source_type": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "data": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "contentEncoding": "base64"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "source_identity": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "media_type": {
+                    "type": "string",
+                    "default": "text/plain"
+                  },
+                  "modality": {
+                    "type": "string",
+                    "default": "text"
+                  },
+                  "metadata": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "signed_provenance": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "sensitivity": {
+                    "type": "integer",
+                    "default": 0
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "actor",
+                  "source_type"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "assert_fact",
+              "description": "Upsert a typed assertion with evidence provenance.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "predicate": {
+                    "type": "string"
+                  },
+                  "object_value": {
+                    "type": "string"
+                  },
+                  "source_evidence_cids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.7,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "valid_from": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "subject",
+                  "predicate",
+                  "object_value",
+                  "source_evidence_cids"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "source_sync",
+              "description": "Compile committed Markdown/git source-of-truth assertion blocks into evidence-backed memory.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "root": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "apply": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "operator"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "allow_dirty": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "root"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "relation",
+              "description": "Add a temporal relation edge for graph retrieval. Without source_evidence_cids a self-attested evidence record is minted so the edge is still retrievable, and the result carries a warning: such an edge earns no independent corroboration and is graded at the lowest visible trust tier.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "predicate": {
+                    "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.7,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "source_evidence_cids": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 3
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "source",
+                  "predicate",
+                  "target"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "preference",
+              "description": "Record an explicit or inferred preference with precedence rules.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "category": {
+                    "type": "string"
+                  },
+                  "statement": {
+                    "type": "string"
+                  },
+                  "explicit": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.7,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "source_evidence_cids": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "access_policy": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "category",
+                  "statement"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "schedule_intention",
+              "description": "Schedule a data-only prospective-memory intention backed by originating evidence. An optional session-scoped idempotency_key replays the original creation acknowledgement; use list_intentions for current state.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "trigger_type": {
+                    "type": "string"
+                  },
+                  "trigger_expression": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "action": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "due_at": {
+                    "type": "string"
+                  },
+                  "evidence_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "priority": {
+                    "type": "string",
+                    "default": "normal"
+                  },
+                  "dependencies": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "reschedule_history": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "recurrence_policy": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "idempotency_key": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "agent_id",
+                  "trigger_type",
+                  "trigger_expression",
+                  "action",
+                  "due_at",
+                  "evidence_ids"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "update_intention",
+              "description": "Reschedule or replace the data-only action for an authenticated subject intention.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "intention_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "due_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "action": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "recurrence_policy": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "expected_revision": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "idempotency_key": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "intention_id",
+                  "user_id",
+                  "agent_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "cancel_intention",
+              "description": "Cancel a scheduled prospective-memory intention as its owning user or agent.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "intention_id": {
+                    "type": "string"
+                  },
+                  "cancelled_by": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "idempotency_key": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "intention_id",
+                  "cancelled_by"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "evaluate_intentions",
+              "description": "Evaluate due prospective-memory intentions from an authenticated scheduler context.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "evaluated_at": {
+                    "type": "string"
+                  },
+                  "trigger_context": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "operating_point": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "evaluated_at",
+                  "trigger_context",
+                  "operating_point"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "list_intentions",
+              "description": "List prospective-memory intentions owned by the authenticated subject.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "include_revision": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "tenant_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "search",
+              "description": "Fast hybrid retrieval with trust filtering, provenance, confidence, and abstention. Trust tiers are numeric and lower is MORE trusted (0 = direct user, 5 = untrusted external). min_trust_tier and max_trust_tier both name the least-trusted tier still admitted, and max_trust_tier is the one applied when both are given, so a contradictory pair (min above max) is refused rather than silently collapsed. session_id (honoured only with a valid signed session_token for that session, refused otherwise) ranks that session's live working memory together with long-term memory in the one list, and a working item and the ledger record it cites come back as one hit. token_budget fits the hits to fewer tokens and is clamped, not refused, above the policy budget of 4096. lean leaves out the explain block and the per-hit diagnostics. Every hit's metadata says its memory_type and created_at.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "min_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 0,
+                    "maximum": 5
+                  },
+                  "max_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 0,
+                    "maximum": 5
+                  },
+                  "max_sensitivity": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "reader"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "residency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "region": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "break_glass": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "lawful_basis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "session_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Rank this session's live working memory together with long-term memory. Honoured only on a call carrying a valid signed session_token for the same session; refused otherwise."
+                  },
+                  "token_budget": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 1,
+                    "description": "Fit the hits to this many tokens. A value above the policy budget (4096) is clamped to it, not refused."
+                  },
+                  "lean": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Leave out the explain block and the per-hit diagnostics (standing, standing_observability, reality_monitoring, retrieved_text, activation, privacy, lifecycle)."
+                  },
+                  "query_mode": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "evaluated_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "query"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "deep_search",
+              "description": "Expanded retrieval path with graph channel enabled when graph data exists. Takes session_id, token_budget and lean exactly as search does.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "reader"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "max_sensitivity": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "residency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "region": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "break_glass": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "lawful_basis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "session_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Rank this session's live working memory together with long-term memory. Honoured only on a call carrying a valid signed session_token for the same session; refused otherwise."
+                  },
+                  "token_budget": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 1,
+                    "description": "Fit the hits to this many tokens. A value above the policy budget (4096) is clamped to it, not refused."
+                  },
+                  "lean": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Leave out the explain block and the per-hit diagnostics (standing, standing_observability, reality_monitoring, retrieved_text, activation, privacy, lifecycle)."
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "query"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "get",
+              "description": "Fetch one CURRENTLY VALID memory record by id or cid from the tenant export surface. History is deliberately out of scope: a superseded, retracted or erased record is reported as not found. The ledger still retains a superseded assertion (status=superseded, with valid_to set), and its earlier value is read with graph_as_of at a timestamp inside its validity window.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "reader"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "max_sensitivity": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "residency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "region": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "break_glass": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "lawful_basis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "explain",
+              "description": "Return retrieval stages, channels, provenance, confidence, and immutable rails.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "query": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "reader"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "max_sensitivity": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "residency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "region": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "break_glass": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "lawful_basis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "query"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "propose",
+              "description": "Write a candidate fact into an isolated proposal branch for later confirmation.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "predicate": {
+                    "type": "string"
+                  },
+                  "object_value": {
+                    "type": "string"
+                  },
+                  "source_evidence_cids": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.7,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "trust_tier": {
+                    "type": "integer",
+                    "default": 3
+                  },
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "subject",
+                  "predicate",
+                  "object_value"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "confirm",
+              "description": "Confirm a proposed branch or candidate id by merging it into main.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  },
+                  "tenant_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "branch": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "into": {
+                    "type": "string",
+                    "default": "main"
+                  }
+                },
+                "required": [
+                  "id",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "correct",
+              "description": "Record an authoritative correction and upsert the superseding assertion.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "predicate": {
+                    "type": "string"
+                  },
+                  "object_value": {
+                    "type": "string"
+                  },
+                  "correction_text": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.95,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "subject",
+                  "predicate",
+                  "object_value",
+                  "correction_text"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "supersede",
+              "description": "Supersede an existing assertion with a newer assertion value.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "new": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.95,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "valid_from": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "id",
+                  "new"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "forget",
+              "description": "Erase evidence content on EVERY branch holding the cid and propagate retraction or provenance trimming. Reports branches_erased; pass all_branches=false to erase only the named branch.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "cid": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "requested_by": {
+                    "type": "string",
+                    "default": "user"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "operator"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "erasure_mode": {
+                    "type": "string",
+                    "default": "tombstone_recompute"
+                  },
+                  "all_branches": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "cid"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "export",
+              "description": "Export a caller-scoped tenant disclosure view with omissions and redactions reported.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "reader"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "max_sensitivity": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "residency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "region": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "break_glass": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "lawful_basis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "residency_policy",
+              "description": "Inspect configured data/runtime residency enforcement and transfer allowlists.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "branch",
+              "description": "Create a branch from an existing branch. The name must be non-empty, must not be the reserved name 'main', and must not be path-like.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  },
+                  "from_branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "default": "scratch"
+                  },
+                  "tenant_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "name",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "merge",
+              "description": "Merge a branch into another branch through the engine contract.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "from_branch": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  },
+                  "into": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "tenant_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "from_branch",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "discard",
+              "description": "Discard a non-main branch and its candidate memories.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "branch": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  },
+                  "tenant_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "branch",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_add",
+              "description": "Add a typed user-model entry.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "statement": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.7,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "exceptions": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "source_evidence_cids": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "kind",
+                  "statement"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_context",
+              "description": "Return scope-matched user-model context.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_get_relevant",
+              "description": "Blueprint alias for returning relevant user-profile context.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "context": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_record_explicit",
+              "description": "Blueprint alias for recording an explicit user preference.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "statement": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.9,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "source_evidence_cids": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "statement"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_propose_inference",
+              "description": "Blueprint alias for proposing an inferred user preference.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "statement": {
+                    "type": "string"
+                  },
+                  "context": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.55,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "source_evidence_cids": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "statement"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_correct",
+              "description": "Record an explicit profile correction. The entry named by id is superseded by the corrected statement and no longer appears in profile_context; weaker inferred entries that differ are superseded too. id must name an active entry in this tenant/user scope. The correction keeps that entry's scope unless context is given, and is an explicit preference unless it replaces an instruction or an identity, which stay what they are. Authority is the caller's role and trust tier (a signed session sets both): correcting a hard instruction is a policy write.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "statement": {
+                    "type": "string"
+                  },
+                  "context": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "confidence": {
+                    "type": "number",
+                    "default": 0.95,
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "id",
+                  "statement"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_retire",
+              "description": "Take a profile entry back: it stops being active and no longer appears in profile_context. The record is kept, marked retracted. An unknown id, or one from another tenant or user, is an error. Authority is the caller's role and trust tier (a signed session sets both): taking an entry back is a destructive write, which needs the operator or consolidator role, and a hard instruction is a policy write.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "operator"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_record_mistake",
+              "description": "Record a neutral user-slip episode and promote scoped support only after repeated similar events.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "suggestion": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "occurred_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "source_trust_tier": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "pattern",
+                  "description"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "profile_retire_support_strategy",
+              "description": "Retire a scoped support strategy so it no longer appears in profile context.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "strategy_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "operator"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer",
+                    "default": 0
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "strategy_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "prefetch",
+              "description": "Warm retrieval contexts through the anticipatory predictability gate.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "candidates": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "query": {
+                          "type": "string"
+                        },
+                        "probability": {
+                          "type": "number",
+                          "minimum": 0.0,
+                          "maximum": 1.0
+                        },
+                        "reason": {
+                          "type": "string"
+                        },
+                        "metadata": {
+                          "type": "object",
+                          "additionalProperties": true
+                        }
+                      },
+                      "required": [
+                        "query",
+                        "probability"
+                      ],
+                      "additionalProperties": true
+                    }
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "agent"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "candidates"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "graph_neighbors",
+              "description": "Run tenant- and branch-scoped graph PPR over relation seeds. k is the number of hits and must be at least 1.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "seeds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "k": {
+                    "type": "integer",
+                    "default": 8,
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "seeds"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "graph_query",
+              "description": "Graph neighbour query over relation seeds, limited to edges whose both endpoints lie within hops edges of a seed. hops and k must each be at least 1.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "seeds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "hops": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1
+                  },
+                  "k": {
+                    "type": "integer",
+                    "default": 8,
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "seeds"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "graph_timeline",
+              "description": "Return assertion and relation events involving an entity.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "entity": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string",
+                    "default": "reader"
+                  },
+                  "user_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "max_sensitivity": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "capability_tags": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "purpose": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "residency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "region": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "break_glass": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "lawful_basis": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "entity"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "graph_as_of",
+              "description": "Return bitemporal assertions for a subject/predicate at a timestamp.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "subject": {
+                    "type": "string"
+                  },
+                  "predicate": {
+                    "type": "string"
+                  },
+                  "time": {
+                    "type": "string"
+                  },
+                  "branch": {
+                    "type": "string",
+                    "default": "main"
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "subject",
+                  "predicate",
+                  "time"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "trajectory_log",
+              "description": "Persist a trajectory for procedural/corrective learning. outcome must be 'success' or 'failure'.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "task": {
+                    "type": "string"
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "outcome": {
+                    "enum": [
+                      "success",
+                      "failure"
+                    ],
+                    "type": "string"
+                  },
+                  "reward": {
+                    "type": "number"
+                  },
+                  "memory_version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "session_id",
+                  "task",
+                  "steps",
+                  "outcome",
+                  "reward",
+                  "memory_version"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "trajectory_record",
+              "description": "Blueprint alias for persisting a trajectory. outcome must be 'success' or 'failure'.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "task": {
+                    "type": "string"
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "outcome": {
+                    "enum": [
+                      "success",
+                      "failure"
+                    ],
+                    "type": "string"
+                  },
+                  "reward": {
+                    "type": "number"
+                  },
+                  "memory_version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "user_id",
+                  "session_id",
+                  "task",
+                  "steps",
+                  "outcome",
+                  "reward",
+                  "memory_version"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "trajectory_attribute",
+              "description": "Attribute a logged failure trajectory.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "trajectory_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "trajectory_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "lesson_induce",
+              "description": "Induce a corrective lesson from a failure attribution.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "trajectory_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "trajectory_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "lesson_propose",
+              "description": "Blueprint alias for proposing a lesson from a trajectory.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "trajectory_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "trajectory_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "procedure_induce",
+              "description": "Induce a procedure from a corrective lesson.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "lesson_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "lesson_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "procedure_propose",
+              "description": "Blueprint alias for proposing a procedure from a lesson.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "lesson_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "lesson_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "lesson_promote",
+              "description": "Promote a lesson through protected regression cases. Requires at least one regression case, like working_promote.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "lesson_id": {
+                    "type": "string"
+                  },
+                  "cases": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "lesson_id",
+                  "cases",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "procedure_validate",
+              "description": "Mark an induced procedure as validated for the isolated parametric tier.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "procedure_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "procedure_id",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "procedure_promote",
+              "description": "Promote a validated procedure into the active procedural tier.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "procedure_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "procedure_id",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "procedure_search",
+              "description": "Search procedures by name, body, signature, tenant, and status.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "tenant_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "procedure_rollback",
+              "description": "Mark a procedure as rolled back without deleting history.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "procedure_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "procedure_id",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "lesson_search",
+              "description": "Search lessons by failure signature, content, tenant, and status.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "signature": {
+                    "type": "string"
+                  },
+                  "tenant_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "status": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "signature"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "outcome_evaluate",
+              "description": "Evaluate a logged trajectory outcome or counterfactual before/after counts.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "trajectory_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "before_successes": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 0
+                  },
+                  "after_successes": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 0
+                  },
+                  "total_cases": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "minimum": 1
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "parametric_propose",
+              "description": "Create an isolated shadow parametric artifact from active lessons/procedures.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "tenant_id": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "tenant_id",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "parametric_evaluate",
+              "description": "Evaluate a shadow parametric artifact against persisted protected gate evidence.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "artifact_uri": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  },
+                  "protected_case_count": {
+                    "type": "integer",
+                    "default": 1
+                  },
+                  "gate_promoted": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "protected_regressions": {
+                    "anyOf": [
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "artifact_uri",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "name": "parametric_rollback",
+              "description": "Roll back a persisted isolated parametric artifact with protected-suite evidence.",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "artifact_uri": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "reader",
+                      "agent",
+                      "consolidator",
+                      "operator"
+                    ],
+                    "type": "string"
+                  },
+                  "source_trust_tier": {
+                    "type": "integer"
+                  },
+                  "protected_case_count": {
+                    "type": "integer",
+                    "default": 1
+                  }
+                },
+                "required": [
+                  "artifact_uri",
+                  "reason",
+                  "role",
+                  "source_trust_tier"
+                ],
+                "additionalProperties": false
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "label": "Save fictional project context",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+          "name": "capture",
+          "arguments": {
+            "tenant_id": "burnos-video-fictional-demo",
+            "user_id": "demo",
+            "actor": "assistant",
+            "source_type": "fictional-video-demo",
+            "trust_tier": 3,
+            "content": "For the fictional Aurora launch, a beginner design workshop, the budget is 600 dollars. Use a blue and violet palette."
+          }
+        }
+      },
+      "httpStatus": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\n  \"cid\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n  \"branch\": \"main\",\n  \"created\": true,\n  \"idempotent\": false\n}"
+            }
+          ],
+          "structuredContent": {
+            "cid": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+            "branch": "main",
+            "created": true,
+            "idempotent": false
+          },
+          "isError": false
+        }
+      }
+    },
+    {
+      "label": "MCP handshake",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {},
+          "clientInfo": {
+            "name": "burnos-video-proof",
+            "version": "1.0"
+          }
+        }
+      },
+      "httpStatus": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "protocolVersion": "2025-11-25",
+          "capabilities": {
+            "experimental": {},
+            "tools": {
+              "listChanged": false
+            }
+          },
+          "serverInfo": {
+            "name": "mnemosyne-memory",
+            "version": "1.0.1+be29799f"
+          }
+        }
+      }
+    },
+    {
+      "label": "Retrieve after server restart",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+          "name": "search",
+          "arguments": {
+            "tenant_id": "burnos-video-fictional-demo",
+            "query": "Aurora launch budget palette"
+          }
+        }
+      },
+      "httpStatus": 200,
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\n  \"query\": \"Aurora launch budget palette\",\n  \"hits\": [\n    {\n      \"id\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n      \"kind\": \"evidence\",\n      \"tenant_id\": \"burnos-video-fictional-demo\",\n      \"branch\": \"main\",\n      \"text\": \"For the fictional Aurora launch, a beginner design workshop, the budget is 600 dollars. Use a blue and violet palette.\",\n      \"score\": 0.4820135750518768,\n      \"channel\": \"dense_hash+lexical+rerank\",\n      \"provenance\": [\n        \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\"\n      ],\n      \"trust_tier\": 3,\n      \"sensitivity\": 0,\n      \"metadata\": {\n        \"actor\": \"assistant\",\n        \"source_type\": \"fictional-video-demo\",\n        \"modality\": \"text\",\n        \"content_pointer\": null,\n        \"reality_class\": \"self_generated\",\n        \"stored_media_embedding\": false,\n        \"embedding_partition\": \"public\",\n        \"privacy\": {\n          \"access_decision\": \"allowed\",\n          \"role\": \"reader\",\n          \"effective_max_sensitivity\": 1,\n          \"redacted\": false\n        },\n        \"retrieved_text\": {\n          \"kind\": \"retrieved_memory_data\",\n          \"trust_tier\": 3,\n          \"instruction_authority\": \"none\",\n          \"capability_tags\": [\n            \"data-only\",\n            \"no-write-authority\",\n            \"sanitize-as-data\"\n          ],\n          \"content\": \"For the fictional Aurora launch, a beginner design workshop, the budget is 600 dollars. Use a blue and violet palette.\"\n        },\n        \"reranker\": \"local-similarity\",\n        \"stored_embedding_used\": false,\n        \"activation\": {\n          \"score\": 0.406,\n          \"components\": {\n            \"base_level\": 0.0,\n            \"semantic\": 1.0,\n            \"importance\": 0.28,\n            \"recency\": 0.0\n          }\n        },\n        \"standing\": {\n          \"standing_fn_version\": \"standing.continuous.v1\",\n          \"value\": 0.128096,\n          \"groundedness\": 0.128096,\n          \"salience\": 0.406,\n          \"authority_threshold\": 0.5,\n          \"authority\": false,\n          \"authority_axis\": \"groundedness\",\n          \"mode\": \"continuous_two_axis\",\n          \"derived\": true,\n          \"writes_evidence\": false,\n          \"explain\": {\n            \"inputs\": {\n              \"reality_class\": \"self_generated\",\n              \"trust_tier\": 3,\n              \"calibrated_confidence\": 0.3012,\n              \"corroboration_count\": 1,\n              \"independent_corroboration_count\": 0,\n              \"effective_independent_corroboration_count\": 0,\n              \"independent_corroboration_weight\": 0.0,\n              \"self_generated_corroboration_count\": 1,\n              \"rejected_corroboration_count\": 1,\n              \"contradiction_pressure\": 0.0,\n              \"groundedness_decay\": 0.0,\n              \"activation\": 0.406,\n              \"birth_groundedness\": 0.08,\n              \"credential_birth_groundedness_applied\": false\n            },\n            \"bands\": {\n              \"grounded_floor\": 0.51,\n              \"self_generated_ceiling\": 0.49,\n              \"evidence_dominance_gap\": 0.02\n            },\n            \"fail_closed\": false,\n            \"authority_axis\": \"groundedness\",\n            \"salience_excluded_from_authority\": true,\n            \"self_corroboration_rejected\": true,\n            \"h1_independent_external_only\": true,\n            \"h2_authority_uses_groundedness_only\": true,\n            \"h3_evidence_dominance_gap\": true,\n            \"h11_earned_autonomy_bounded\": true\n          }\n        },\n        \"standing_rank_multiplier\": 0.795919,\n        \"standing_observability\": {\n          \"schema_version\": \"standing.observability.v1\",\n          \"standing_fn_version\": \"standing.continuous.v1\",\n          \"surface\": \"retrieval.rank\",\n          \"target\": {\n            \"id\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n            \"kind\": \"evidence\",\n            \"tenant_id\": \"burnos-video-fictional-demo\",\n            \"branch\": \"main\"\n          },\n          \"values\": {\n            \"groundedness\": 0.128096,\n            \"salience\": 0.406,\n            \"authority\": false\n          },\n          \"source_evidence_cids\": [\n            \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\"\n          ],\n          \"provenance_available\": true,\n          \"derived\": true,\n          \"writes_evidence\": false,\n          \"replayable\": true,\n          \"bitemporal_replay\": {\n            \"supported\": true,\n            \"projection_recomputes_from_ledger\": true\n          },\n          \"h12_observability\": true\n        },\n        \"memory_type\": \"evidence\",\n        \"created_at\": \"2026-10-14T00:14:59.083105+00:00\",\n        \"created_at_source\": \"record\"\n      }\n    }\n  ],\n  \"confidence\": 0.4275,\n  \"abstained\": true,\n  \"uncertainty_note\": \"Retrieved support has low groundedness or insufficient independent external support; abstaining until grounded evidence is available.\",\n  \"token_budget\": 4096,\n  \"used_tokens\": 30,\n  \"explain\": {\n    \"channels\": {\n      \"dense_hash\": 1,\n      \"lexical\": 1,\n      \"graph_ppr\": 0\n    },\n    \"rrf_k\": 60,\n    \"mmr_lambda\": 0.72,\n    \"activation\": {\n      \"weights\": {\n        \"base_level\": 0.35,\n        \"semantic\": 0.35,\n        \"importance\": 0.2,\n        \"recency\": 0.1\n      },\n      \"applied\": true,\n      \"hits\": [\n        {\n          \"id\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n          \"kind\": \"evidence\",\n          \"score\": 0.482014,\n          \"activation\": {\n            \"score\": 0.406,\n            \"components\": {\n              \"base_level\": 0.0,\n              \"semantic\": 1.0,\n              \"importance\": 0.28,\n              \"recency\": 0.0\n            }\n          }\n        }\n      ]\n    },\n    \"calibration\": {\n      \"source\": \"policy\",\n      \"memory_type\": \"fact\",\n      \"threshold\": 0.45,\n      \"nonconformity\": \"per_example\"\n    },\n    \"confidence\": {\n      \"score\": 0.4275,\n      \"answer_score\": 0.4275,\n      \"prediction_set_size\": 1,\n      \"threshold\": 0.45,\n      \"source\": \"evidence_quality\",\n      \"query_support\": {\n        \"score\": 1.0,\n        \"threshold\": 0.6666666666666666,\n        \"matched_terms\": [\n          \"aurora\",\n          \"launch\",\n          \"budget\",\n          \"palette\"\n        ],\n        \"missing_terms\": [],\n        \"query_terms\": [\n          \"aurora\",\n          \"launch\",\n          \"budget\",\n          \"palette\"\n        ]\n      }\n    },\n    \"semantic_entropy\": 0.0,\n    \"gist_support\": {\n      \"applied\": false,\n      \"gist_hit_ids\": [],\n      \"hit_count\": 1\n    },\n    \"reality_monitoring\": {\n      \"applied\": true,\n      \"classes\": {\n        \"self_generated\": 1\n      },\n      \"grounded_hit_count\": 0,\n      \"grounded_source_count\": 0,\n      \"risky_hit_ids\": [\n        \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\"\n      ],\n      \"ungrounded_only\": true,\n      \"shadow_only\": false,\n      \"critical_path\": true,\n      \"abstention_gate\": {\n        \"critical_path\": true,\n        \"shadow_only\": false,\n        \"trigger\": \"ungrounded_only\",\n        \"active\": true\n      },\n      \"shadow_source\": \"RealityMonitor\",\n      \"shadow_tags_shadow_only\": true,\n      \"shadow_tags_critical_path\": false,\n      \"shadow_tags\": {\n        \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\": {\n          \"reality_class\": \"self_generated\",\n          \"confidence\": 0.75,\n          \"calibrated\": true,\n          \"signals\": {\n            \"source_type\": \"fictional-video-demo\",\n            \"actor\": \"assistant\",\n            \"trust_tier\": 3,\n            \"explicit_label\": true,\n            \"explicit_label_conflict\": false,\n            \"provenance_count\": 1\n          }\n        }\n      },\n      \"standing\": {\n        \"standing_fn_version\": \"standing.continuous.v1\",\n        \"mode\": \"continuous_two_axis\",\n        \"authority_axis\": \"groundedness\",\n        \"authority_threshold\": 0.5,\n        \"evidence_dominance_gap\": 0.02,\n        \"hit_count\": 1,\n        \"authoritative_hit_count\": 0,\n        \"low_standing_hit_ids\": [\n          \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\"\n        ],\n        \"abstention_gate\": {\n          \"trigger\": \"standing_low_authority_only\",\n          \"active\": true,\n          \"critical_path\": true,\n          \"shadow_only\": false\n        },\n        \"hits\": [\n          {\n            \"hit_id\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n            \"kind\": \"evidence\",\n            \"authority\": false,\n            \"groundedness\": 0.128096,\n            \"salience\": 0.406,\n            \"standing_fn_version\": \"standing.continuous.v1\",\n            \"reality_class\": \"self_generated\",\n            \"explain\": {\n              \"inputs\": {\n                \"reality_class\": \"self_generated\",\n                \"trust_tier\": 3,\n                \"calibrated_confidence\": 0.3012,\n                \"corroboration_count\": 1,\n                \"independent_corroboration_count\": 0,\n                \"effective_independent_corroboration_count\": 0,\n                \"independent_corroboration_weight\": 0.0,\n                \"self_generated_corroboration_count\": 1,\n                \"rejected_corroboration_count\": 1,\n                \"contradiction_pressure\": 0.0,\n                \"groundedness_decay\": 0.0,\n                \"activation\": 0.406,\n                \"birth_groundedness\": 0.08,\n                \"credential_birth_groundedness_applied\": false\n              },\n              \"bands\": {\n                \"grounded_floor\": 0.51,\n                \"self_generated_ceiling\": 0.49,\n                \"evidence_dominance_gap\": 0.02\n              },\n              \"fail_closed\": false,\n              \"authority_axis\": \"groundedness\",\n              \"salience_excluded_from_authority\": true,\n              \"self_corroboration_rejected\": true,\n              \"h1_independent_external_only\": true,\n              \"h2_authority_uses_groundedness_only\": true,\n              \"h3_evidence_dominance_gap\": true,\n              \"h11_earned_autonomy_bounded\": true\n            }\n          }\n        ],\n        \"p1_mirror\": {\n          \"boolean_ungrounded_only\": true,\n          \"standing_ungrounded_only\": true,\n          \"zero_divergence\": true\n        },\n        \"legacy_reality_monitoring\": {\n          \"ungrounded_only\": true,\n          \"explain_only\": true\n        }\n      }\n    },\n    \"standing\": {\n      \"standing_fn_version\": \"standing.continuous.v1\",\n      \"mode\": \"continuous_two_axis\",\n      \"authority_axis\": \"groundedness\",\n      \"authority_threshold\": 0.5,\n      \"evidence_dominance_gap\": 0.02,\n      \"hit_count\": 1,\n      \"authoritative_hit_count\": 0,\n      \"low_standing_hit_ids\": [\n        \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\"\n      ],\n      \"abstention_gate\": {\n        \"trigger\": \"standing_low_authority_only\",\n        \"active\": true,\n        \"critical_path\": true,\n        \"shadow_only\": false\n      },\n      \"hits\": [\n        {\n          \"hit_id\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n          \"kind\": \"evidence\",\n          \"authority\": false,\n          \"groundedness\": 0.128096,\n          \"salience\": 0.406,\n          \"standing_fn_version\": \"standing.continuous.v1\",\n          \"reality_class\": \"self_generated\",\n          \"explain\": {\n            \"inputs\": {\n              \"reality_class\": \"self_generated\",\n              \"trust_tier\": 3,\n              \"calibrated_confidence\": 0.3012,\n              \"corroboration_count\": 1,\n              \"independent_corroboration_count\": 0,\n              \"effective_independent_corroboration_count\": 0,\n              \"independent_corroboration_weight\": 0.0,\n              \"self_generated_corroboration_count\": 1,\n              \"rejected_corroboration_count\": 1,\n              \"contradiction_pressure\": 0.0,\n              \"groundedness_decay\": 0.0,\n              \"activation\": 0.406,\n              \"birth_groundedness\": 0.08,\n              \"credential_birth_groundedness_applied\": false\n            },\n            \"bands\": {\n              \"grounded_floor\": 0.51,\n              \"self_generated_ceiling\": 0.49,\n              \"evidence_dominance_gap\": 0.02\n            },\n            \"fail_closed\": false,\n            \"authority_axis\": \"groundedness\",\n            \"salience_excluded_from_authority\": true,\n            \"self_corroboration_rejected\": true,\n            \"h1_independent_external_only\": true,\n            \"h2_authority_uses_groundedness_only\": true,\n            \"h3_evidence_dominance_gap\": true,\n            \"h11_earned_autonomy_bounded\": true\n          }\n        }\n      ],\n      \"p1_mirror\": {\n        \"boolean_ungrounded_only\": true,\n        \"standing_ungrounded_only\": true,\n        \"zero_divergence\": true\n      },\n      \"legacy_reality_monitoring\": {\n        \"ungrounded_only\": true,\n        \"explain_only\": true\n      }\n    },\n    \"answer_grounding_floor\": {\n      \"applied\": true,\n      \"critical_path\": true,\n      \"shadow_only\": false,\n      \"trigger\": \"answer_grounding_floor\",\n      \"active\": true,\n      \"flag_as_hypothesis\": true,\n      \"abstain\": true,\n      \"support_count\": 1,\n      \"low_grounded_self_support_count\": 1,\n      \"grounded_support_count\": 0,\n      \"low_grounded_self_fraction\": 1.0,\n      \"grounded_support_fraction\": 0.0,\n      \"max_low_grounded_self_fraction\": 0.5,\n      \"min_grounded_support_fraction\": 0.5,\n      \"low_groundedness_threshold\": 0.5,\n      \"reasons\": [\n        \"low_grounded_self_support_exceeds_fraction_cap\",\n        \"grounded_support_fraction_below_floor\"\n      ],\n      \"rows\": [\n        {\n          \"hit_id\": \"22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871\",\n          \"reality_class\": \"self_generated\",\n          \"groundedness\": 0.128096,\n          \"standing_authority\": false,\n          \"low_grounded_self_support\": true,\n          \"grounded_support\": false\n        }\n      ]\n    },\n    \"schema_fast_path\": {\n      \"applied\": false,\n      \"boost\": null,\n      \"boosted_hit_ids\": [],\n      \"reasons\": {},\n      \"passes\": [\n        {\n          \"applied\": false,\n          \"reason\": \"no_schema_pattern\",\n          \"boosted_hit_ids\": []\n        },\n        {\n          \"applied\": false,\n          \"reason\": \"no_schema_pattern\",\n          \"boosted_hit_ids\": []\n        }\n      ]\n    },\n    \"workspace_broadcast\": {\n      \"applied\": false,\n      \"source\": \"workspace_context\",\n      \"shadow_only\": true,\n      \"critical_path\": false,\n      \"data_not_instructions\": true,\n      \"used_for_control_flow\": false,\n      \"used_for_ranking\": false,\n      \"control_keys_stripped\": true,\n      \"raw_content_present\": false,\n      \"max_items\": 4,\n      \"item_count\": 0,\n      \"items\": []\n    },\n    \"workspace_retrieval_advisory\": {\n      \"version\": \"workspace-retrieval-advisory.v1\",\n      \"source\": \"workspace_retrieval_advisory\",\n      \"status\": \"not_requested\",\n      \"reason\": \"no_workspace_retrieval_advisory\",\n      \"apply_requested\": false,\n      \"used_for_ranking\": false,\n      \"critical_path\": false,\n      \"shadow_only\": true,\n      \"production_mutation\": false,\n      \"promotion_gate_required\": true,\n      \"item_count\": 0,\n      \"applied_item_count\": 0,\n      \"applied_hit_count\": 0\n    },\n    \"read_marks\": {\n      \"assertions\": 0,\n      \"evidence\": 1\n    },\n    \"adapters\": {\n      \"embedding\": \"local-hashing\",\n      \"embedding_dims\": 256,\n      \"reranker\": \"local-similarity\",\n      \"lexical_backend\": \"sqlite-fts5\",\n      \"graph_backend\": \"sqlite-cached-ppr\"\n    },\n    \"rails\": {\n      \"retrieved_text_is_data_not_instruction\": true,\n      \"writes_are_append_only_or_superseding\": true,\n      \"tenant_isolation_required\": true,\n      \"source_trust_filter_required\": true,\n      \"sensitive_and_destructive_writes_audited\": true,\n      \"branch_promotion_requires_gate\": true,\n      \"explicit_preferences_outrank_inferred\": true,\n      \"erasure_propagates_to_derived_indexes\": true\n    }\n  }\n}"
+            }
+          ],
+          "structuredContent": {
+            "query": "Aurora launch budget palette",
+            "hits": [
+              {
+                "id": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+                "kind": "evidence",
+                "tenant_id": "burnos-video-fictional-demo",
+                "branch": "main",
+                "text": "For the fictional Aurora launch, a beginner design workshop, the budget is 600 dollars. Use a blue and violet palette.",
+                "score": 0.4820135750518768,
+                "channel": "dense_hash+lexical+rerank",
+                "provenance": [
+                  "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871"
+                ],
+                "trust_tier": 3,
+                "sensitivity": 0,
+                "metadata": {
+                  "actor": "assistant",
+                  "source_type": "fictional-video-demo",
+                  "modality": "text",
+                  "content_pointer": null,
+                  "reality_class": "self_generated",
+                  "stored_media_embedding": false,
+                  "embedding_partition": "public",
+                  "privacy": {
+                    "access_decision": "allowed",
+                    "role": "reader",
+                    "effective_max_sensitivity": 1,
+                    "redacted": false
+                  },
+                  "retrieved_text": {
+                    "kind": "retrieved_memory_data",
+                    "trust_tier": 3,
+                    "instruction_authority": "none",
+                    "capability_tags": [
+                      "data-only",
+                      "no-write-authority",
+                      "sanitize-as-data"
+                    ],
+                    "content": "For the fictional Aurora launch, a beginner design workshop, the budget is 600 dollars. Use a blue and violet palette."
+                  },
+                  "reranker": "local-similarity",
+                  "stored_embedding_used": false,
+                  "activation": {
+                    "score": 0.406,
+                    "components": {
+                      "base_level": 0.0,
+                      "semantic": 1.0,
+                      "importance": 0.28,
+                      "recency": 0.0
+                    }
+                  },
+                  "standing": {
+                    "standing_fn_version": "standing.continuous.v1",
+                    "value": 0.128096,
+                    "groundedness": 0.128096,
+                    "salience": 0.406,
+                    "authority_threshold": 0.5,
+                    "authority": false,
+                    "authority_axis": "groundedness",
+                    "mode": "continuous_two_axis",
+                    "derived": true,
+                    "writes_evidence": false,
+                    "explain": {
+                      "inputs": {
+                        "reality_class": "self_generated",
+                        "trust_tier": 3,
+                        "calibrated_confidence": 0.3012,
+                        "corroboration_count": 1,
+                        "independent_corroboration_count": 0,
+                        "effective_independent_corroboration_count": 0,
+                        "independent_corroboration_weight": 0.0,
+                        "self_generated_corroboration_count": 1,
+                        "rejected_corroboration_count": 1,
+                        "contradiction_pressure": 0.0,
+                        "groundedness_decay": 0.0,
+                        "activation": 0.406,
+                        "birth_groundedness": 0.08,
+                        "credential_birth_groundedness_applied": false
+                      },
+                      "bands": {
+                        "grounded_floor": 0.51,
+                        "self_generated_ceiling": 0.49,
+                        "evidence_dominance_gap": 0.02
+                      },
+                      "fail_closed": false,
+                      "authority_axis": "groundedness",
+                      "salience_excluded_from_authority": true,
+                      "self_corroboration_rejected": true,
+                      "h1_independent_external_only": true,
+                      "h2_authority_uses_groundedness_only": true,
+                      "h3_evidence_dominance_gap": true,
+                      "h11_earned_autonomy_bounded": true
+                    }
+                  },
+                  "standing_rank_multiplier": 0.795919,
+                  "standing_observability": {
+                    "schema_version": "standing.observability.v1",
+                    "standing_fn_version": "standing.continuous.v1",
+                    "surface": "retrieval.rank",
+                    "target": {
+                      "id": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+                      "kind": "evidence",
+                      "tenant_id": "burnos-video-fictional-demo",
+                      "branch": "main"
+                    },
+                    "values": {
+                      "groundedness": 0.128096,
+                      "salience": 0.406,
+                      "authority": false
+                    },
+                    "source_evidence_cids": [
+                      "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871"
+                    ],
+                    "provenance_available": true,
+                    "derived": true,
+                    "writes_evidence": false,
+                    "replayable": true,
+                    "bitemporal_replay": {
+                      "supported": true,
+                      "projection_recomputes_from_ledger": true
+                    },
+                    "h12_observability": true
+                  },
+                  "memory_type": "evidence",
+                  "created_at": "2026-10-14T00:14:59.083105+00:00",
+                  "created_at_source": "record"
+                }
+              }
+            ],
+            "confidence": 0.4275,
+            "abstained": true,
+            "uncertainty_note": "Retrieved support has low groundedness or insufficient independent external support; abstaining until grounded evidence is available.",
+            "token_budget": 4096,
+            "used_tokens": 30,
+            "explain": {
+              "channels": {
+                "dense_hash": 1,
+                "lexical": 1,
+                "graph_ppr": 0
+              },
+              "rrf_k": 60,
+              "mmr_lambda": 0.72,
+              "activation": {
+                "weights": {
+                  "base_level": 0.35,
+                  "semantic": 0.35,
+                  "importance": 0.2,
+                  "recency": 0.1
+                },
+                "applied": true,
+                "hits": [
+                  {
+                    "id": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+                    "kind": "evidence",
+                    "score": 0.482014,
+                    "activation": {
+                      "score": 0.406,
+                      "components": {
+                        "base_level": 0.0,
+                        "semantic": 1.0,
+                        "importance": 0.28,
+                        "recency": 0.0
+                      }
+                    }
+                  }
+                ]
+              },
+              "calibration": {
+                "source": "policy",
+                "memory_type": "fact",
+                "threshold": 0.45,
+                "nonconformity": "per_example"
+              },
+              "confidence": {
+                "score": 0.4275,
+                "answer_score": 0.4275,
+                "prediction_set_size": 1,
+                "threshold": 0.45,
+                "source": "evidence_quality",
+                "query_support": {
+                  "score": 1.0,
+                  "threshold": 0.6666666666666666,
+                  "matched_terms": [
+                    "aurora",
+                    "launch",
+                    "budget",
+                    "palette"
+                  ],
+                  "missing_terms": [],
+                  "query_terms": [
+                    "aurora",
+                    "launch",
+                    "budget",
+                    "palette"
+                  ]
+                }
+              },
+              "semantic_entropy": 0.0,
+              "gist_support": {
+                "applied": false,
+                "gist_hit_ids": [],
+                "hit_count": 1
+              },
+              "reality_monitoring": {
+                "applied": true,
+                "classes": {
+                  "self_generated": 1
+                },
+                "grounded_hit_count": 0,
+                "grounded_source_count": 0,
+                "risky_hit_ids": [
+                  "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871"
+                ],
+                "ungrounded_only": true,
+                "shadow_only": false,
+                "critical_path": true,
+                "abstention_gate": {
+                  "critical_path": true,
+                  "shadow_only": false,
+                  "trigger": "ungrounded_only",
+                  "active": true
+                },
+                "shadow_source": "RealityMonitor",
+                "shadow_tags_shadow_only": true,
+                "shadow_tags_critical_path": false,
+                "shadow_tags": {
+                  "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871": {
+                    "reality_class": "self_generated",
+                    "confidence": 0.75,
+                    "calibrated": true,
+                    "signals": {
+                      "source_type": "fictional-video-demo",
+                      "actor": "assistant",
+                      "trust_tier": 3,
+                      "explicit_label": true,
+                      "explicit_label_conflict": false,
+                      "provenance_count": 1
+                    }
+                  }
+                },
+                "standing": {
+                  "standing_fn_version": "standing.continuous.v1",
+                  "mode": "continuous_two_axis",
+                  "authority_axis": "groundedness",
+                  "authority_threshold": 0.5,
+                  "evidence_dominance_gap": 0.02,
+                  "hit_count": 1,
+                  "authoritative_hit_count": 0,
+                  "low_standing_hit_ids": [
+                    "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871"
+                  ],
+                  "abstention_gate": {
+                    "trigger": "standing_low_authority_only",
+                    "active": true,
+                    "critical_path": true,
+                    "shadow_only": false
+                  },
+                  "hits": [
+                    {
+                      "hit_id": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+                      "kind": "evidence",
+                      "authority": false,
+                      "groundedness": 0.128096,
+                      "salience": 0.406,
+                      "standing_fn_version": "standing.continuous.v1",
+                      "reality_class": "self_generated",
+                      "explain": {
+                        "inputs": {
+                          "reality_class": "self_generated",
+                          "trust_tier": 3,
+                          "calibrated_confidence": 0.3012,
+                          "corroboration_count": 1,
+                          "independent_corroboration_count": 0,
+                          "effective_independent_corroboration_count": 0,
+                          "independent_corroboration_weight": 0.0,
+                          "self_generated_corroboration_count": 1,
+                          "rejected_corroboration_count": 1,
+                          "contradiction_pressure": 0.0,
+                          "groundedness_decay": 0.0,
+                          "activation": 0.406,
+                          "birth_groundedness": 0.08,
+                          "credential_birth_groundedness_applied": false
+                        },
+                        "bands": {
+                          "grounded_floor": 0.51,
+                          "self_generated_ceiling": 0.49,
+                          "evidence_dominance_gap": 0.02
+                        },
+                        "fail_closed": false,
+                        "authority_axis": "groundedness",
+                        "salience_excluded_from_authority": true,
+                        "self_corroboration_rejected": true,
+                        "h1_independent_external_only": true,
+                        "h2_authority_uses_groundedness_only": true,
+                        "h3_evidence_dominance_gap": true,
+                        "h11_earned_autonomy_bounded": true
+                      }
+                    }
+                  ],
+                  "p1_mirror": {
+                    "boolean_ungrounded_only": true,
+                    "standing_ungrounded_only": true,
+                    "zero_divergence": true
+                  },
+                  "legacy_reality_monitoring": {
+                    "ungrounded_only": true,
+                    "explain_only": true
+                  }
+                }
+              },
+              "standing": {
+                "standing_fn_version": "standing.continuous.v1",
+                "mode": "continuous_two_axis",
+                "authority_axis": "groundedness",
+                "authority_threshold": 0.5,
+                "evidence_dominance_gap": 0.02,
+                "hit_count": 1,
+                "authoritative_hit_count": 0,
+                "low_standing_hit_ids": [
+                  "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871"
+                ],
+                "abstention_gate": {
+                  "trigger": "standing_low_authority_only",
+                  "active": true,
+                  "critical_path": true,
+                  "shadow_only": false
+                },
+                "hits": [
+                  {
+                    "hit_id": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+                    "kind": "evidence",
+                    "authority": false,
+                    "groundedness": 0.128096,
+                    "salience": 0.406,
+                    "standing_fn_version": "standing.continuous.v1",
+                    "reality_class": "self_generated",
+                    "explain": {
+                      "inputs": {
+                        "reality_class": "self_generated",
+                        "trust_tier": 3,
+                        "calibrated_confidence": 0.3012,
+                        "corroboration_count": 1,
+                        "independent_corroboration_count": 0,
+                        "effective_independent_corroboration_count": 0,
+                        "independent_corroboration_weight": 0.0,
+                        "self_generated_corroboration_count": 1,
+                        "rejected_corroboration_count": 1,
+                        "contradiction_pressure": 0.0,
+                        "groundedness_decay": 0.0,
+                        "activation": 0.406,
+                        "birth_groundedness": 0.08,
+                        "credential_birth_groundedness_applied": false
+                      },
+                      "bands": {
+                        "grounded_floor": 0.51,
+                        "self_generated_ceiling": 0.49,
+                        "evidence_dominance_gap": 0.02
+                      },
+                      "fail_closed": false,
+                      "authority_axis": "groundedness",
+                      "salience_excluded_from_authority": true,
+                      "self_corroboration_rejected": true,
+                      "h1_independent_external_only": true,
+                      "h2_authority_uses_groundedness_only": true,
+                      "h3_evidence_dominance_gap": true,
+                      "h11_earned_autonomy_bounded": true
+                    }
+                  }
+                ],
+                "p1_mirror": {
+                  "boolean_ungrounded_only": true,
+                  "standing_ungrounded_only": true,
+                  "zero_divergence": true
+                },
+                "legacy_reality_monitoring": {
+                  "ungrounded_only": true,
+                  "explain_only": true
+                }
+              },
+              "answer_grounding_floor": {
+                "applied": true,
+                "critical_path": true,
+                "shadow_only": false,
+                "trigger": "answer_grounding_floor",
+                "active": true,
+                "flag_as_hypothesis": true,
+                "abstain": true,
+                "support_count": 1,
+                "low_grounded_self_support_count": 1,
+                "grounded_support_count": 0,
+                "low_grounded_self_fraction": 1.0,
+                "grounded_support_fraction": 0.0,
+                "max_low_grounded_self_fraction": 0.5,
+                "min_grounded_support_fraction": 0.5,
+                "low_groundedness_threshold": 0.5,
+                "reasons": [
+                  "low_grounded_self_support_exceeds_fraction_cap",
+                  "grounded_support_fraction_below_floor"
+                ],
+                "rows": [
+                  {
+                    "hit_id": "22be97eef8dc5fe5bae164103e5b2766393019eb264b04158d7368bf1a6c4871",
+                    "reality_class": "self_generated",
+                    "groundedness": 0.128096,
+                    "standing_authority": false,
+                    "low_grounded_self_support": true,
+                    "grounded_support": false
+                  }
+                ]
+              },
+              "schema_fast_path": {
+                "applied": false,
+                "boost": null,
+                "boosted_hit_ids": [],
+                "reasons": {},
+                "passes": [
+                  {
+                    "applied": false,
+                    "reason": "no_schema_pattern",
+                    "boosted_hit_ids": []
+                  },
+                  {
+                    "applied": false,
+                    "reason": "no_schema_pattern",
+                    "boosted_hit_ids": []
+                  }
+                ]
+              },
+              "workspace_broadcast": {
+                "applied": false,
+                "source": "workspace_context",
+                "shadow_only": true,
+                "critical_path": false,
+                "data_not_instructions": true,
+                "used_for_control_flow": false,
+                "used_for_ranking": false,
+                "control_keys_stripped": true,
+                "raw_content_present": false,
+                "max_items": 4,
+                "item_count": 0,
+                "items": []
+              },
+              "workspace_retrieval_advisory": {
+                "version": "workspace-retrieval-advisory.v1",
+                "source": "workspace_retrieval_advisory",
+                "status": "not_requested",
+                "reason": "no_workspace_retrieval_advisory",
+                "apply_requested": false,
+                "used_for_ranking": false,
+                "critical_path": false,
+                "shadow_only": true,
+                "production_mutation": false,
+                "promotion_gate_required": true,
+                "item_count": 0,
+                "applied_item_count": 0,
+                "applied_hit_count": 0
+              },
+              "read_marks": {
+                "assertions": 0,
+                "evidence": 1
+              },
+              "adapters": {
+                "embedding": "local-hashing",
+                "embedding_dims": 256,
+                "reranker": "local-similarity",
+                "lexical_backend": "sqlite-fts5",
+                "graph_backend": "sqlite-cached-ppr"
+              },
+              "rails": {
+                "retrieved_text_is_data_not_instruction": true,
+                "writes_are_append_only_or_superseding": true,
+                "tenant_isolation_required": true,
+                "source_trust_filter_required": true,
+                "sensitive_and_destructive_writes_audited": true,
+                "branch_promotion_requires_gate": true,
+                "explicit_preferences_outrank_inferred": true,
+                "erasure_propagates_to_derived_indexes": true
+              }
+            }
+          },
+          "isError": false
+        }
+      }
+    }
+  ]
+}

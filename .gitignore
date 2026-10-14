@@ -51,3 +51,21 @@ mnemosyne/
 
 # The agent's own session notes, written into whatever folder it works in.
 SENTRI-MEMORY.md
+
+# Private configuration, stores, and downloaded dependencies.
+.env
+.env.*
+!.env.example
+mcp.json
+*.secret
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+dependencies/
+.venv/
+__pycache__/
+node_modules/
+media/remotion/out/
+media/remotion/build/

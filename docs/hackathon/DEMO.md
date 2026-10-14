@@ -1,6 +1,6 @@
 # Demo: one idea, carried all the way through
 
-[Watch the reveal](../../media/burnos-overview.mp4) · [English captions](../../media/burnos-overview.srt) · [Editable source](../../media/remotion/README.md)
+[Download the reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [English captions](../../media/burnos-overview.srt) · [Editable source](../../media/remotion/README.md)
 
 ## The existing film
 

@@ -6,7 +6,7 @@ Burnos combines a native desktop voice interface, integrated persistent memory, 
 
 ## Start here
 
-1. [Watch the 2:59 reveal](../../media/burnos-overview.mp4).
+1. [Download and watch the 2:59 reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4).
 2. [Read what is demonstrated and what is illustrated](DEMO.md).
 3. [Build and run Burnos](../GETTING_STARTED.md).
 4. Review [the changes made during the hackathon](DEVELOPMENT.md), [product feedback](PRODUCT_FEEDBACK.md), and [the friction log](friction-log.md).

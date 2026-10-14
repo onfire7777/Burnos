@@ -10,9 +10,11 @@ A voice assistant for Windows that remembers the conversation and helps move you
 [![C++ / Qt](https://img.shields.io/badge/C%2B%2B17-Qt_6-a99bff?style=flat-square)](BurnOS.pro)
 [![License: MIT](https://img.shields.io/badge/License-MIT-59e3ac?style=flat-square)](LICENSE)
 
-[Explore Burnos](https://burnos.app) · [Watch the 2:59 reveal](media/burnos-overview.mp4) · [Get started](docs/GETTING_STARTED.md) · [Judge's guide](docs/hackathon/README.md)
+[Explore Burnos](https://burnos.app) · [Download the 2:59 reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Get started](docs/GETTING_STARTED.md) · [Judge's guide](docs/hackathon/README.md)
 
-[![Burnos: your next idea, already in context. A glowing blue and violet orb beside the words Voice, Memory, Action.](docs/assets/burnos-hero.jpg)](media/burnos-overview.mp4)
+[![Burnos: your next idea, already in context. A glowing blue and violet orb beside the words Voice, Memory, Action.](docs/assets/burnos-preview.gif)](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4)
+
+[Still image](docs/assets/burnos-hero.jpg) · [Transcript and captions](media/burnos-overview.srt)
 
 </div>
 

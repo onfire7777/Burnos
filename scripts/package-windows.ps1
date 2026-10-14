@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$AppDir,
     [Parameter(Mandatory)][string]$MemoryDir,
     [Parameter(Mandatory)][string]$LicensesDir,
+    [Parameter(Mandatory)][string]$ModelsDir,
     [Parameter(Mandatory)][string]$OutputDir,
     [string]$Iscc = "$env:LOCALAPPDATA/Programs/Inno Setup 6/ISCC.exe"
 )
@@ -13,6 +14,7 @@ if (-not $version) { throw 'No version in BurnOS.pro' }
 $AppDir = (Resolve-Path -LiteralPath $AppDir).Path
 $MemoryDir = (Resolve-Path -LiteralPath $MemoryDir).Path
 $LicensesDir = (Resolve-Path -LiteralPath $LicensesDir).Path
+$ModelsDir = (Resolve-Path -LiteralPath $ModelsDir).Path
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
 $stage = Join-Path $OutputDir "Burnos-v$version-windows-x64"
@@ -45,6 +47,17 @@ foreach ($dir in @('parakeet-streaming', 'kokoro-tts')) {
 }
 if (-not (Test-Path "$MemoryDir/mneme-mcp.exe")) { throw 'Frozen memory runtime missing.' }
 Copy-Item -LiteralPath $MemoryDir -Destination "$stage/mnemosyne" -Recurse
+# Only the pinned public model distribution may enter the package.
+$modelManifest = Get-Content "$repo/packaging/voice-models.json" -Raw | ConvertFrom-Json
+foreach ($model in $modelManifest) {
+    $source = Join-Path $ModelsDir $model.path
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing voice model file: $($model.path)" }
+    if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $model.sha256) { throw "Voice model checksum mismatch: $($model.path)" }
+    $target = Join-Path "$stage/models" $model.path
+    New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+    Copy-Item -LiteralPath $source -Destination $target
+}
+Copy-Item "$repo/packaging/VOICE-MODELS.md" "$stage/VOICE-MODELS.md"
 New-Item -ItemType Directory -Path "$stage/licenses" | Out-Null
 # Keep extracted license paths short enough for ordinary Windows ZIP tools.
 $licenseIndex = Get-ChildItem -LiteralPath $LicensesDir -File -Recurse | ForEach-Object {
@@ -60,6 +73,7 @@ Copy-Item "$repo/LICENSE" "$stage/LICENSE-Burnos-MIT.txt"
 Copy-Item "$repo/packaging/WELCOME.txt" "$stage/WELCOME.txt"
 Copy-Item "$repo/packaging/LICENSE-WINDOWS.txt" "$stage/LICENSE-WINDOWS.txt"
 Copy-Item "$repo/packaging/SOURCES.md" "$stage/licenses/SOURCES.md"
+Copy-Item "$repo/packaging/model-licenses" "$stage/licenses/model-licenses" -Recurse
 Copy-Item "$repo/third_party/pdfjs/LICENSE" "$stage/licenses/PDFjs-Apache-2.0.txt"
 Copy-Item "$repo/packaging/memory-requirements.txt" "$stage/licenses/memory-requirements.txt"
 # Wheel installation metadata can contain the builder's absolute local path.

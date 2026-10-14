@@ -26,6 +26,7 @@ int main(int argc, char *argv[])
     const QStringList args = a.arguments();
     // Exercise the actual first-run downloader without opening the microphone.
     if (args.contains(QStringLiteral("--prepare-models"))) {
+        BurnOS::liveLog(QStringLiteral("setup: speech model path: ") + BurnOS::Models::sttModel());
         ModelInstaller setup;
         QObject::connect(&setup, &ModelInstaller::finished, &a, [&a]() { a.exit(0); });
         QObject::connect(&setup, &ModelInstaller::failed, &a, [&a](const QString &error) {

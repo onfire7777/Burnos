@@ -1,6 +1,6 @@
 # Your data and your controls
 
-Burnos mixes local processing with connected services. This describes the reviewed v0.22.1 implementation, not a guarantee about every external tool you may connect.
+Burnos mixes local processing with connected services. This describes the reviewed v0.22.2 implementation, not a guarantee about every external tool you may connect.
 
 | Data or action | Where it goes |
 | --- | --- |
@@ -12,7 +12,7 @@ Burnos mixes local processing with connected services. This describes the review
 | Research | Websites opened by a separate browser profile |
 | Connected services | Composio and/or the MCP endpoints you configure |
 
-New model downloads use `%LOCALAPPDATA%\BurnOS\models`; a complete existing `%ProgramData%\BurnOS` cache is reused. MCP configuration is `%APPDATA%\BurnOS\mcp.json`; a custom `BURNOS_MCP_CONFIG` overrides it. The local memory store and session-secret file are under `%LOCALAPPDATA%\BurnOS`. API keys are stored through Windows DPAPI for the current user. This does not protect secrets from every process already running as that user. Uninstalling the app preserves these user data and settings.
+Official Windows packages include voice models in the application's `models` folder. Source builds can download models into `%LOCALAPPDATA%\BurnOS\models` or reuse a complete `%ProgramData%\BurnOS` cache. MCP configuration is `%APPDATA%\BurnOS\mcp.json`; a custom `BURNOS_MCP_CONFIG` overrides it. The local memory store and session-secret file are under `%LOCALAPPDATA%\BurnOS`. API keys are stored through Windows DPAPI for the current user. This does not protect secrets from every process already running as that user. Uninstalling removes bundled models with the app but preserves personal memory, settings, and separately downloaded caches.
 
 Clicking mute changes the conversation state. Local wake-word or spoken-command detection can still use the microphone. Exit Burnos or use Windows microphone controls when you need a full microphone stop. Speaker matching is not a security boundary.
 

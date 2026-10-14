@@ -1,5 +1,26 @@
 # Repository and Windows release checks
 
+## Windows release 0.22.2 — October 14, 2026
+
+This release bundles all voice models and preserves OpenRouter for conversational AI.
+
+| Check | Result and scope |
+| --- | --- |
+| Native build | Qt 6.11.2 / MinGW 13.1 release build passed |
+| Bundled models | All 378 model/data files matched SHA-256 pins; total 1,085,569,733 bytes |
+| Fresh model setup | With empty isolated user and legacy caches and no model-path override, the installed app selected its bundled models and reported ready in 0.19 seconds; no download started or external model cache was created |
+| Portable ZIP | All 1,036 packaged file hashes verified directly from the ZIP |
+| Installer and reinstall | Both completed successfully in a path containing spaces; all 1,036 installed file hashes matched after each run |
+| Installed memory | Capture, search, native context, full process restart, recall, and owned-server cleanup passed with isolated fictional data and no API key |
+| Installed speech | Bundled Kokoro synthesized the fictional Aurora budget sentence; installed Parakeet recognized it using the bundled models |
+| Uninstall | Removed the tested app and bundled models; retained the external fictional-data marker |
+
+Tests ran on the development PC, not a clean Windows VM. Real-microphone accuracy,
+paid model calls, connected-account actions, and a live Alexa device were not tested.
+The previously blocked browser smoke test remains unverified. The installer is unsigned.
+Internet access and an OpenRouter key remain necessary for conversational AI and online
+features, but no separate voice-model download is required.
+
 ## Windows release 0.22.1 — October 14, 2026
 
 | Check | Result and scope |

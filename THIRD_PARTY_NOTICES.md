@@ -16,7 +16,7 @@ The root MIT license covers Burnos-authored material. It does not relicense thir
 
 ## Speech models
 
-Burnos downloads Parakeet weights from [ggml-org/parakeet-GGUF](https://huggingface.co/ggml-org/parakeet-GGUF), Silero VAD weights from [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad), and Kokoro, speaker-recognition, and keyword models from [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases). Preserve their model cards, licenses, and any bundled notices when redistributing them. The Kokoro bundle includes phonemizer data with separate notices; do not assume the model's license covers those files.
+Official Windows packages bundle voice models; source builds can download the same files. Parakeet weights come from [ggml-org/parakeet-GGUF](https://huggingface.co/ggml-org/parakeet-GGUF), Silero VAD weights from [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad), and Kokoro, speaker-recognition, and keyword models from [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases). Preserve their model cards, licenses, and any bundled notices when redistributing them. The Kokoro bundle includes phonemizer data with separate notices; do not assume the model's license covers those files.
 
 ## Distribution
 
@@ -27,3 +27,5 @@ The sherpa-onnx 1.x runtime incorporates GPL-licensed eSpeak NG through its phon
 ## Film and visual assets
 
 The Burnos orb, React/SVG/CSS film artwork, and synthesized instrumental were created for this project. Narration was generated using Kokoro. Fonts are resolved from the rendering system and are not distributed. Screens in the film are illustrative. The Burnos name identifies this project; the code license does not imply endorsement of modified versions by its maintainers.
+
+Bundled model attribution, conversion details, and license links are listed in [VOICE-MODELS.md](packaging/VOICE-MODELS.md).

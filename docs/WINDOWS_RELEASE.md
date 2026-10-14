@@ -1,8 +1,8 @@
 # Reproducing the Windows release
 
-The 0.22.1 package includes Burnos, Qt, CPU speech runtimes, and Mnemosyne
+The 0.22.2 package includes Burnos, Qt, CPU speech runtimes, and Mnemosyne
 1.2.0 with its Python runtime. It does not include user data or API keys.
-Speech models download at first launch. The binary distribution terms
+All voice models are bundled; OpenRouter still provides conversational AI. The binary distribution terms
 and corresponding-source instructions are in [packaging](../packaging/SOURCES.md).
 
 ## Build inputs
@@ -47,18 +47,22 @@ build instructions in the release's corresponding-source ZIP.
 ## Package
 
 ```powershell
-.\scripts\package-windows.ps1 -AppDir build/win32-g++/release -MemoryDir build/frozen-memory/mneme-mcp -LicensesDir build/redistribution/licenses -OutputDir build/release-0.22.1
+.\scripts\package-windows.ps1 -AppDir build/win32-g++/release -MemoryDir build/frozen-memory/mneme-mcp -LicensesDir build/redistribution/licenses -ModelsDir build/voice-models -OutputDir build/release-0.22.2
 ```
 
+Prepare `build/voice-models` using `BURNOS_MODEL_DIR` and the app's
+`--prepare-models` command. See [model provenance](../packaging/VOICE-MODELS.md).
 The output directory must be fresh. The script checks the executable
 version, copies an explicit list of Qt files, includes the two speech
-runtime directories and frozen memory, rejects state/log files, writes
+runtime directories and frozen memory, verifies and bundles every pinned voice
+model file, rejects state/log files, writes
 a package manifest, and creates the portable ZIP, installer, and checksums.
 
 ## Verify before publishing
 
 ```powershell
-python scripts/verify-windows-package.py build/release-0.22.1/Burnos-v0.22.1-windows-x64 --report build/memory-test.json
+python scripts/verify-windows-package.py build/release-0.22.2/Burnos-v0.22.2-windows-x64 --report build/memory-test.json
+python scripts/verify-bundled-models.py build/release-0.22.2/Burnos-v0.22.2-windows-x64 --report build/model-test.json
 ```
 
 This starts the packaged memory through Burnos with an isolated profile
@@ -66,6 +70,10 @@ and port, captures a fictional fact, confirms its presence in native
 conversation context, restarts both processes, repeats retrieval, and
 checks that the owned child exits. It uses a Windows-only PATH and no
 model key or microphone.
+
+The bundled-model check verifies model-file hashes and runs actual model setup
+with empty isolated user/legacy caches and no model-directory override. It must
+select the shipped models, report ready, and never start a download.
 
 Install the setup EXE into a fresh test directory, rerun that check on
 the installed copy, verify Start-menu entries and Settings, and test

@@ -3,8 +3,7 @@ Your next idea. Already in context.
 https://burnos.app
 
 1. Launch Burnos from the Start menu.
-2. Leave it open while it downloads the voice models. The orb shows progress.
-   This first launch needs an Internet connection and approximately 1 GB of downloads.
+2. All voice models are already included. No separate model download is needed.
 3. When Settings opens, enter your own OpenRouter API key and choose your models.
    OpenRouter usage may incur charges on your account.
 4. Start talking. Mnemosyne memory starts automatically with Burnos.
@@ -14,11 +13,12 @@ Click the orb to mute/unmute. Double-click to stop. Right-click for Settings.
 While muted, local command recognition can remain active.
 
 Your memory is kept in %LOCALAPPDATA%\BurnOS\memory.
-New voice model downloads are kept in %LOCALAPPDATA%\BurnOS\models.
-A complete older model installation in %ProgramData%\BurnOS is reused.
+Bundled voice models are kept in the application's models folder.
 Your OpenRouter key is encrypted for your Windows user with DPAPI.
-The uninstaller removes the application but keeps your memory, models, and settings.
+The uninstaller removes the application and bundled models, but keeps your memory,
+settings, and separately downloaded model caches.
 
+Internet access is required for OpenRouter conversations and online features.
 Conversation and selected memory context go to your configured model provider.
 With an OpenRouter key, memory embeddings also use OpenRouter.
 Optional Composio connections need your own configuration.

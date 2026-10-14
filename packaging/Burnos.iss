@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.22.1"
+  #define AppVersion "0.22.2"
 #endif
 #ifndef StageDir
   #error StageDir is required
@@ -48,4 +48,4 @@ Name: "{group}\Getting started"; Filename: "{app}\WELCOME.txt"
 Name: "{group}\Burnos website"; Filename: "https://burnos.app"
 Name: "{autodesktop}\Burnos"; Filename: "{app}\Burnos.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 [Run]
-Filename: "{app}\Burnos.exe"; Description: "Launch Burnos (downloads voice models on first launch)"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{app}\Burnos.exe"; Description: "Launch Burnos"; Flags: nowait postinstall skipifsilent unchecked

@@ -2,6 +2,7 @@
 #include "livelog.h"
 
 #include <QCryptographicHash>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -76,27 +77,31 @@ QString root()
         const QString override = qEnvironmentVariable("BURNOS_MODEL_DIR");
         if (!override.isEmpty())
             return QDir::fromNativeSeparators(override);
-        // Reuse a complete older installation without writing into ProgramData.
-        const QString old = QDir::fromNativeSeparators(qEnvironmentVariable(
-            "ProgramData", QStringLiteral("C:/ProgramData"))) + QStringLiteral("/BurnOS");
-        const QString wake = old + QStringLiteral("/STT/") + QLatin1String(kWakeFolder) + QLatin1Char('/');
-        const auto whole = [](const QString &file, qint64 bytes) {
-            const QFileInfo info(file);
-            return info.isFile() && (bytes ? info.size() == bytes : info.size() > 0);
-        };
-        if (whole(old + QStringLiteral("/STT/") + QLatin1String(kSttFile), 0)
-            && whole(old + QStringLiteral("/STT/") + QLatin1String(kVadFile), kVadBytes)
-            && whole(old + QStringLiteral("/STT/") + QLatin1String(kVoiceFile), kVoiceBytes)
-            && whole(wake + QLatin1String(kWakeEncoder), kWakeEncoderBytes)
-            && whole(wake + QLatin1String(kWakeDecoder), kWakeDecoderBytes)
-            && whole(wake + QLatin1String(kWakeJoiner), kWakeJoinerBytes)
-            && whole(wake + QStringLiteral("tokens.txt"), kWakeTokensBytes)
-            && whole(wake + QStringLiteral("bpe.model"), kWakeSpellingBytes)
-            && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/model.onnx"), 0)
-            && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/voices.bin"), 0)
-            && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/tokens.txt"), 0)
-            && QFileInfo(old + QStringLiteral("/TTS/kokoro-en-v0_19/espeak-ng-data")).isDir())
-            return old;
+        // Prefer the shipped models; retain the legacy cache for source builds.
+        const QStringList candidates{
+            QCoreApplication::applicationDirPath() + QStringLiteral("/models"),
+            QDir::fromNativeSeparators(qEnvironmentVariable(
+                "ProgramData", QStringLiteral("C:/ProgramData"))) + QStringLiteral("/BurnOS")};
+        for (const QString &old : candidates) {
+            const QString wake = old + QStringLiteral("/STT/") + QLatin1String(kWakeFolder) + QLatin1Char('/');
+            const auto whole = [](const QString &file, qint64 bytes) {
+                const QFileInfo info(file);
+                return info.isFile() && (bytes ? info.size() == bytes : info.size() > 0);
+            };
+            if (whole(old + QStringLiteral("/STT/") + QLatin1String(kSttFile), 0)
+                && whole(old + QStringLiteral("/STT/") + QLatin1String(kVadFile), kVadBytes)
+                && whole(old + QStringLiteral("/STT/") + QLatin1String(kVoiceFile), kVoiceBytes)
+                && whole(wake + QLatin1String(kWakeEncoder), kWakeEncoderBytes)
+                && whole(wake + QLatin1String(kWakeDecoder), kWakeDecoderBytes)
+                && whole(wake + QLatin1String(kWakeJoiner), kWakeJoinerBytes)
+                && whole(wake + QStringLiteral("tokens.txt"), kWakeTokensBytes)
+                && whole(wake + QStringLiteral("bpe.model"), kWakeSpellingBytes)
+                && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/model.onnx"), 0)
+                && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/voices.bin"), 0)
+                && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/tokens.txt"), 0)
+                && QFileInfo(old + QStringLiteral("/TTS/kokoro-en-v0_19/espeak-ng-data")).isDir())
+                return old;
+        }
         QString local = qEnvironmentVariable("LOCALAPPDATA");
         if (local.isEmpty())
             local = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);

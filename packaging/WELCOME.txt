@@ -1,0 +1,31 @@
+Welcome to Burnos
+Your next idea. Already in context.
+https://burnos.app
+
+1. Launch Burnos from the Start menu.
+2. Leave it open while it downloads the voice models. The orb shows progress.
+   This first launch needs an Internet connection and approximately 1 GB of downloads.
+3. When Settings opens, enter your own OpenRouter API key and choose your models.
+   OpenRouter usage may incur charges on your account.
+4. Start talking. Mnemosyne memory starts automatically with Burnos.
+
+No Python, Qt development kit, compiler, or separate memory setup is needed.
+Click the orb to mute/unmute. Double-click to stop. Right-click for Settings.
+While muted, local command recognition can remain active.
+
+Your memory is kept in %LOCALAPPDATA%\BurnOS\memory.
+New voice model downloads are kept in %LOCALAPPDATA%\BurnOS\models.
+A complete older model installation in %ProgramData%\BurnOS is reused.
+Your OpenRouter key is encrypted for your Windows user with DPAPI.
+The uninstaller removes the application but keeps your memory, models, and settings.
+
+Conversation and selected memory context go to your configured model provider.
+With an OpenRouter key, memory embeddings also use OpenRouter.
+Optional Composio connections need your own configuration.
+Browser research uses Microsoft Edge, Chrome, or Brave already installed on your PC.
+
+This release is unsigned. Windows may show an unknown-publisher or SmartScreen warning.
+Download only from https://github.com/onfire7777/Burnos/releases and compare SHA256SUMS.txt.
+
+Support and source: https://github.com/onfire7777/Burnos
+Third-party license notices and source instructions are in the licenses folder.

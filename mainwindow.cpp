@@ -767,7 +767,12 @@ MainWindow::MainWindow(QWidget *parent)
     // Nothing should have to be clicked to be heard: the orb comes up already
     // armed and blue. If the models are still missing it arms the moment the
     // download lands instead.
-    connect(m_setup, &ModelInstaller::finished, this, &MainWindow::armLiveMode);
+    const auto startReady = [this]() {
+        if (BurnOS::Settings::openRouterKey().isEmpty())
+            openSettings();
+        armLiveMode();
+    };
+    connect(m_setup, &ModelInstaller::finished, this, startReady);
 
     if (!ModelInstaller::everythingPresent()) {
         m_orb->beginInitializing();
@@ -775,7 +780,7 @@ MainWindow::MainWindow(QWidget *parent)
     } else {
         // Deferred by one turn of the event loop, so the window is on screen
         // before the microphone is opened.
-        QTimer::singleShot(0, this, &MainWindow::armLiveMode);
+        QTimer::singleShot(0, this, startReady);
     }
 
     // Proof of the whole path without a microphone: each line is heard exactly

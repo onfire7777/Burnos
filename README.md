@@ -8,9 +8,9 @@ A voice assistant for Windows that remembers the conversation and helps move you
 
 [![Windows](https://img.shields.io/badge/Windows-x64-53d5ff?style=flat-square)](docs/GETTING_STARTED.md)
 [![C++ / Qt](https://img.shields.io/badge/C%2B%2B17-Qt_6-a99bff?style=flat-square)](BurnOS.pro)
-[![License: MIT](https://img.shields.io/badge/License-MIT-59e3ac?style=flat-square)](LICENSE)
+[![Source: MIT](https://img.shields.io/badge/Source-MIT-59e3ac?style=flat-square)](LICENSE)
 
-[Explore Burnos](https://burnos.app) · [Download the 2:59 reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Get started](docs/GETTING_STARTED.md) · [Judge's guide](docs/hackathon/README.md)
+[**Download for Windows**](https://github.com/onfire7777/Burnos/releases/download/v0.22.1/Burnos-0.22.1-Setup-x64.exe) · [Explore Burnos](https://burnos.app) · [Watch the reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Judge's guide](docs/hackathon/README.md)
 
 [![Burnos: your next idea, already in context. A glowing blue and violet orb beside the words Voice, Memory, Action.](docs/assets/burnos-preview.gif)](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4)
 
@@ -59,7 +59,20 @@ This is the fictional scenario in the reveal film. Connected services require yo
 
 ## Run it on your desktop
 
-Burnos currently targets **Windows x64**. You will need a Qt 6 development kit, the speech runtimes, and an OpenRouter key for reasoning. Install Mnemosyne to enable persistent memory. The setup guide covers each dependency and where it belongs.
+### Download. Set up. Start talking.
+
+**[Download the Windows installer](https://github.com/onfire7777/Burnos/releases/download/v0.22.1/Burnos-0.22.1-Setup-x64.exe)** · [Portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.22.1/Burnos-v0.22.1-windows-x64.zip) · [Release notes and checksums](https://github.com/onfire7777/Burnos/releases/tag/v0.22.1)
+
+1. Install Burnos on **Windows 10/11 x64** and launch it from Start.
+2. Let the voice models download on first launch; the orb shows progress.
+3. Enter your own **OpenRouter API key** when Settings opens, then start talking.
+
+**Persistent memory is included and starts automatically.** The download contains the app, Qt, speech engines, and a self-contained Mnemosyne server. No Python, compiler, or separate memory installation is needed. Allow approximately 1 GB for the initial model download and several GB of free disk space. Model-provider usage is billed to your own account.
+
+The installer is currently **unsigned**, so Windows may show an unknown-publisher warning. Download from this repository and check the release's SHA-256 checksums. Uninstalling preserves your memory, model cache, and settings. [Setup and troubleshooting](docs/GETTING_STARTED.md).
+
+<details>
+<summary>Building from source instead?</summary>
 
 ```powershell
 git clone https://github.com/onfire7777/Burnos.git
@@ -68,6 +81,8 @@ cd Burnos
 ```
 
 Adjust the Qt paths to your installation. The build deploys Qt alongside the executable; [finish the runtime setup before launching](docs/GETTING_STARTED.md).
+
+</details>
 
 **Useful controls:** click the orb to mute/unmute; double-click to stop; configure a hold-to-dictate shortcut in Settings. Wake-word and speaker matching are optional. Muting conversation is not a hardware microphone disconnect: local wake/command detection can remain active.
 
@@ -105,4 +120,4 @@ Start with the [submission guide](docs/hackathon/README.md) for the Alexa+ simul
 
 Bug reports and focused improvements are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request and [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
-Burnos-authored code and documentation are available under the [MIT License](LICENSE). Included third-party files, external runtimes, models, and services retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Burnos-authored code and documentation are available under the [MIT License](LICENSE). The combined Windows download includes GPL-3.0-or-later components and ships with corresponding source and license notices. Third-party files, models, and services retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

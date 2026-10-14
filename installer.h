@@ -9,7 +9,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QUrl;
 
-// THE MODELS: where each one lives under C:/ProgramData/BurnOS, and whether it
+// THE MODELS: per-user downloads, or a complete legacy ProgramData cache, and whether each
 // is there. None of them ships with the program; ModelInstaller fetches them.
 namespace BurnOS::Models {
 

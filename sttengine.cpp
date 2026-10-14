@@ -151,10 +151,16 @@ struct Recogniser
         return QCoreApplication::applicationDirPath() + QStringLiteral("/parakeet-streaming");
     }
 
+    static QString libraryPath()
+    {
+        const QString legacy = dir() + QStringLiteral("/parakeet.dll");
+        return QFileInfo::exists(legacy) ? legacy : dir() + QStringLiteral("/libparakeet.dll");
+    }
+
     bool usable() const
     {
         return !failed && !qEnvironmentVariableIsSet("BURNOS_STT_CLI")
-               && QFileInfo::exists(dir() + QStringLiteral("/parakeet.dll"));
+               && QFileInfo::exists(libraryPath());
     }
 
     template <typename T>
@@ -173,7 +179,7 @@ struct Recogniser
             return ctx != nullptr;
         tried = true;
         const QString folder = QDir::toNativeSeparators(dir());
-        const QString path = folder + QStringLiteral("\\parakeet.dll");
+        const QString path = QDir::toNativeSeparators(libraryPath());
         HMODULE lib = LoadLibraryExW(reinterpret_cast<LPCWSTR>(path.utf16()), nullptr,
                                      LOAD_WITH_ALTERED_SEARCH_PATH);
         HMODULE ggml = lib ? GetModuleHandleW(L"ggml.dll") : nullptr;

@@ -1,4 +1,28 @@
-# Repository preparation checks
+# Repository and Windows release checks
+
+## Windows release 0.22.1 — October 14, 2026
+
+| Check | Result and scope |
+| --- | --- |
+| Native application | Qt 6.11.2 / MinGW 13.1 release build passed |
+| Complete installer | Inno Setup 6.7.3 produced the per-user x64 installer; clean installation and reinstallation both returned success |
+| Installed files | All 654 manifest entries matched their SHA-256 hashes after each installation, including a path containing spaces |
+| Bundled memory | Frozen Mnemosyne 1.2.0 passed its self-test; no separately installed Python is needed |
+| Native memory integration | Installed Burnos started its packaged memory server with an isolated profile and Windows-only PATH; a fictional fact was captured, found by search, and included in native conversation context before and after restarting both processes |
+| Process cleanup | The memory server owned by the tested app exited with Burnos; existing independently hosted servers were not stopped |
+| First-run models | The actual downloader completed from an empty isolated model directory; 378 resulting files totaled 1,085,569,733 bytes |
+| Local speech | Packaged Kokoro synthesized the fictional Aurora budget sentence; packaged Parakeet recognized it correctly using the newly downloaded models |
+| In-process models | Native startup logs confirmed Parakeet, Kokoro, speaker matching, and keyword models loaded and remained available; the release includes the shared Parakeet libraries rather than relying only on CLI fallback |
+| Speaker model | Native voice probe extracted a voiceprint and returned similarity 1.000 for the identical synthetic clip |
+| First-run UI | Settings opened automatically with an empty API-key field; the installer wizard and its license page were inspected |
+| Uninstall | Removed the tested application while retaining the external fictional user-data marker |
+| Publication scan | Gitleaks found no secrets in the staged release changes; package construction uses an explicit file allowlist and excludes personal stores, keys, and logs |
+
+These checks ran in isolated profiles on the development PC, not in a clean Windows VM. No paid model calls, real connected-account actions, or real-microphone accuracy evaluation were performed. The separate browser smoke-test command was blocked by the host's automatic approval review and is not claimed as verified. The installer is unsigned. First launch still requires Internet access for model downloads and the user's own OpenRouter configuration.
+
+The package includes third-party notices and offers corresponding source alongside the binaries. See [Windows build and test instructions](../WINDOWS_RELEASE.md) and [distribution terms](../../packaging/LICENSE-WINDOWS.txt).
+
+## Earlier repository preparation
 
 Checked October 14, 2026 against the v0.22.0 application source and the repository-preparation changes.
 
@@ -15,8 +39,8 @@ Checked October 14, 2026 against the v0.22.0 application source and the reposito
 | Documentation | Local Markdown links and JSON files checked |
 | Publication scan | Gitleaks 8.30.1 found no leaks in scanned Git history or the staged publication snapshot |
 
-The existing v0.22.0 Windows archive did not include the memory server or third-party license notices. Releases with binary assets were retained as drafts rather than exposed as ready-to-run public downloads. This review does not certify those legacy archives for redistribution.
+The existing v0.22.0 Windows archive did not include the memory server or third-party license notices. Legacy releases with binary assets were retained as drafts. The complete v0.22.1 package supersedes them; this review does not certify those legacy archives for redistribution.
 
 The memory check emitted a Starlette warning about the future replacement of its httpx test-client dependency; assertions passed. The first upstream speech build exposed missing thread-throttling declarations in MinGW's headers; the documented Windows API target flags resolved the build without patching upstream sources.
 
-These are scoped checks, not a full end-to-end application acceptance run or a comprehensive security audit. The speech check used models already downloaded on this machine; first-run model downloads were not repeated. MSVC, a clean Windows machine, real connected accounts, a live Alexa device, and a full native-app restart/memory workflow were not tested in this preparation. Refer to [the submission checklist](README.md) for remaining delivery items.
+Those earlier checks were scoped repository preparation, not a full application acceptance run or comprehensive security audit. First-run downloads and native restart/memory testing were subsequently completed for v0.22.1 above. MSVC, a clean Windows machine, real connected accounts, and a live Alexa device remain untested. Refer to [the submission checklist](README.md) for remaining delivery items.

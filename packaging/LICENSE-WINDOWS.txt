@@ -1,0 +1,20 @@
+Burnos Windows distribution
+
+Burnos's original source is MIT licensed (see LICENSE-Burnos-MIT.txt).
+The Windows distribution includes separately licensed components.
+
+In particular, the sherpa-onnx 1.x speech runtime includes GPL-licensed
+eSpeak NG code. The combined Windows program is distributed under the
+GNU General Public License, version 3 or later. The original MIT grant
+on Burnos's own source remains available. Qt libraries are also available
+under the GNU Lesser General Public License, version 3.
+
+The full license texts, component copyrights, and notices are included
+in licenses/. See licenses/SOURCES.md for corresponding source code
+and rebuilding instructions. You may modify, rebuild, and replace the
+libraries. There is no signature enforcement or restriction on debugging
+those modifications.
+
+This software is provided without warranty. You retain all rights granted
+by the applicable free software licenses. No additional EULA restrictions
+are imposed by this installer.

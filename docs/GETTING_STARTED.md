@@ -1,6 +1,25 @@
 # Get Burnos running
 
-Burnos targets Windows x64. Start with a normal, non-administrator Windows account. This is a source checkout, not a one-click installer. Previous binary packages are being held as drafts while their dependency packaging and third-party notices are completed; the source build below is the supported evaluation path for this repository preparation.
+Burnos targets Windows 10/11 x64. Use a normal, non-administrator Windows account.
+The packaged CPU speech runtime requires AVX2, FMA, and F16C support; no dedicated GPU is needed.
+
+## Recommended: install the complete Windows download
+
+**[Download Burnos Setup](https://github.com/onfire7777/Burnos/releases/download/v0.22.1/Burnos-0.22.1-Setup-x64.exe)** or [get the portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.22.1/Burnos-v0.22.1-windows-x64.zip).
+
+Run the installer, then launch Burnos from Start. It includes Qt, speech engines, and the Mnemosyne memory server. Python and development tools are not required. The portable version has the same components: extract the **entire** ZIP before running `Burnos.exe`.
+
+On first launch, leave Burnos open while the orb displays voice-model download progress (approximately 1 GB). Settings then opens for your own OpenRouter key and model selection. This needs Internet access; provider usage may incur charges. Right-click the orb to reopen Settings later. Optional Composio connections require their own setup.
+
+Memory starts automatically and persists in `%LOCALAPPDATA%\BurnOS\memory`. New models use `%LOCALAPPDATA%\BurnOS\models`; a complete existing `%ProgramData%\BurnOS` model cache is reused. The installer uses `%LOCALAPPDATA%\Programs\Burnos` and requires no administrator privileges. Uninstalling keeps your memory, models, and settings.
+
+The release is unsigned; Windows may show an unknown-publisher or SmartScreen warning. Verify the download against `SHA256SUMS.txt` on the [release page](https://github.com/onfire7777/Burnos/releases/tag/v0.22.1). If a download fails, check the connection and restart Burnos: completed models are retained, and incomplete files are downloaded again. Browser research requires Edge, Chrome, or Brave.
+
+If you previously configured `%APPDATA%\BurnOS\mcp.json`, that configuration takes precedence over the bundled server. Back up and review it if memory fails to connect. Port 8765 must be available or hosting the matching memory server. Do not post your memory files, keys, or unredacted logs in support issues.
+
+## Developer setup from source
+
+The remaining steps are for developers building their own copy; installer users can skip them. See [Windows release packaging](WINDOWS_RELEASE.md) to reproduce the complete bundle.
 
 ## 1. Build the native app
 
@@ -30,7 +49,7 @@ Install CMake, add the matching MinGW compiler to PATH, and build the pinned ups
 $env:PATH = 'C:\Qt\Tools\mingw1310_64\bin;C:\Qt\Tools\CMake_64\bin;' + $env:PATH
 New-Item -ItemType Directory -Force dependencies | Out-Null
 git clone --depth 1 --branch v1.9.5 https://github.com/ggml-org/whisper.cpp.git dependencies/whisper.cpp
-cmake -S dependencies/whisper.cpp -B dependencies/whisper-build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_TESTS=OFF '-DCMAKE_C_FLAGS=-D_WIN32_WINNT=0x0601' '-DCMAKE_CXX_FLAGS=-D_WIN32_WINNT=0x0601'
+cmake -S dependencies/whisper.cpp -B dependencies/whisper-build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DWHISPER_BUILD_TESTS=OFF '-DCMAKE_C_FLAGS=-D_WIN32_WINNT=0x0601' '-DCMAKE_CXX_FLAGS=-D_WIN32_WINNT=0x0601'
 cmake --build dependencies/whisper-build --target parakeet-cli -j 4
 New-Item -ItemType Directory -Force "$app/parakeet-streaming" | Out-Null
 Copy-Item dependencies/whisper-build/bin/parakeet-cli.exe "$app/parakeet-streaming/"
@@ -81,7 +100,7 @@ To use your own MCP server configuration, copy [the example](../examples/mcp.exa
 & "$app/Burnos.exe"
 ```
 
-On first launch, Burnos downloads required speech models into `%ProgramData%\BurnOS`. Allow several gigabytes of disk headroom and time for the download. Optional speaker and wake-word model failures are reported separately. A restrictive machine-wide data-folder policy can require an administrator to create that directory with appropriate write access; the app itself should normally run without elevation.
+On first launch, Burnos downloads required speech models into `%LOCALAPPDATA%\BurnOS\models`. A complete legacy `%ProgramData%\BurnOS` cache is reused. Allow several gigabytes of disk headroom and time for the download. Optional speaker and wake-word model failures are reported separately. `BURNOS_MODEL_DIR` can select an isolated cache for testing.
 
 Open Settings from the orb, enter your OpenRouter key, choose the talking and task models, and check microphone/output settings. Use a tool-capable model; desktop screenshots also require image input. Start with a harmless request and an empty test document. Composio is optional and requires its own configuration and authorized account connections.
 

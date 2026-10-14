@@ -1,4 +1,6 @@
 #include "agent.h"
+#include "installer.h"
+#include "livelog.h"
 #include "mainwindow.h"
 #include "orbwidget.h"
 #include "sttengine.h"
@@ -7,6 +9,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QStringList>
+#include <QTimer>
 
 int main(int argc, char *argv[])
 {
@@ -21,6 +24,21 @@ int main(int argc, char *argv[])
     // executable's own resource, then exit without showing anything. The .pro
     // picks the file up on the next build.
     const QStringList args = a.arguments();
+    // Exercise the actual first-run downloader without opening the microphone.
+    if (args.contains(QStringLiteral("--prepare-models"))) {
+        ModelInstaller setup;
+        QObject::connect(&setup, &ModelInstaller::finished, &a, [&a]() { a.exit(0); });
+        QObject::connect(&setup, &ModelInstaller::failed, &a, [&a](const QString &error) {
+            BurnOS::liveLog(QStringLiteral("setup failed: ") + error);
+            a.exit(1);
+        });
+        QObject::connect(&setup, &ModelInstaller::progress, &a, [](const QString &stage, qreal fraction) {
+            if (fraction < 0 || fraction == 1)
+                BurnOS::liveLog(QStringLiteral("setup: ") + stage);
+        });
+        QTimer::singleShot(0, &setup, &ModelInstaller::start);
+        return a.exec();
+    }
     const int exportAt = args.indexOf(QStringLiteral("--export-icon"));
     if (exportAt >= 0 && exportAt + 1 < args.size())
         return OrbWidget::writeIco(args.at(exportAt + 1)) ? 0 : 1;

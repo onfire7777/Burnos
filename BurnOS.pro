@@ -13,7 +13,7 @@ CONFIG += c++17
 # resource, Qt reads it back as applicationVersion(), and the live log's first
 # line says it - so every report names its build. Raised with each release,
 # which is also a git tag (v0.6.0) and a branch (v0.6) to roll back to.
-VERSION = 0.22.0
+VERSION = 0.22.1
 
 SOURCES += \
     agent.cpp \

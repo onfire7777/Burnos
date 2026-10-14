@@ -20,7 +20,9 @@ Burnos downloads Parakeet weights from [ggml-org/parakeet-GGUF](https://huggingf
 
 ## Distribution
 
-This repository distributes source and original presentation media, not a complete signed Windows installer. Model weights and external runtime binaries are excluded. If you distribute a compiled app, include the appropriate Qt, speech-runtime, model, phonemizer, and dependency notices and comply with source/relinking obligations that apply to your chosen licenses. In particular, publishing Burnos under MIT does not remove Qt's LGPL obligations.
+The Windows release includes the app, Qt, speech runtimes, and frozen Mnemosyne runtime. Model weights download separately. Its `licenses` directory contains upstream notices, and a corresponding-source archive is offered alongside the binaries. The installer is unsigned.
+
+The sherpa-onnx 1.x runtime incorporates GPL-licensed eSpeak NG through its phonemizer. The combined Windows distribution is therefore supplied under GPL-3.0-or-later; Burnos-authored source retains its MIT license. See [Windows distribution terms](packaging/LICENSE-WINDOWS.txt) and [source/rebuild instructions](packaging/SOURCES.md). Qt libraries are dynamically linked and replaceable; its LGPL obligations remain applicable. [Upstream phonemizer licensing explanation](https://github.com/k2-fsa/sherpa-onnx/issues/3731).
 
 ## Film and visual assets
 

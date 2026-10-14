@@ -9,6 +9,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QUrl>
 
@@ -71,10 +72,37 @@ constexpr qint64 kWakeSpellingBytes = 244837;
 
 QString root()
 {
-    // %ProgramData% is the supported way to C:/ProgramData; the literal path
-    // is only a fallback for a stripped environment.
-    const QString data = qEnvironmentVariable("ProgramData", QStringLiteral("C:/ProgramData"));
-    return QDir::fromNativeSeparators(data) + QStringLiteral("/BurnOS");
+    static const QString path = []() {
+        const QString override = qEnvironmentVariable("BURNOS_MODEL_DIR");
+        if (!override.isEmpty())
+            return QDir::fromNativeSeparators(override);
+        // Reuse a complete older installation without writing into ProgramData.
+        const QString old = QDir::fromNativeSeparators(qEnvironmentVariable(
+            "ProgramData", QStringLiteral("C:/ProgramData"))) + QStringLiteral("/BurnOS");
+        const QString wake = old + QStringLiteral("/STT/") + QLatin1String(kWakeFolder) + QLatin1Char('/');
+        const auto whole = [](const QString &file, qint64 bytes) {
+            const QFileInfo info(file);
+            return info.isFile() && (bytes ? info.size() == bytes : info.size() > 0);
+        };
+        if (whole(old + QStringLiteral("/STT/") + QLatin1String(kSttFile), 0)
+            && whole(old + QStringLiteral("/STT/") + QLatin1String(kVadFile), kVadBytes)
+            && whole(old + QStringLiteral("/STT/") + QLatin1String(kVoiceFile), kVoiceBytes)
+            && whole(wake + QLatin1String(kWakeEncoder), kWakeEncoderBytes)
+            && whole(wake + QLatin1String(kWakeDecoder), kWakeDecoderBytes)
+            && whole(wake + QLatin1String(kWakeJoiner), kWakeJoinerBytes)
+            && whole(wake + QStringLiteral("tokens.txt"), kWakeTokensBytes)
+            && whole(wake + QStringLiteral("bpe.model"), kWakeSpellingBytes)
+            && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/model.onnx"), 0)
+            && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/voices.bin"), 0)
+            && whole(old + QStringLiteral("/TTS/kokoro-en-v0_19/tokens.txt"), 0)
+            && QFileInfo(old + QStringLiteral("/TTS/kokoro-en-v0_19/espeak-ng-data")).isDir())
+            return old;
+        QString local = qEnvironmentVariable("LOCALAPPDATA");
+        if (local.isEmpty())
+            local = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+        return QDir::fromNativeSeparators(local) + QStringLiteral("/BurnOS/models");
+    }();
+    return path;
 }
 
 QString sttDir() { return root() + QStringLiteral("/STT"); }

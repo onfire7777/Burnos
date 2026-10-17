@@ -10,7 +10,7 @@ A voice assistant for Windows that remembers the conversation and helps move you
 [![C++ / Qt](https://img.shields.io/badge/C%2B%2B17-Qt_6-a99bff?style=flat-square)](BurnOS.pro)
 [![Source: MIT](https://img.shields.io/badge/Source-MIT-59e3ac?style=flat-square)](LICENSE)
 
-[**Download for Windows**](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-0.24.0-Setup-x64.exe) · [Explore Burnos](https://burnos.app) · [Watch the reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Judge's guide](docs/hackathon/README.md)
+[**Download for Windows**](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip) · [Explore Burnos](https://burnos.app) · [Watch the reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Judge's guide](docs/hackathon/README.md)
 
 [![Burnos: your next idea, already in context. A glowing blue and violet orb beside the words Voice, Memory, Action.](docs/assets/burnos-preview.gif)](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4)
 
@@ -63,15 +63,15 @@ This is the fictional scenario in the reveal film. Connected services require yo
 
 ### Download. Set up. Start talking.
 
-**[Download the Windows installer](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-0.24.0-Setup-x64.exe)** · [Portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip) · [Release notes and checksums](https://github.com/onfire7777/Burnos/releases/tag/v0.24.0)
+**[Download Burnos for Windows](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip)** · [Release notes and checksums](https://github.com/onfire7777/Burnos/releases/tag/v0.24.0) · [Later updates](https://github.com/onfire7777/Burnos/releases)
 
-1. Install Burnos on **Windows 10/11 x64** and launch it from Start.
+1. Extract the **entire** ZIP on **Windows 10/11 x64** and run `Burnos.exe`. A later release's small `update` ZIP is extracted over the same folder.
 2. Voice models are included—no separate speech-model download is needed.
 3. Enter your own **OpenRouter API key** when Settings opens, then start talking.
 
 **Persistent memory and all voice models are included.** The download contains the app, Qt, speech engines, recognition and voice-output models, voice detection, speaker matching, wake-word models, and a self-contained Mnemosyne server. No Python, compiler, or separate model or memory installation is needed. Allow several GB of free disk space. Conversations still use OpenRouter and require Internet access; model-provider usage is billed to your own account.
 
-The installer is currently **unsigned**, so Windows may show an unknown-publisher warning. Download from this repository and check the release's SHA-256 checksums. Uninstalling removes the app and its bundled models, while preserving personal memory, settings, and separately downloaded model caches. [Setup and troubleshooting](docs/GETTING_STARTED.md).
+Burnos is currently **unsigned**, so Windows may show an unknown-publisher warning. Download from this repository and check the release's SHA-256 checksums. Deleting the folder removes the app and its bundled models; personal memory, settings, and separately downloaded model caches stay. [Setup and troubleshooting](docs/GETTING_STARTED.md).
 
 <details>
 <summary>Building from source instead?</summary>

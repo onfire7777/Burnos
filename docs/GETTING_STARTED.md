@@ -5,13 +5,11 @@ The packaged CPU speech runtime requires AVX2, FMA, and F16C support; no dedicat
 
 ## Recommended: install the complete Windows download
 
-**[Download Burnos Setup](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-0.24.0-Setup-x64.exe)** or [get the portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip).
+**[Download Burnos](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip)**, extract the **entire** ZIP, and run `Burnos.exe`. It includes Qt, speech engines, and the Mnemosyne memory server. Python and development tools are not required. Releases that only change the app ship a small `Burnos-vX-update-windows-x64.zip`: close Burnos and extract it over the same folder.
 
-Run the installer, then launch Burnos from Start. It includes Qt, speech engines, and the Mnemosyne memory server. Python and development tools are not required. The portable version has the same components: extract the **entire** ZIP before running `Burnos.exe`.
+All voice models are included in the ZIP. Settings opens for your own OpenRouter key and conversational model selection. OpenRouter conversations need Internet access; provider usage may incur charges. Right-click the orb to reopen Settings later. Optional Composio connections require their own setup.
 
-All voice models are included in the installer and portable ZIP. Settings opens for your own OpenRouter key and conversational model selection. OpenRouter conversations need Internet access; provider usage may incur charges. Right-click the orb to reopen Settings later. Optional Composio connections require their own setup.
-
-Memory starts automatically and persists in `%LOCALAPPDATA%\BurnOS\memory`. New models use `%LOCALAPPDATA%\BurnOS\models`; a complete existing `%ProgramData%\BurnOS` model cache is reused. The installer uses `%LOCALAPPDATA%\Programs\Burnos` and requires no administrator privileges. Uninstalling keeps your memory, models, and settings.
+Memory starts automatically and persists in `%LOCALAPPDATA%\BurnOS\memory`. New models use `%LOCALAPPDATA%\BurnOS\models`; a complete existing `%ProgramData%\BurnOS` model cache is reused. No administrator privileges are needed. Deleting the Burnos folder keeps your memory, models, and settings.
 
 The release is unsigned; Windows may show an unknown-publisher or SmartScreen warning. Verify the download against `SHA256SUMS.txt` on the [release page](https://github.com/onfire7777/Burnos/releases/tag/v0.24.0). Browser research requires Edge, Chrome, or Brave.
 
@@ -19,7 +17,7 @@ If you previously configured `%APPDATA%\BurnOS\mcp.json`, that configuration tak
 
 ## Developer setup from source
 
-The remaining steps are for developers building their own copy; installer users can skip them. See [Windows release packaging](WINDOWS_RELEASE.md) to reproduce the complete bundle.
+The remaining steps are for developers building their own copy; download users can skip them. See [Windows release packaging](WINDOWS_RELEASE.md) to reproduce the complete bundle.
 
 ## 1. Build the native app
 

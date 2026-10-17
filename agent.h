@@ -70,6 +70,9 @@ public:
     // its question. Relayed by the talker.
     void steer(const QString &message);
     void stop();
+    // What it did, call by call with a short result each: handed to a later
+    // task that saves it as a skill.
+    QString trace() const;
 
 signals:
     void finished(int id);
@@ -83,6 +86,8 @@ private:
     void runMcp(const QVariantMap &args);
     void runWeb(const QVariantMap &args);
     void answerCall(const QString &result, const QByteArray &png = QByteArray());
+    // The skills the memory offers for this task, as a note for the model.
+    void offerSkills(const QString &found);
     void flushShots();
     void pruneContext();
     void end(State state, const QString &outcome);
@@ -126,6 +131,23 @@ private:
     // Set when it ends, and read by any action still running on the hands, so
     // a stopped task lets go of the mouse at once.
     std::shared_ptr<std::atomic_bool> m_cancelled;
+
+    // THE SKILL it follows. The memory offers some when the task starts; the
+    // one it reads (skill_get) is pinned at that revision. A skill that can
+    // send, delete, pay, post, install or run scripts gets no step that acts
+    // until the user has said yes to an ask_user of THIS task - enforced here,
+    // not left to the prompt.
+    struct Skill
+    {
+        QString id;
+        QString name;
+        int revision = 0;
+        QStringList effects;
+        bool scripts = false;
+    };
+    QList<Skill> m_offered;
+    Skill m_skill;
+    bool m_skillApproved = false;
 };
 
 // THE BRAIN: the talker in front, the tasks behind it.

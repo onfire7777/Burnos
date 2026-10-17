@@ -320,6 +320,27 @@ const char kTaskPrompt[] =
     "or you are sure it cannot. Where the user will want to see the result, "
     "open it for them.\n"
     "\n"
+    "SKILLS live in the user's memory (the memory MCP server) as complete "
+    "frameworks, and a skill file of BurnOS's own ends in .bs (skill_export "
+    "writes one; importing it needs no conversion). To IMPORT one - a .bs file, "
+    "a skill folder, any Markdown file or a folder of them (each file becomes a "
+    "skill), a zip or a GitHub link - get it onto "
+    "this PC first (git clone or download it into a new folder under the TEMP "
+    "folder), then call framework_import with its path and the model named in "
+    "the MCP note. Converting takes minutes: between framework_status checks "
+    "wait with the shell tool (powershell -c Start-Sleep 30) until it says "
+    "completed or failed. Then ask_user whether to turn it on, saying in one "
+    "sentence what it is for, what it can do (its effects), whether it carries "
+    "scripts and whether every part of it was covered; only on yes call "
+    "skill_set_state with state active. To SAVE what a task did as a skill, "
+    "write a SKILL.md - front matter with name and description, then the steps "
+    "as plain instructions, with values that will change written as 'the file "
+    "the user names' - into a new folder under TEMP and import it the same way. "
+    "To list skills call skill_search with an empty query and include_drafts "
+    "true; to show one, write its skill_get section document to a .md file in "
+    "TEMP and open it in Notepad; to forget one, ask_user first, then "
+    "skill_forget. Never run a skill's script without asking first.\n"
+    "\n"
     "When a command prints something the user wanted, report the ANSWER, not "
     "the raw output.";
 
@@ -722,7 +743,9 @@ QJsonArray talkTools(bool memory)
         QStringLiteral("start_task"),
         QStringLiteral("Start a background task that does something on the "
                        "user's computer or in their apps, while you carry on "
-                       "talking with them."),
+                       "talking with them. Skills are tasks too: importing one, "
+                       "saving what a task did as a skill, listing, showing, "
+                       "turning on or off and forgetting them."),
         QJsonObject{
             {"type", "object"},
             {"properties", QJsonObject{
@@ -733,6 +756,9 @@ QJsonArray talkTools(bool memory)
                      "Everything the task needs, as a complete brief for "
                      "someone who has not heard this conversation: what to do, "
                      "and every name, file, site, window or account involved."))},
+                {"from_task", numberParam(QStringLiteral(
+                     "Only to save what an earlier task did as a skill: that "
+                     "task's number. Its steps are handed to the new task."))},
             }},
             {"required", QJsonArray{"title", "instruction"}},
         }));
@@ -1383,20 +1409,106 @@ void Task::start()
                        "processes - call mcp with list_tools to see what they "
                        "offer, then call_tool. The one called memory is the user's "
                        "long-term memory (Mnemosyne): pass tenant_id '%2' and "
-                       "user_id '%3' to every tool of it.")
+                       "user_id '%3' to every tool of it that takes them (the "
+                       "skill and framework tools do not, except skill_outcome). "
+                       "A skill is converted with the model %4.")
                         .arg(servers.join(QStringLiteral(", ")),
                              QString::fromLatin1(kMemoryTenant),
-                             QString::fromLatin1(kMemoryUser))));
+                             QString::fromLatin1(kMemoryUser), Settings::taskModel())));
             }
-            m_messages.append(msg(QStringLiteral("system"),
-                                  tr("The time now is %1. The user's home folder "
-                                     "is %2. The window in front right now. %3")
-                                      .arg(nowWords(),
-                                           QDir::toNativeSeparators(QDir::homePath()),
-                                           r.text)));
-            m_messages.append(msg(QStringLiteral("user"), m_instruction));
-            ask();
+            const QString front = r.text;
+            const auto begin = [this, front]() {
+                m_messages.append(msg(QStringLiteral("system"),
+                                      tr("The time now is %1. The user's home folder "
+                                         "is %2. The window in front right now. %3")
+                                          .arg(nowWords(),
+                                               QDir::toNativeSeparators(QDir::homePath()),
+                                               front)));
+                m_messages.append(msg(QStringLiteral("user"), m_instruction));
+                ask();
+            };
+            // THE SKILL ROUTER: the memory names the skills that fit this task,
+            // leaving out any whose MCP servers are not connected. No memory, an
+            // old one, or no answer within five seconds: the task starts as before.
+            McpServer *memory = m_agent->mcp()->memory();
+            if (!memory || !memory->hasTool(QStringLiteral("skill_search"))) {
+                begin();
+                return;
+            }
+            const QPointer<Task> self(this);
+            memory->call(QStringLiteral("skill_search"),
+                         QJsonObject{{QStringLiteral("query"),
+                                      m_title + QStringLiteral(". ") + m_instruction.left(2000)},
+                                     {QStringLiteral("available"), QJsonArray::fromStringList(servers)}},
+                         [self, begin](bool ok, const QJsonObject &result, const QString &) {
+                             if (!self || !self->isLive())
+                                 return;
+                             if (ok)
+                                 self->offerSkills(McpServer::textOf(result));
+                             begin();
+                         },
+                         5000);
         });
+}
+
+void Task::offerSkills(const QString &found)
+{
+    const QJsonArray skills = QJsonDocument::fromJson(found.toUtf8())
+                                  .object()
+                                  .value(QStringLiteral("skills"))
+                                  .toArray();
+    QStringList lines;
+    for (const QJsonValue &v : skills) {
+        const QJsonObject s = v.toObject();
+        Skill skill;
+        skill.id = s.value(QStringLiteral("skill_id")).toString();
+        skill.name = s.value(QStringLiteral("name")).toString();
+        skill.revision = s.value(QStringLiteral("revision")).toInt();
+        for (const QJsonValue &e : s.value(QStringLiteral("effects")).toArray())
+            skill.effects.append(e.toString());
+        skill.scripts = s.value(QStringLiteral("scripts")).toBool();
+        if (skill.id.isEmpty())
+            continue;
+        m_offered.append(skill);
+        lines.append(QStringLiteral("- %1 (skill_id %2): %3")
+                         .arg(skill.name, skill.id,
+                              s.value(QStringLiteral("applicability")).toString().simplified()));
+    }
+    if (lines.isEmpty())
+        return;
+    liveLog(QStringLiteral("task %1: skills offered: %2")
+                .arg(m_id)
+                .arg(lines.join(QLatin1Char(' ')).left(300)));
+    m_messages.append(msg(
+        QStringLiteral("system"),
+        tr("SKILLS FROM THE USER'S MEMORY THAT MAY FIT THIS TASK. If one fits, "
+           "follow it: call the memory's skill_get with its skill_id - the overview "
+           "first, then the sections the work needs (steps, constraints, warnings, "
+           "definitions) - and say in your report which skill you used. If none "
+           "fits, ignore them.\n%1")
+            .arg(lines.join(QLatin1Char('\n')))));
+}
+
+QString Task::trace() const
+{
+    QStringList lines;
+    for (const QJsonValue &v : m_messages) {
+        const QJsonObject m = v.toObject();
+        const QString role = m.value(QStringLiteral("role")).toString();
+        if (role == QLatin1String("assistant")) {
+            for (const QJsonValue &c : m.value(QStringLiteral("tool_calls")).toArray()) {
+                const QJsonObject fn = c.toObject().value(QStringLiteral("function")).toObject();
+                lines.append(QStringLiteral("%1 %2").arg(
+                    fn.value(QStringLiteral("name")).toString(),
+                    fn.value(QStringLiteral("arguments")).toString().simplified().left(300)));
+            }
+        } else if (role == QLatin1String("tool")) {
+            lines.append(QStringLiteral("  -> %1").arg(
+                m.value(QStringLiteral("content")).toString().simplified().left(200)));
+        }
+    }
+    lines.append(tr("Outcome: %1").arg(m_outcome));
+    return lines.join(QLatin1Char('\n')).right(8000);
 }
 
 QString Task::model() const
@@ -1576,6 +1688,31 @@ void Task::runNextCall()
         return;
     }
 
+    // A skill that can act on the world gets no acting step without a yes.
+    static const QStringList kLooks{QStringLiteral("list_windows"), QStringLiteral("list_controls"),
+                                    QStringLiteral("screenshot"), QStringLiteral("read_text"),
+                                    QStringLiteral("wait_for")};
+    const QString act = args.value(QStringLiteral("action")).toString();
+    const bool acts = name == QLatin1String("shell")
+                      || (name == QLatin1String("files")
+                          && (act == QLatin1String("write") || act == QLatin1String("edit")))
+                      || (name == QLatin1String("computer_use") && !kLooks.contains(act))
+                      || (name == QLatin1String("app_action") && act != QLatin1String("find_tools"));
+    if (acts && !m_skill.id.isEmpty() && !m_skillApproved
+        && (!m_skill.effects.isEmpty() || m_skill.scripts)) {
+        QStringList can = m_skill.effects;
+        if (m_skill.scripts)
+            can.append(QStringLiteral("runs scripts"));
+        liveLog(QStringLiteral("task %1: skill %2 step refused until the user says yes")
+                    .arg(m_id)
+                    .arg(m_skill.name));
+        answerCall(tr("Refused: you are following the skill %1, which can act on the "
+                      "world (%2). First call ask_user with one sentence saying what "
+                      "you are about to do; once the user says yes, repeat this step.")
+                       .arg(m_skill.name, can.join(QStringLiteral(", "))));
+        return;
+    }
+
     if (name == QLatin1String("computer_use")) {
         // ON THE HANDS: one thread, one action at a time, whichever task asks.
         const DeskState desk = m_desk;
@@ -1750,7 +1887,30 @@ void Task::runMcp(const QVariantMap &args)
                            .arg(serverName, tool));
             return;
         }
-        const QJsonObject arguments = argumentsOf(args.value(QStringLiteral("arguments")));
+        QJsonObject arguments = argumentsOf(args.value(QStringLiteral("arguments")));
+
+        // The first skill a task reads is the one it follows, pinned at the
+        // revision the router offered; one it was not offered is treated as
+        // able to do anything until the user says yes.
+        const QString part = arguments.value(QStringLiteral("section")).toString();
+        // Showing a skill's document or source to the user is not following it.
+        if (tool == QLatin1String("skill_get") && m_skill.id.isEmpty()
+            && part != QLatin1String("document") && part != QLatin1String("source")) {
+            const QString wanted = arguments.value(QStringLiteral("skill_id")).toString();
+            m_skill = Skill{wanted, wanted, 0, {QStringLiteral("unknown actions")}, true};
+            for (const Skill &s : std::as_const(m_offered)) {
+                if (s.id == wanted || s.name.compare(wanted, Qt::CaseInsensitive) == 0)
+                    m_skill = s;
+            }
+            liveLog(QStringLiteral("task %1: follows skill %2 revision %3")
+                        .arg(m_id)
+                        .arg(m_skill.name)
+                        .arg(m_skill.revision));
+        }
+        if (tool == QLatin1String("skill_get") && m_skill.revision > 0
+            && !arguments.contains(QStringLiteral("revision"))
+            && arguments.value(QStringLiteral("skill_id")).toString() == m_skill.id)
+            arguments.insert(QStringLiteral("revision"), m_skill.revision);
 
         const QPointer<Task> self(this);
         const int id = m_id;
@@ -1870,6 +2030,13 @@ void Task::steer(const QString &message)
     // The answer to its own question: the call it made is answered with it and
     // the task carries on from exactly where it stopped.
     if (m_state == State::WaitingForUser && !m_callId.isEmpty()) {
+        // The talker relays the answer in its own words ("The user approves: ..."),
+        // so a yes is an answer that says no refusal anywhere.
+        static const QRegularExpression kNo(QStringLiteral(
+            "\\b(no|nope|not|don'?t|do not|stop|cancel|wait|hold|never|declin\\w*|refus\\w*|reject\\w*|den\\w*)\\b"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (!m_skill.id.isEmpty() && !kNo.match(message).hasMatch())
+            m_skillApproved = true;
         m_state = State::Running;
         m_question.clear();
         answerCall(tr("The user answered: %1").arg(message));
@@ -1922,6 +2089,32 @@ void Task::end(State state, const QString &outcome)
                 .arg(runningMs() / 1000)
                 .arg(m_toolCalls)
                 .arg(m_outcome.simplified().left(300)));
+
+    // A skill run is recorded with what was observed: the report and the last
+    // thing a tool returned, never the model's word alone.
+    McpServer *memory = m_agent->mcp()->memory();
+    if (!m_skill.id.isEmpty() && memory && memory->hasTool(QStringLiteral("skill_outcome"))) {
+        QString seen;
+        for (int i = int(m_messages.size()) - 1; i >= 0 && seen.isEmpty(); --i) {
+            const QJsonObject m = m_messages.at(i).toObject();
+            if (m.value(QStringLiteral("role")).toString() == QLatin1String("tool"))
+                seen = m.value(QStringLiteral("content")).toString().simplified().left(1000);
+        }
+        memory->call(QStringLiteral("skill_outcome"),
+                     QJsonObject{{QStringLiteral("tenant_id"), QString::fromLatin1(kMemoryTenant)},
+                                 {QStringLiteral("user_id"), QString::fromLatin1(kMemoryUser)},
+                                 {QStringLiteral("skill_id"), m_skill.id},
+                                 {QStringLiteral("revision"), m_skill.revision},
+                                 {QStringLiteral("success"), state == State::Done},
+                                 {QStringLiteral("evidence"),
+                                  tr("Report: %1\nLast observed: %2").arg(m_outcome, seen)},
+                                 {QStringLiteral("task"), m_title}},
+                     [id = m_id](bool ok, const QJsonObject &, const QString &error) {
+                         liveLog(QStringLiteral("task %1: skill outcome %2")
+                                     .arg(id)
+                                     .arg(ok ? QStringLiteral("recorded") : error));
+                     });
+    }
     emit finished(m_id);
 }
 
@@ -2961,9 +3154,14 @@ QString Agent::runTalkTool(const QString &name, const QJsonObject &args, bool *a
         if (m_probe)
             return tr("Tasks are switched off in a probe.");
         const QString title = args.value(QStringLiteral("title")).toString().simplified();
-        const QString instruction = args.value(QStringLiteral("instruction")).toString().trimmed();
+        QString instruction = args.value(QStringLiteral("instruction")).toString().trimmed();
         if (instruction.isEmpty())
             return tr("I didn't catch what to do.");
+        if (const Task *earlier = task(taskNumber(args.value(QStringLiteral("from_task"))))) {
+            instruction += tr("\n\nWhat task %1, '%2', did, call by call:\n%3")
+                               .arg(earlier->id())
+                               .arg(earlier->title(), earlier->trace());
+        }
         if (liveTasks() >= kMaxLiveTasks) {
             return tr("I'm already doing three things, so that has to wait until "
                       "one of them finishes.");

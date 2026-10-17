@@ -24,6 +24,7 @@ pydantic-settings==2.16.0
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.8
 pyjwt==2.15.1
+pypdf==6.21.1
 python-dotenv==1.2.4
 python-multipart==0.0.32
 pywin32==312

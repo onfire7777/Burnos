@@ -13,7 +13,7 @@ CONFIG += c++17
 # resource, Qt reads it back as applicationVersion(), and the live log's first
 # line says it - so every report names its build. Raised with each release,
 # which is also a git tag (v0.6.0) and a branch (v0.6) to roll back to.
-VERSION = 0.25.0
+VERSION = 0.26.0
 
 SOURCES += \
     agent.cpp \
@@ -26,6 +26,7 @@ SOURCES += \
     main.cpp \
     mainwindow.cpp \
     mcp.cpp \
+    mcpauth.cpp \
     openrouter.cpp \
     orbwidget.cpp \
     settings.cpp \
@@ -46,6 +47,7 @@ HEADERS += \
     livelog.h \
     mainwindow.h \
     mcp.h \
+    mcpauth.h \
     openrouter.h \
     orbwidget.h \
     settings.h \

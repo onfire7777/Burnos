@@ -132,22 +132,49 @@ bool cliMessage(QString text, int id, QJsonObject *message)
         QRegularExpression(QStringLiteral("```(?:json)?\\s*([\\s\\S]*?)\\s*```")).match(text);
     if (fence.hasMatch())
         text = fence.captured(1);
-    const QJsonObject root = QJsonDocument::fromJson(text.toUtf8()).object();
-    if (root.isEmpty())
-        return false;
     QJsonArray calls;
     int n = 0;
-    for (const QJsonValue &v : root.value(QStringLiteral("tool_calls")).toArray()) {
-        const QJsonObject c = v.toObject();
-        const QJsonValue a = c.value(QStringLiteral("arguments"));
+    const auto call = [&](const QString &name, const QJsonValue &a) {
         calls.append(QJsonObject{
             {QStringLiteral("id"), QStringLiteral("call_%1_%2").arg(id).arg(++n)},
             {QStringLiteral("type"), QStringLiteral("function")},
             {QStringLiteral("function"),
-             QJsonObject{{QStringLiteral("name"), c.value(QStringLiteral("name")).toString()},
+             QJsonObject{{QStringLiteral("name"), name},
                          {QStringLiteral("arguments"),
                           a.isObject() ? QString::fromUtf8(QJsonDocument(a.toObject()).toJson(QJsonDocument::Compact))
                                        : a.toString()}}}});
+    };
+    QJsonObject root = QJsonDocument::fromJson(text.toUtf8()).object();
+    const qsizetype from = text.indexOf(QLatin1Char('{')), to = text.lastIndexOf(QLatin1Char('}'));
+    // A sentence before the JSON: the object is still the reply.
+    if (root.isEmpty() && from > 0 && to > from)
+        root = QJsonDocument::fromJson(text.mid(from, to - from + 1).toUtf8()).object();
+    if (root.isEmpty()) {
+        // Claude now and then answers in its own tool-call markup instead of the JSON asked
+        // for: read it the same way rather than say the markup out loud.
+        static const QRegularExpression invoke(QStringLiteral("<invoke name=\"([^\"]+)\">([\\s\\S]*?)</invoke>"));
+        static const QRegularExpression param(QStringLiteral("<parameter name=\"([^\"]+)\">([\\s\\S]*?)</parameter>"));
+        for (auto it = invoke.globalMatch(text); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            QJsonObject args;
+            for (auto p = param.globalMatch(m.captured(2)); p.hasNext();) {
+                const QRegularExpressionMatch q = p.next();
+                const QString raw = q.captured(2).trimmed();
+                const QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+                args.insert(q.captured(1), doc.isObject() ? QJsonValue(doc.object())
+                                           : doc.isArray() ? QJsonValue(doc.array()) : QJsonValue(raw));
+            }
+            call(m.captured(1), args);
+        }
+        if (calls.isEmpty())
+            return false;
+        *message = QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                               {QStringLiteral("content"), QString()}, {QStringLiteral("tool_calls"), calls}};
+        return true;
+    }
+    for (const QJsonValue &v : root.value(QStringLiteral("tool_calls")).toArray()) {
+        const QJsonObject c = v.toObject();
+        call(c.value(QStringLiteral("name")).toString(), c.value(QStringLiteral("arguments")));
     }
     *message = QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
                            {QStringLiteral("content"), root.value(QStringLiteral("content")).toString()}};

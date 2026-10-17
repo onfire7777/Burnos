@@ -320,27 +320,32 @@ const char kTaskPrompt[] =
     "or you are sure it cannot. Where the user will want to see the result, "
     "open it for them.\n"
     "\n"
-    "SKILLS live in the user's memory (the memory MCP server) as complete "
-    "frameworks, and a skill file of BurnOS's own ends in .bs (skill_export "
-    "writes one; importing it needs no conversion). To IMPORT one - a .bs file, "
-    "a skill folder, any Markdown file or a folder of them (each file becomes a "
-    "skill), a zip or a GitHub link - get it onto "
-    "this PC first (git clone or download it into a new folder under the TEMP "
-    "folder), then call framework_import with its path and the model named in "
-    "the MCP note. Converting takes minutes: between framework_status checks "
-    "wait with the shell tool (powershell -c Start-Sleep 30) until it says "
-    "completed or failed. Then ask_user whether to turn it on, saying in one "
-    "sentence what it is for, what it can do (its effects), whether it carries "
-    "scripts and whether every part of it was covered; only on yes call "
-    "skill_set_state with state active. To SAVE what a task did as a skill, "
-    "write a SKILL.md - front matter with name and description, then the steps "
-    "as plain instructions, with values that will change written as 'the file "
-    "the user names' - into a new folder under TEMP and import it the same way. "
-    "To list skills call skill_search with an empty query and include_drafts "
-    "true; to show one, write its skill_get section document to a .md file in "
-    "TEMP and open it in Notepad; a question about a skill goes to skill_ask; "
-    "to convert one again, framework_regenerate; to forget one, ask_user first, then "
-    "skill_forget. Never run a skill's script without asking first.\n"
+    "SKILLS live in the user's memory (the memory MCP server). A plain skill is "
+    "an ordinary Agent Skill, used as written; a BurnSkill is one turned into a "
+    "complete framework, whose parts are also in the memory, and BurnOS's own "
+    "skill file ends in .burnskill (older ones in .bs). To IMPORT one - a "
+    ".burnskill file, a skill folder, any Markdown file or a folder of them "
+    "(each file becomes a skill), a zip, a GitHub link, or a book (PDF or EPUB, "
+    "which becomes one BurnSkill, built in the background in a few minutes) - "
+    "get it onto this PC "
+    "first (git clone or download it into a new folder under the TEMP folder), "
+    "then call framework_import with its path, tenant_id and user_id. It is "
+    "ready and on at once (a book once it is built): tell the user in one sentence what it is for, what "
+    "it can do (its effects) and whether it carries scripts. To MAKE one a "
+    "BurnSkill - only when the user asks - call skill_make_burnskill with its "
+    "skill_id, the model named in the MCP note, tenant_id and user_id; it is "
+    "built in the background in about two minutes and takes over from the plain "
+    "skill when done, so do not wait for it unless the user asked to. To SAVE "
+    "what a task did as a skill, write a SKILL.md - front matter with name and "
+    "description, then the steps as plain instructions, with values that will "
+    "change written as 'the file the user names' - into a new folder under TEMP "
+    "and import it the same way. To list skills call skill_search with an empty "
+    "query and include_drafts true; to show one, write what skill_get with "
+    "section document gives to a .md file in TEMP and open it in Notepad; to "
+    "share one, skill_export (a folder for a plain skill, one .burnskill file "
+    "for a BurnSkill); a question about a BurnSkill goes to skill_ask; to "
+    "forget one, ask_user first, then skill_forget. Never run a skill's script "
+    "without asking first.\n"
     "\n"
     "When a command prints something the user wanted, report the ANSWER, not "
     "the raw output.";
@@ -652,6 +657,78 @@ QJsonObject argumentsOf(const QVariant &raw)
     return raw.typeId() == QMetaType::QString
                ? QJsonDocument::fromJson(raw.toString().toUtf8()).object()
                : QJsonObject::fromVariantMap(raw.toMap());
+}
+
+// A result the server cannot finish without the user (resultType
+// input_required): what it asks, and how the model answers it - by asking the
+// user, then repeating the same mcp call with the answers.
+QString inputNeeded(const QJsonObject &result, const QString &action)
+{
+    QStringList lines{QStringLiteral(
+        "THE SERVER NEEDS THE USER BEFORE IT CAN FINISH. Ask the user each question below with "
+        "ask_user (or open the page for them), then repeat this same mcp %1 call adding "
+        "input_responses - an object mapping each key below to its answer - and request_state "
+        "exactly as given, if one is.").arg(action)};
+    const QJsonObject asks = result.value(QStringLiteral("inputRequests")).toObject();
+    for (auto it = asks.begin(); it != asks.end(); ++it) {
+        const QJsonObject r = it.value().toObject();
+        const QJsonObject p = r.value(QStringLiteral("params")).toObject();
+        const QString message = p.value(QStringLiteral("message")).toString();
+        if (r.value(QStringLiteral("method")).toString() != QLatin1String("elicitation/create")) {
+            lines << QStringLiteral("- %1: the server asks for %2, which BurnOS does not offer; answer it with {}.")
+                         .arg(it.key(), r.value(QStringLiteral("method")).toString());
+        } else if (p.value(QStringLiteral("mode")).toString() == QLatin1String("url")) {
+            lines << QStringLiteral("- %1: %2 Open %3 for the user; when they say it is done, answer "
+                                    "{\"action\": \"accept\"}, or {\"action\": \"decline\"}.")
+                         .arg(it.key(), message, p.value(QStringLiteral("url")).toString());
+        } else {
+            lines << QStringLiteral("- %1: %2 Fields: %3. Answer {\"action\": \"accept\", \"content\": "
+                                    "{field: value}}, or {\"action\": \"decline\"} if the user says no.")
+                         .arg(it.key(), message,
+                              QString::fromUtf8(QJsonDocument(p.value(QStringLiteral("requestedSchema")).toObject())
+                                                    .toJson(QJsonDocument::Compact)));
+        }
+    }
+    const QString state = result.value(QStringLiteral("requestState")).toString();
+    if (!state.isEmpty())
+        lines << QStringLiteral("request_state: %1").arg(state);
+    return lines.join(QLatin1Char('\n'));
+}
+
+// What an MCP server answered, as words for the model.
+QString mcpAnswer(const QJsonObject &result, const QString &action)
+{
+    if (result.value(QStringLiteral("resultType")).toString() == QLatin1String("input_required"))
+        return inputNeeded(result, action);
+    QStringList parts;
+    if (action == QLatin1String("read_resource")) {
+        for (const QJsonValue &v : result.value(QStringLiteral("contents")).toArray()) {
+            const QJsonObject c = v.toObject();
+            parts << (c.contains(QStringLiteral("text"))
+                          ? QStringLiteral("[%1]\n%2").arg(c.value(QStringLiteral("uri")).toString(),
+                                                           c.value(QStringLiteral("text")).toString())
+                          : QStringLiteral("[%1: %2, binary, not shown]").arg(c.value(QStringLiteral("uri")).toString(),
+                                                                             c.value(QStringLiteral("mimeType")).toString()));
+        }
+    } else if (action == QLatin1String("get_prompt")) {
+        parts << result.value(QStringLiteral("description")).toString();
+        for (const QJsonValue &v : result.value(QStringLiteral("messages")).toArray()) {
+            const QJsonObject m = v.toObject();
+            const QJsonObject content = m.value(QStringLiteral("content")).toObject();
+            parts << QStringLiteral("%1: %2").arg(m.value(QStringLiteral("role")).toString(),
+                                                 content.value(QStringLiteral("text")).toString(
+                                                     QStringLiteral("[%1]").arg(content.value(QStringLiteral("type")).toString())));
+        }
+    } else if (action == QLatin1String("call_tool")) {
+        return McpServer::textOf(result);
+    } else {
+        // A list: as the server gave it, less its bookkeeping.
+        QJsonObject listed = result;
+        for (const char *k : {"_meta", "ttlMs", "cacheScope", "resultType"})
+            listed.remove(QLatin1String(k));
+        parts << QString::fromUtf8(QJsonDocument(listed).toJson(QJsonDocument::Compact)).left(8000);
+    }
+    return parts.join(QLatin1Char('\n')).trimmed();
 }
 
 // Given as a number where the model behaved and as "2" where it did not.
@@ -1098,18 +1175,32 @@ QJsonObject mcpTool()
     const QJsonObject properties{
         {"action", QJsonObject{
             {"type", "string"},
-            {"enum", QJsonArray{"list_tools", "call_tool"}},
+            {"enum", QJsonArray{"list_tools", "call_tool", "list_resources", "read_resource",
+                                "list_prompts", "get_prompt", "sign_in"}},
             {"description",
              "list_tools shows what the servers offer - narrowed by server and "
              "by words in query - with the arguments each tool takes. call_tool "
-             "runs one of them."}}},
+             "runs one of them. list_resources and read_resource reach the data a "
+             "server offers, list_prompts and get_prompt its ready-made "
+             "instructions (the memory's prompts are the user's skills). sign_in "
+             "opens the user's browser to sign in to a remote server that needs it."}}},
         {"server", textParam(QStringLiteral("The server's name, such as memory."))},
         {"query", textParam(QStringLiteral("For list_tools: words to look for."))},
         {"tool", textParam(QStringLiteral("For call_tool: the tool's name exactly as listed."))},
+        {"uri", textParam(QStringLiteral("For read_resource: the resource's uri as listed."))},
+        {"name", textParam(QStringLiteral("For get_prompt: the prompt's name as listed."))},
         {"arguments", QJsonObject{
             {"type", "object"},
             {"additionalProperties", true},
-            {"description", "For call_tool: the tool's arguments by the names listed."}}},
+            {"description", "For call_tool: the tool's arguments by the names listed; for "
+                            "get_prompt: the prompt's arguments."}}},
+        {"input_responses", QJsonObject{
+            {"type", "object"},
+            {"additionalProperties", true},
+            {"description", "Only when repeating a call whose answer said the server needs "
+                            "the user: each key it gave mapped to the answer."}}},
+        {"request_state", textParam(QStringLiteral(
+             "Only when repeating such a call: the request_state it gave, exactly."))},
     };
     return functionTool(QStringLiteral("mcp"),
                         QStringLiteral("Use the user's MCP servers - their long-term "
@@ -1408,11 +1499,12 @@ void Task::start()
                     tr("THE USER'S MCP SERVERS, ALREADY CONNECTED, through the mcp "
                        "tool: %1. Never look for their configuration files or "
                        "processes - call mcp with list_tools to see what they "
-                       "offer, then call_tool. The one called memory is the user's "
+                       "offer, then call_tool; list_resources and list_prompts show "
+                       "the rest of what a server offers. The one called memory is the user's "
                        "long-term memory (Mnemosyne): pass tenant_id '%2' and "
-                       "user_id '%3' to every tool of it that takes them (the "
-                       "skill and framework tools do not, except skill_outcome). "
-                       "A skill is converted with the model %4.")
+                       "user_id '%3' to every tool of it that takes them, "
+                       "framework_import and skill_make_burnskill included. "
+                       "A BurnSkill is built with the model %4.")
                         .arg(servers.join(QStringLiteral(", ")),
                              QString::fromLatin1(kMemoryTenant),
                              QString::fromLatin1(kMemoryUser),
@@ -1420,6 +1512,15 @@ void Task::start()
                              !OpenRouterClient::needsKey(Settings::taskModel())
                                  ? Settings::defaultOpenRouterModel()
                                  : Settings::taskModel())));
+            }
+            const QStringList waiting = m_agent->mcp()->signInNames();
+            if (!waiting.isEmpty()) {
+                m_messages.append(msg(
+                    QStringLiteral("system"),
+                    tr("These MCP servers need the user to sign in before they can be used: %1. "
+                       "Only if the task needs one: say the browser will open, then call mcp with "
+                       "action sign_in and that server.")
+                        .arg(waiting.join(QStringLiteral(", ")))));
             }
             const QString front = r.text;
             const auto begin = [this, front]() {
@@ -1489,10 +1590,12 @@ void Task::offerSkills(const QString &found)
     m_messages.append(msg(
         QStringLiteral("system"),
         tr("SKILLS FROM THE USER'S MEMORY THAT MAY FIT THIS TASK. If one fits, "
-           "follow it: call the memory's skill_get with its skill_id - the overview "
-           "first, then the sections the work needs (steps, constraints, warnings, "
-           "definitions) - and say in your report which skill you used. If none "
-           "fits, ignore them.\n%1")
+           "follow it: call the memory's skill_get with its skill_id. A plain skill "
+           "answers with its SKILL.md and the list of its files - read a file it "
+           "points to with skill_get attachment when the work needs it. A BurnSkill "
+           "answers with its overview - then read the sections the work needs "
+           "(steps, constraints, warnings, definitions). Say in your report which "
+           "skill you used. If none fits, ignore them.\n%1")
             .arg(lines.join(QLatin1Char('\n')))));
 }
 
@@ -1878,20 +1981,79 @@ void Task::runMcp(const QVariantMap &args)
         return;
     }
 
-    if (action == QLatin1String("call_tool")) {
+    static const QStringList kActions{QStringLiteral("call_tool"), QStringLiteral("list_resources"),
+                                      QStringLiteral("read_resource"), QStringLiteral("list_prompts"),
+                                      QStringLiteral("get_prompt"), QStringLiteral("sign_in")};
+    if (kActions.contains(action)) {
         McpServer *server = mcp->server(serverName);
-        if (!server || !server->isReady()) {
-            answerCall(tr("Failed: there is no ready MCP server called '%1'. Ready: %2.")
-                           .arg(serverName,
-                                mcp->readyNames().isEmpty()
-                                    ? QStringLiteral("none")
-                                    : mcp->readyNames().join(QStringLiteral(", "))));
+        const QPointer<Task> self(this);
+        const int id = m_id;
+        if (server && action == QLatin1String("sign_in")) {
+            server->signIn([self](bool ok, const QString &message) {
+                if (self && self->isLive())
+                    self->answerCall(ok ? tr("Signed in. The server is being connected again - list its "
+                                             "tools in a moment.")
+                                        : tr("Failed: %1").arg(message));
+            });
             return;
         }
+        if (!server || !server->isReady()) {
+            answerCall(server && server->needsSignIn()
+                           ? tr("Failed: %1 needs signing in first. Tell the user their browser will "
+                                "open, then call mcp with action sign_in and server %1.").arg(serverName)
+                           : tr("Failed: there is no ready MCP server called '%1'. Ready: %2.")
+                                 .arg(serverName,
+                                      mcp->readyNames().isEmpty()
+                                          ? QStringLiteral("none")
+                                          : mcp->readyNames().join(QStringLiteral(", "))));
+            return;
+        }
+        // The answers to the server's questions, when this repeats a call that needed the user.
+        QJsonObject more;
+        const QJsonObject responses = argumentsOf(args.value(QStringLiteral("input_responses")));
+        if (!responses.isEmpty())
+            more.insert(QStringLiteral("inputResponses"), responses);
+        const QString state = args.value(QStringLiteral("request_state")).toString().trimmed();
+        if (!state.isEmpty())
+            more.insert(QStringLiteral("requestState"), state);
+
+        if (action != QLatin1String("call_tool")) {
+            QJsonObject params = more;
+            QString method = action == QLatin1String("list_resources") ? QStringLiteral("resources/list")
+                                                                       : QStringLiteral("prompts/list");
+            if (action == QLatin1String("read_resource")) {
+                method = QStringLiteral("resources/read");
+                params.insert(QStringLiteral("uri"), args.value(QStringLiteral("uri")).toString().trimmed());
+            } else if (action == QLatin1String("get_prompt")) {
+                method = QStringLiteral("prompts/get");
+                params.insert(QStringLiteral("name"), args.value(QStringLiteral("name")).toString().trimmed());
+                params.insert(QStringLiteral("arguments"), argumentsOf(args.value(QStringLiteral("arguments"))));
+            }
+            server->rpc(method, params, [self, id, action, method](const QJsonObject &result, const QString &error) {
+                liveLog(QStringLiteral("task %1: mcp %2 %3")
+                            .arg(id)
+                            .arg(method, error.isEmpty() ? QStringLiteral("answered") : QStringLiteral("failed")));
+                if (!self || !self->isLive())
+                    return;
+                const QString text = error.isEmpty() ? mcpAnswer(result, action) : tr("Failed: %1").arg(error);
+                self->answerCall(text.isEmpty() ? tr("It answered with nothing.") : text);
+            }, 60000);
+            return;
+        }
+
         const QString tool = args.value(QStringLiteral("tool")).toString().trimmed();
         if (!server->hasTool(tool)) {
-            answerCall(tr("Failed: %1 has no tool called '%2'. Use list_tools first.")
-                           .arg(serverName, tool));
+            // The list may be out of date: asked for again once before giving up.
+            const QPointer<McpServer> asked(server);
+            server->listTools([self, asked, args, serverName, tool]() {
+                if (!self || !self->isLive())
+                    return;
+                if (asked && asked->hasTool(tool))
+                    self->runMcp(args);
+                else
+                    self->answerCall(tr("Failed: %1 has no tool called '%2'. Use list_tools first.")
+                                         .arg(serverName, tool));
+            });
             return;
         }
         QJsonObject arguments = argumentsOf(args.value(QStringLiteral("arguments")));
@@ -1919,11 +2081,9 @@ void Task::runMcp(const QVariantMap &args)
             && arguments.value(QStringLiteral("skill_id")).toString() == m_skill.id)
             arguments.insert(QStringLiteral("revision"), m_skill.revision);
 
-        const QPointer<Task> self(this);
-        const int id = m_id;
         server->call(tool, arguments,
                      [self, id, tool](bool ok, const QJsonObject &result, const QString &error) {
-            const QString text = ok ? McpServer::textOf(result)
+            const QString text = ok ? mcpAnswer(result, QStringLiteral("call_tool"))
                                     : tr("Failed: %1").arg(error.isEmpty()
                                                               ? McpServer::textOf(result)
                                                               : error);
@@ -1932,11 +2092,12 @@ void Task::runMcp(const QVariantMap &args)
                         .arg(tool, ok ? QStringLiteral("answered") : QStringLiteral("failed")));
             if (self && self->isLive())
                 self->answerCall(text.isEmpty() ? tr("It ran and said nothing.") : text);
-        }, 60000);
+        }, 60000, more);
         return;
     }
 
-    answerCall(tr("Failed: mcp needs action list_tools or call_tool."));
+    answerCall(tr("Failed: mcp needs action list_tools, call_tool, list_resources, read_resource, "
+                  "list_prompts, get_prompt or sign_in."));
 }
 
 void Task::runWeb(const QVariantMap &args)
@@ -3667,8 +3828,10 @@ int runProbe(const QStringList &script, const QString &outPath)
     QObject::connect(&agent, &Agent::workingChanged, &agent, [run, &agent](bool working) {
         if (working || !run->task)
             return;
-        QTimer::singleShot(500, &agent, [run]() {
-            if (!run->task)
+        // Only for the task running now: a late one from the task before must not end the next.
+        const int at = run->at;
+        QTimer::singleShot(500, &agent, [run, at]() {
+            if (!run->task || run->at != at)
                 return;
             run->task = false;
             run->out.append(QJsonObject{{QStringLiteral("task"), run->said},

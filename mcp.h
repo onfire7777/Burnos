@@ -51,6 +51,7 @@ public:
     // `result` is the tools/call result as the server sent it; `error` says why
     // there is none.
     using Done = std::function<void(bool ok, const QJsonObject &result, const QString &error)>;
+    using Reply = std::function<void(const QJsonObject &result, const QString &error)>;
 
     McpServer(const QString &name, const QString &url, const QString &command,
               const QStringList &args, const QHash<QString, QString> &env,
@@ -81,9 +82,22 @@ public:
     // the environment as it is now. Somebody else's server is left as found.
     void startAgain();
     // One tools/call. `done` is called exactly once, and never from inside
-    // this call.
+    // this call. `more` goes into the params beside name and arguments: the
+    // inputResponses and requestState of a retry after an input_required
+    // result. A result with resultType input_required is passed on as it is -
+    // the server needs the user before it can finish (see serverAsks).
     void call(const QString &tool, const QJsonObject &arguments, Done done,
-              int timeoutMs = 30000);
+              int timeoutMs = 30000, const QJsonObject &more = {});
+    // Any other request - resources/list, resources/read, prompts/list,
+    // prompts/get - once the server is ready.
+    void rpc(const QString &method, const QJsonObject &params, Reply then, int timeoutMs = 30000);
+    // Asks for the tool list again (a server said it changed, or a tool was
+    // asked for that the list did not have); `then` runs when it is back.
+    void listTools(std::function<void()> then = {});
+    // A remote server answered 401 and no kept token works: the user must
+    // sign in (mcpauth.h) before it can be used.
+    bool needsSignIn() const { return m_needsSignIn; }
+    void signIn(std::function<void(bool ok, const QString &message)> done);
 
     // What a tool answered, as words for a model: its text parts, or its
     // structured content when it gave no text.
@@ -93,24 +107,33 @@ signals:
     void readyChanged(bool ready);
 
 private:
-    using Reply = std::function<void(const QJsonObject &result, const QString &error)>;
     struct Pending
     {
+        // Empty while the call is parked on a question to the user.
         Reply then;
         QTimer *timer = nullptr;
         // The POST carrying it, when the transport is HTTP.
         QPointer<QNetworkReply> post;
+        QString method;
     };
 
     void launch();
     void adopt();
     void handshake();
+    // The two ways in: server/discover (2026-07-28, stateless) and initialize
+    // (every older version). `fallBack` tries the other one once.
+    void discover(bool fallBack);
+    void initialize(bool fallBack);
+    void serverAsks(const QJsonObject &message, int via);
+    void events(QByteArray &buffer, int via, bool final);
+    void unauthorized(QNetworkReply *reply);
     void stalled(const QString &why);
     void request(const QString &method, const QJsonObject &params, int timeoutMs, Reply then);
     void send(const QJsonObject &message);
     void post(const QJsonObject &message, int id, int timeoutMs);
-    void onPosted(QNetworkReply *reply, int id);
-    void dispatch(const QJsonObject &message);
+    void onPosted(QNetworkReply *reply, int id, QByteArray &buffer);
+    // `via` is the request whose response stream carried it, or -1.
+    void dispatch(const QJsonObject &message, int via = -1);
     void answer(int id, const QJsonObject &result, const QString &error);
     void onOutput();
     void onExit();
@@ -141,6 +164,21 @@ private:
     QString m_build;
     bool m_ready = false;
     bool m_stopping = false;
+    // The protocol version agreed on, and whether it is the stateless
+    // 2026-07-28 one, where every request carries it in _meta.
+    QString m_version;
+    bool m_stateless = false;
+    // HTTP: nothing was listening at the last try.
+    bool m_down = false;
+    // On this PC: never signed in to, and not behind the proxy.
+    bool m_local = true;
+    bool m_needsSignIn = false;
+    bool m_refreshing = false;
+    // The WWW-Authenticate of the last 401: where to sign in, and for what.
+    QString m_challenge;
+    // A question an older server asked mid-call (elicitation/create): its
+    // key, as given to the task, to the server's request id and the call.
+    QHash<QString, QPair<QJsonValue, int>> m_asked;
     // Died too often to be started again; an HTTP url is still watched.
     bool m_givenUp = false;
     // When it last died, so a server that keeps dying is left alone rather
@@ -194,6 +232,8 @@ public:
 
     McpServer *server(const QString &name) const;
     QStringList readyNames() const;
+    // The remote servers waiting for the user to sign in.
+    QStringList signInNames() const;
 
     // The user's long-term memory: the first ready server that offers capture
     // and search, which is what Mnemosyne offers. Null when there is none.

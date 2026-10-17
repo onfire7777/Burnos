@@ -1,6 +1,7 @@
 #include "mcp.h"
 
 #include "livelog.h"
+#include "mcpauth.h"
 #include "settings.h"
 
 #include <QCoreApplication>
@@ -35,7 +36,12 @@ namespace {
 
 // A Python server spends a few seconds importing before it answers anything.
 constexpr int kStartTimeoutMs = 30000;
-constexpr auto kProtocolVersion = "2024-11-05";
+// The newest version, spoken statelessly, and the one asked for of a server
+// that still wants the initialize handshake.
+constexpr auto kLatestVersion = "2026-07-28";
+constexpr auto kLegacyVersion = "2025-11-25";
+// How long a call waits on the user answering a server's question.
+constexpr int kAskTimeoutMs = 15 * 60 * 1000;
 // Three deaths in five minutes and a server is left alone.
 constexpr int kMaxDeaths = 3;
 constexpr qint64 kDeathWindowMs = 5 * 60 * 1000;
@@ -94,6 +100,20 @@ QHash<QString, QString> embeddingEnv()
     };
 }
 
+QJsonObject clientInfo()
+{
+    return {{QStringLiteral("name"), QStringLiteral("BurnOS")},
+            {QStringLiteral("version"), QCoreApplication::applicationVersion()}};
+}
+
+// What BurnOS does for a server: ask the user (elicitation, a form or a page
+// to open). Roots and sampling are deprecated and not offered.
+QJsonObject clientCapabilities()
+{
+    return {{QStringLiteral("elicitation"),
+             QJsonObject{{QStringLiteral("form"), QJsonObject()}, {QStringLiteral("url"), QJsonObject()}}}};
+}
+
 } // namespace
 
 // ===========================================================================
@@ -116,8 +136,9 @@ McpServer::McpServer(const QString &name, const QString &url, const QString &com
         // A localhost server is never behind the system proxy, and asking
         // Windows about one costs four seconds on the first request.
         const QString host = QUrl(m_url).host();
-        if (host.compare(QLatin1String("localhost"), Qt::CaseInsensitive) == 0
-            || QHostAddress(host).isLoopback())
+        m_local = host.compare(QLatin1String("localhost"), Qt::CaseInsensitive) == 0
+                  || QHostAddress(host).isLoopback();
+        if (m_local)
             m_net->setProxy(QNetworkProxy::NoProxy);
         m_retry = new QTimer(this);
         m_retry->setSingleShot(true);
@@ -279,58 +300,168 @@ void McpServer::adopt()
 #endif
 }
 
+// Over HTTP the newest way is asked first: a 2026-07-28 server answers
+// server/discover and needs no handshake, an older one refuses it at once. A
+// stdio server is asked the old way first, because an older one may not answer
+// anything before initialize at all.
 void McpServer::handshake()
 {
     if (m_stopping)
         return;
-    const QJsonObject hello{
-        {QStringLiteral("protocolVersion"), QString::fromLatin1(kProtocolVersion)},
-        {QStringLiteral("capabilities"), QJsonObject()},
-        {QStringLiteral("clientInfo"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Burnos")},
-                                                    {QStringLiteral("version"), QStringLiteral("0.4")}}},
-    };
-    request(QStringLiteral("initialize"), hello, kStartTimeoutMs,
-            [this](const QJsonObject &answer, const QString &error) {
-        if (!error.isEmpty()) {
-            stalled(QStringLiteral("no answer to initialize (%1)").arg(error));
+    if (isHttp())
+        discover(true);
+    else
+        initialize(true);
+}
+
+void McpServer::discover(bool fallBack)
+{
+    m_stateless = true;
+    m_version = QString::fromLatin1(kLatestVersion);
+    request(QStringLiteral("server/discover"), QJsonObject(), kStartTimeoutMs,
+            [this, fallBack](const QJsonObject &found, const QString &error) {
+        if (m_needsSignIn || m_refreshing)
+            return;
+        if (error.isEmpty()
+            && found.value(QStringLiteral("supportedVersions")).toArray().contains(QString::fromLatin1(kLatestVersion))) {
+            const QJsonObject info = found.value(QStringLiteral("_meta")).toObject()
+                                         .value(QStringLiteral("io.modelcontextprotocol/serverInfo")).toObject();
+            m_build = (info.value(QStringLiteral("name")).toString() + QLatin1Char(' ')
+                       + info.value(QStringLiteral("version")).toString()).trimmed();
+            listTools();
             return;
         }
+        if (fallBack && !m_down)
+            initialize(false);
+        else
+            stalled(QStringLiteral("no answer to server/discover (%1)").arg(error));
+    });
+}
+
+void McpServer::initialize(bool fallBack)
+{
+    m_stateless = false;
+    m_version = QString::fromLatin1(kLegacyVersion);
+    const QJsonObject hello{
+        {QStringLiteral("protocolVersion"), m_version},
+        {QStringLiteral("capabilities"), clientCapabilities()},
+        {QStringLiteral("clientInfo"), clientInfo()},
+    };
+    request(QStringLiteral("initialize"), hello, kStartTimeoutMs,
+            [this, fallBack](const QJsonObject &answer, const QString &error) {
+        if (m_needsSignIn || m_refreshing)
+            return;
+        if (!error.isEmpty()) {
+            // A stdio server that knows no initialize is a newer one.
+            if (fallBack && !m_down)
+                discover(false);
+            else
+                stalled(QStringLiteral("no answer to initialize (%1)").arg(error));
+            return;
+        }
+        // The version the server chose, which every later request names.
+        m_version = answer.value(QStringLiteral("protocolVersion")).toString(m_version);
         // Which build answered - name and version, the version carrying its
         // commit where the server gives one - so a stale install shows in
         // the log.
         const QJsonObject info = answer.value(QStringLiteral("serverInfo")).toObject();
-        const QString build = (info.value(QStringLiteral("name")).toString() + QLatin1Char(' ')
-                               + info.value(QStringLiteral("version")).toString()).trimmed();
-        m_build = build;
+        m_build = (info.value(QStringLiteral("name")).toString() + QLatin1Char(' ')
+                   + info.value(QStringLiteral("version")).toString()).trimmed();
         send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                          {QStringLiteral("method"), QStringLiteral("notifications/initialized")}});
-        request(QStringLiteral("tools/list"), QJsonObject(), kStartTimeoutMs,
-                [this, build](const QJsonObject &result, const QString &error) {
-            if (!error.isEmpty()) {
+        listTools();
+    });
+}
+
+void McpServer::listTools(std::function<void()> then)
+{
+    // shortcut: the first page only (no nextCursor); every server met so far lists its tools in one.
+    request(QStringLiteral("tools/list"), QJsonObject(), kStartTimeoutMs,
+            [this, then](const QJsonObject &result, const QString &error) {
+        if (!error.isEmpty()) {
+            if (m_ready)
+                liveLog(QStringLiteral("mcp %1: no fresh tool list (%2)").arg(m_name, error));
+            else
                 stalled(QStringLiteral("no tool list (%1)").arg(error));
-                return;
-            }
-            m_tools.clear();
-            for (const QJsonValue &value : result.value(QStringLiteral("tools")).toArray()) {
-                const QJsonObject t = value.toObject();
-                m_tools.append({t.value(QStringLiteral("name")).toString(),
-                                t.value(QStringLiteral("description")).toString(),
-                                t.value(QStringLiteral("inputSchema")).toObject()});
-            }
-            m_ready = true;
-            m_attempts = 0;
-            QString where;
-            if (isHttp()) {
-                where = QStringLiteral(" at %1 (%2)")
-                            .arg(m_url, m_proc ? QStringLiteral("started by Burnos")
-                                               : QStringLiteral("already hosted"));
-            }
-            liveLog(QStringLiteral("mcp %1: ready, %2 tool(s)%3%4")
-                        .arg(m_name)
-                        .arg(m_tools.size())
-                        .arg(where, build.isEmpty() ? QString() : QStringLiteral(" - ") + build));
+            if (then)
+                then();
+            return;
+        }
+        m_tools.clear();
+        for (const QJsonValue &value : result.value(QStringLiteral("tools")).toArray()) {
+            const QJsonObject t = value.toObject();
+            m_tools.append({t.value(QStringLiteral("name")).toString(),
+                            t.value(QStringLiteral("description")).toString(),
+                            t.value(QStringLiteral("inputSchema")).toObject()});
+        }
+        const bool wasReady = m_ready;
+        m_ready = true;
+        m_attempts = 0;
+        QString where;
+        if (isHttp()) {
+            where = QStringLiteral(" at %1 (%2)")
+                        .arg(m_url, m_proc ? QStringLiteral("started by Burnos")
+                                           : QStringLiteral("already hosted"));
+        }
+        liveLog(QStringLiteral("mcp %1: %2, %3 tool(s)%4%5 - protocol %6")
+                    .arg(m_name, wasReady ? QStringLiteral("tools listed again") : QStringLiteral("ready"))
+                    .arg(m_tools.size())
+                    .arg(where, m_build.isEmpty() ? QString() : QStringLiteral(" - ") + m_build, m_version));
+        if (!wasReady)
             emit readyChanged(true);
-        });
+        if (then)
+            then();
+    });
+}
+
+void McpServer::rpc(const QString &method, const QJsonObject &params, Reply then, int timeoutMs)
+{
+    if (!m_ready) {
+        const QString why = QStringLiteral("%1 is not ready").arg(m_name);
+        QTimer::singleShot(0, this, [then, why]() { then({}, why); });
+        return;
+    }
+    request(method, params, timeoutMs, std::move(then));
+}
+
+void McpServer::signIn(std::function<void(bool ok, const QString &message)> done)
+{
+    if (!isHttp() || m_local) {
+        QTimer::singleShot(0, this, [done]() { done(false, tr("Only a remote server is signed in to.")); });
+        return;
+    }
+    McpAuth::signIn(m_net, this, m_url, m_challenge, [this, done](bool ok, const QString &message) {
+        if (ok) {
+            m_needsSignIn = false;
+            m_attempts = 0;
+            handshake();
+        }
+        done(ok, message);
+    });
+}
+
+// A 401 from a remote server: a kept refresh token is tried once, quietly;
+// with none, or when it no longer works, the user has to sign in.
+void McpServer::unauthorized(QNetworkReply *reply)
+{
+    m_challenge = QString::fromLatin1(reply->rawHeader("WWW-Authenticate"));
+    if (m_refreshing || m_needsSignIn)
+        return;
+    if (!McpAuth::canRefresh(m_url)) {
+        m_needsSignIn = true;
+        liveLog(QStringLiteral("mcp %1: needs signing in (ask BurnOS to sign in to %1)").arg(m_name));
+        return;
+    }
+    m_refreshing = true;
+    McpAuth::refresh(m_net, this, m_url, [this](bool ok, const QString &error) {
+        m_refreshing = false;
+        if (!ok) {
+            m_needsSignIn = true;
+            liveLog(QStringLiteral("mcp %1: the sign-in has run out (%2) - needs signing in again").arg(m_name, error));
+            return;
+        }
+        if (!m_ready)
+            handshake();
     });
 }
 
@@ -378,14 +509,29 @@ void McpServer::request(const QString &method, const QJsonObject &params, int ti
         // The POST, if it is still open, finishes cancelled and is ignored.
         if (late.post)
             late.post->abort();
-        late.then({}, QStringLiteral("no answer in time"));
+        for (auto a = m_asked.begin(); a != m_asked.end();)
+            a = a->second == id ? m_asked.erase(a) : std::next(a);
+        // A call parked on a question to the user has nobody left to tell.
+        if (late.then)
+            late.then({}, QStringLiteral("no answer in time"));
     });
     pending.timer->start(timeoutMs);
+    pending.method = method;
     m_pending.insert(id, pending);
+    QJsonObject withMeta = params;
+    if (m_stateless) {
+        // 2026-07-28 has no handshake: every request says who is asking, in
+        // which version, and what it can do.
+        QJsonObject meta = params.value(QStringLiteral("_meta")).toObject();
+        meta.insert(QStringLiteral("io.modelcontextprotocol/protocolVersion"), m_version);
+        meta.insert(QStringLiteral("io.modelcontextprotocol/clientCapabilities"), clientCapabilities());
+        meta.insert(QStringLiteral("io.modelcontextprotocol/clientInfo"), clientInfo());
+        withMeta.insert(QStringLiteral("_meta"), meta);
+    }
     const QJsonObject message{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                               {QStringLiteral("id"), id},
                               {QStringLiteral("method"), method},
-                              {QStringLiteral("params"), params}};
+                              {QStringLiteral("params"), withMeta}};
     if (isHttp())
         post(message, id, timeoutMs);
     else
@@ -410,9 +556,25 @@ void McpServer::post(const QJsonObject &message, int id, int timeoutMs)
     req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     // Both, or a Streamable HTTP server refuses with 406: it may answer either way.
     req.setRawHeader("Accept", "application/json, text/event-stream");
-    req.setRawHeader("MCP-Protocol-Version", kProtocolVersion);
+    req.setRawHeader("MCP-Protocol-Version", m_version.toLatin1());
+    // 2026-07-28 wants the method, and what it names, in the headers too.
+    const QString method = message.value(QStringLiteral("method")).toString();
+    if (!method.isEmpty()) {
+        req.setRawHeader("Mcp-Method", method.toUtf8());
+        const QJsonObject p = message.value(QStringLiteral("params")).toObject();
+        const QString named = p.value(QStringLiteral("name")).toString(p.value(QStringLiteral("uri")).toString());
+        // shortcut: no Base64 sentinel for a name that is not plain ASCII; tool names are.
+        if (!named.isEmpty() && (method == QLatin1String("tools/call") || method == QLatin1String("prompts/get")
+                                 || method == QLatin1String("resources/read")))
+            req.setRawHeader("Mcp-Name", named.toUtf8());
+    }
     if (!m_sessionId.isEmpty())
         req.setRawHeader("Mcp-Session-Id", m_sessionId);
+    if (!m_local) {
+        const QString bearer = McpAuth::token(m_url);
+        if (!bearer.isEmpty())
+            req.setRawHeader("Authorization", "Bearer " + bearer.toUtf8());
+    }
     // The pending timer answers first; this only makes sure the socket is let go.
     req.setTransferTimeout(timeoutMs + 1000);
     QNetworkReply *reply = m_net->post(req, QJsonDocument(message).toJson(QJsonDocument::Compact));
@@ -421,13 +583,48 @@ void McpServer::post(const QJsonObject &message, int id, int timeoutMs)
         if (it != m_pending.end())
             it->post = reply;
     }
-    connect(reply, &QNetworkReply::finished, this, [this, reply, id]() {
+    // An event stream is read as it comes: an older server may ask the user
+    // something in the middle of it and wait for the answer before it ends.
+    auto buffer = std::make_shared<QByteArray>();
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply, id, buffer]() {
+        if (!reply->header(QNetworkRequest::ContentTypeHeader).toString().contains(QLatin1String("text/event-stream")))
+            return;
+        buffer->append(reply->readAll());
+        events(*buffer, id, false);
+    });
+    connect(reply, &QNetworkReply::finished, this, [this, reply, id, buffer]() {
         reply->deleteLater();
-        onPosted(reply, id);
+        onPosted(reply, id, *buffer);
     });
 }
 
-void McpServer::onPosted(QNetworkReply *reply, int id)
+// Server-sent events: the "data:" lines of each event, a blank line between
+// events, every event one JSON-RPC message. What is left is kept for the next
+// read, unless this is the last.
+void McpServer::events(QByteArray &buffer, int via, bool final)
+{
+    buffer.replace("\r\n", "\n");
+    while (!buffer.isEmpty()) {
+        qsizetype end = buffer.indexOf("\n\n");
+        if (end < 0 && !final)
+            return;
+        const QByteArray event = end < 0 ? buffer : buffer.left(end);
+        buffer.remove(0, end < 0 ? buffer.size() : end + 2);
+        QByteArray data;
+        for (const QByteArray &raw : event.split('\n')) {
+            const QByteArray line = raw.trimmed();
+            if (line.startsWith("data:")) {
+                if (!data.isEmpty())
+                    data += '\n';
+                data += line.mid(5).trimmed();
+            }
+        }
+        if (!data.isEmpty())
+            dispatch(QJsonDocument::fromJson(data).object(), via);
+    }
+}
+
+void McpServer::onPosted(QNetworkReply *reply, int id, QByteArray &buffer)
 {
     if (m_stopping)
         return;
@@ -435,6 +632,7 @@ void McpServer::onPosted(QNetworkReply *reply, int id)
     if (reply->error() == QNetworkReply::OperationCanceledError)
         return;
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    m_down = status == 0;
     if (status == 0) {
         // Nothing at the other end - refused, reset, gone. Everything in
         // flight fails; the handshake's error path decides what happens next,
@@ -460,39 +658,26 @@ void McpServer::onPosted(QNetworkReply *reply, int id)
     // A notification: 202 Accepted and nothing to route.
     if (id < 0)
         return;
+    if (status == 401 && !m_local)
+        unauthorized(reply);
     if (status >= 400) {
-        answer(id, {}, QStringLiteral("HTTP %1: %2")
-                           .arg(status).arg(QString::fromUtf8(body.left(200)).simplified()));
+        answer(id, {}, status == 401 && m_needsSignIn
+                           ? tr("%1 needs signing in: call mcp with action sign_in and server %1.").arg(m_name)
+                           : QStringLiteral("HTTP %1: %2")
+                                 .arg(status).arg(QString::fromUtf8(body.left(200)).simplified()));
         return;
     }
     const QString type = reply->header(QNetworkRequest::ContentTypeHeader).toString();
     if (type.contains(QLatin1String("text/event-stream"))) {
-        // Server-sent events: the "data:" lines of each event, a blank line
-        // between events, every event one JSON-RPC message.
-        QByteArray data;
-        for (const QByteArray &raw : body.split('\n')) {
-            const QByteArray line = raw.trimmed();
-            if (line.isEmpty()) {
-                if (!data.isEmpty())
-                    dispatch(QJsonDocument::fromJson(data).object());
-                data.clear();
-                continue;
-            }
-            if (line.startsWith("data:")) {
-                if (!data.isEmpty())
-                    data += '\n';
-                data += line.mid(5).trimmed();
-            }
-        }
-        if (!data.isEmpty())
-            dispatch(QJsonDocument::fromJson(data).object());
+        buffer.append(body);
+        events(buffer, id, true);
     } else {
         const QJsonDocument doc = QJsonDocument::fromJson(body);
         if (doc.isArray()) {
             for (const QJsonValue &value : doc.array())
-                dispatch(value.toObject());
+                dispatch(value.toObject(), id);
         } else {
-            dispatch(doc.object());
+            dispatch(doc.object(), id);
         }
     }
     // Answered with nothing that carried our id: say so now rather than
@@ -502,22 +687,15 @@ void McpServer::onPosted(QNetworkReply *reply, int id)
 }
 
 // One JSON-RPC message from the server, whichever way it came.
-void McpServer::dispatch(const QJsonObject &message)
+void McpServer::dispatch(const QJsonObject &message, int via)
 {
     if (message.isEmpty())
         return;
-    // Something the SERVER asks of us. Burnos offers nothing back - no
-    // roots, no sampling. Over stdio it is told so rather than left waiting;
-    // over HTTP the ask rides inside a response stream and is simply dropped.
     if (message.contains(QStringLiteral("method"))) {
-        if (!isHttp() && message.contains(QStringLiteral("id"))) {
-            send(QJsonObject{
-                {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
-                {QStringLiteral("id"), message.value(QStringLiteral("id"))},
-                {QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), -32601},
-                                                      {QStringLiteral("message"),
-                                                       QStringLiteral("not supported")}}}});
-        }
+        if (message.contains(QStringLiteral("id")))
+            serverAsks(message, via);
+        else if (message.value(QStringLiteral("method")).toString() == QLatin1String("notifications/tools/list_changed"))
+            listTools();
         return;
     }
     const int id = message.value(QStringLiteral("id")).toInt(-1);
@@ -529,10 +707,58 @@ void McpServer::dispatch(const QJsonObject &message)
     }
 }
 
+// Something an older server (before 2026-07-28) asks of BurnOS in the middle
+// of a call. A question for the user (elicitation/create) is handed to the
+// task that made the call as an input_required result - the shape a newer
+// server gives it - and the call stays open, parked, until the task answers it
+// through call() with inputResponses. Everything else that is still part of
+// the protocol is answered here; the rest is refused, never left waiting.
+void McpServer::serverAsks(const QJsonObject &message, int via)
+{
+    const QString method = message.value(QStringLiteral("method")).toString();
+    const QJsonValue id = message.value(QStringLiteral("id"));
+    const auto reply = [this, id](const QString &key, const QJsonValue &value) {
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")}, {QStringLiteral("id"), id}, {key, value}});
+    };
+    if (method == QLatin1String("ping")) {
+        reply(QStringLiteral("result"), QJsonObject());
+        return;
+    }
+    if (method == QLatin1String("roots/list")) {
+        reply(QStringLiteral("result"), QJsonObject{{QStringLiteral("roots"), QJsonArray()}});
+        return;
+    }
+    if (method == QLatin1String("elicitation/create")) {
+        // Over stdio nothing says which call it belongs to: the latest tool call.
+        if (!m_pending.contains(via)) {
+            for (auto it = m_pending.cbegin(); it != m_pending.cend(); ++it) {
+                if (it->method == QLatin1String("tools/call") && it->then && it.key() > via)
+                    via = it.key();
+            }
+        }
+        auto it = m_pending.find(via);
+        if (it != m_pending.end() && it->then) {
+            const QString key = QStringLiteral("server-question-%1").arg(id.toVariant().toString());
+            m_asked.insert(key, {id, via});
+            const Reply waiting = std::move(it->then);
+            it->then = nullptr;
+            it->timer->start(kAskTimeoutMs);
+            waiting(QJsonObject{{QStringLiteral("resultType"), QStringLiteral("input_required")},
+                                {QStringLiteral("inputRequests"), QJsonObject{{key, QJsonObject{
+                                    {QStringLiteral("method"), method},
+                                    {QStringLiteral("params"), message.value(QStringLiteral("params"))}}}}}},
+                    QString());
+            return;
+        }
+    }
+    reply(QStringLiteral("error"), QJsonObject{{QStringLiteral("code"), -32601},
+                                               {QStringLiteral("message"), QStringLiteral("not supported")}});
+}
+
 void McpServer::answer(int id, const QJsonObject &result, const QString &error)
 {
     auto it = m_pending.find(id);
-    if (it == m_pending.end())
+    if (it == m_pending.end() || !it->then)
         return;
     const Pending answered = it.value();
     m_pending.erase(it);
@@ -560,10 +786,12 @@ void McpServer::failAll(const QString &why)
 {
     const QHash<int, Pending> waiting = m_pending;
     m_pending.clear();
+    m_asked.clear();
     for (const Pending &p : waiting) {
         p.timer->stop();
         p.timer->deleteLater();
-        p.then({}, why);
+        if (p.then)
+            p.then({}, why);
     }
 }
 
@@ -608,22 +836,50 @@ void McpServer::onExit()
     }
 }
 
-void McpServer::call(const QString &tool, const QJsonObject &arguments, Done done, int timeoutMs)
+void McpServer::call(const QString &tool, const QJsonObject &arguments, Done done, int timeoutMs,
+                     const QJsonObject &more)
 {
     if (!m_ready) {
         const QString why = QStringLiteral("%1 is not ready").arg(m_name);
         QTimer::singleShot(0, this, [done, why]() { done(false, {}, why); });
         return;
     }
-    request(QStringLiteral("tools/call"),
-            QJsonObject{{QStringLiteral("name"), tool}, {QStringLiteral("arguments"), arguments}},
-            timeoutMs, [done](const QJsonObject &result, const QString &error) {
+    const Reply finished = [done](const QJsonObject &result, const QString &error) {
         if (!error.isEmpty()) {
             done(false, {}, error);
             return;
         }
         done(!result.value(QStringLiteral("isError")).toBool(), result, QString());
-    });
+    };
+    // The answers to an older server's question go back to it as responses,
+    // and the call it parked carries on: no new tools/call.
+    const QJsonObject answers = more.value(QStringLiteral("inputResponses")).toObject();
+    int resumed = -1;
+    for (auto it = answers.begin(); it != answers.end(); ++it) {
+        const auto asked = m_asked.find(it.key());
+        if (asked == m_asked.end())
+            continue;
+        send(QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), asked->first}, {QStringLiteral("result"), it.value()}});
+        resumed = asked->second;
+        m_asked.erase(asked);
+    }
+    if (resumed >= 0) {
+        auto parked = m_pending.find(resumed);
+        if (parked == m_pending.end()) {
+            QTimer::singleShot(0, this, [done]() {
+                done(false, {}, tr("The server stopped waiting for that answer - call the tool again."));
+            });
+            return;
+        }
+        parked->then = finished;
+        parked->timer->start(timeoutMs);
+        return;
+    }
+    QJsonObject params = more;
+    params.insert(QStringLiteral("name"), tool);
+    params.insert(QStringLiteral("arguments"), arguments);
+    request(QStringLiteral("tools/call"), params, timeoutMs, finished);
 }
 
 QString McpServer::textOf(const QJsonObject &result)
@@ -634,10 +890,13 @@ QString McpServer::textOf(const QJsonObject &result)
         if (part.value(QStringLiteral("type")).toString() == QLatin1String("text"))
             parts.append(part.value(QStringLiteral("text")).toString());
     }
-    if (parts.isEmpty() && result.contains(QStringLiteral("structuredContent"))) {
-        parts.append(QString::fromUtf8(QJsonDocument(result.value(QStringLiteral("structuredContent"))
-                                                         .toObject())
-                                           .toJson(QJsonDocument::Compact)));
+    // Structured content may be any JSON value since 2026-07-28, not only an object.
+    const QJsonValue structured = result.value(QStringLiteral("structuredContent"));
+    if (parts.isEmpty() && !structured.isUndefined()) {
+        parts.append(structured.isObject() || structured.isArray()
+                         ? QString::fromUtf8(QJsonDocument::fromVariant(structured.toVariant())
+                                                 .toJson(QJsonDocument::Compact))
+                         : structured.toVariant().toString());
     }
     return parts.join(QLatin1Char('\n'));
 }
@@ -848,6 +1107,16 @@ QStringList McpClient::readyNames() const
     QStringList names;
     for (McpServer *s : m_servers) {
         if (s->isReady())
+            names.append(s->name());
+    }
+    return names;
+}
+
+QStringList McpClient::signInNames() const
+{
+    QStringList names;
+    for (McpServer *s : m_servers) {
+        if (s->needsSignIn())
             names.append(s->name());
     }
     return names;

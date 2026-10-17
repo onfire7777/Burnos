@@ -29,10 +29,10 @@ Burnos brings conversation, persistent memory, research, and desktop actions int
 | Pick up where you left off | **Persistent memory.** Conversation history, preferences, and retrieval through the integrated Mnemosyne backend. |
 | Stay in the conversation | **Background tasks.** Separate talking and working models, with progress, steering, and cancellation. |
 | Use the plan you already pay for | **Your subscriptions.** Press **Sign in with ChatGPT** in Settings and every model your ChatGPT plan offers appears as `chatgpt:<model>`, answered directly on your subscription. Or pick `claude:sonnet`, `claude:opus` or `codex:default`, run through the official Claude Code or Codex CLI you are logged in to. No OpenRouter credit either way. |
-| Reuse what works | **Skills.** Import Agent Skills folders, Markdown files, or `.bs` skill files. Each becomes a complete framework in memory, offered when a task fits, and asks before any step that sends, deletes, pays, posts, installs, or runs a script. |
+| Reuse what works | **Skills.** Import Agent Skills folders, Markdown files, or `.burnskill` files and use them at once, offered when a task fits. Ask for a BurnSkill and the skill becomes a complete framework whose parts go into memory. A book (PDF or EPUB) becomes one BurnSkill the same way. Either kind asks before any step that sends, deletes, pays, posts, installs, or runs a script. |
 | Research without rearranging your desktop | **A browser of its own.** Search, read pages and PDFs, follow links, and gather context in a separate browser profile. |
 | Turn an answer into useful work | **Desktop tools.** Work with files, run commands, operate applications, and dictate into a text field. |
-| Connect your existing services | **MCP and Composio.** Extend the assistant with the tools and accounts you configure. |
+| Connect your existing services | **MCP and Composio.** Extend the assistant with the tools and accounts you configure. MCP speaks the 2026-07-28 spec (and every older one): tools, prompts, resources, questions a server asks you mid-task, and sign-in to remote servers. Your skills are offered back over MCP as prompts, so other MCP clients can use them too. |
 | Make it feel like yours | **Personal controls.** Model and voice selection, wake-word mode, optional speaker matching, and spoken controls. |
 
 ## One idea, one connected workflow

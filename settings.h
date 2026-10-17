@@ -24,6 +24,11 @@ bool hasOpenRouterKey();
 QByteArray chatGptLogin();
 void setChatGptLogin(const QByteArray &json);
 
+// Any other secret under `key`, encrypted the same way (an MCP server's OAuth
+// tokens, mcpauth.h). An empty value removes it.
+QByteArray secret(const QString &key);
+void setSecret(const QString &key, const QByteArray &value);
+
 // The TALKING model: every answer the orb says out loud, and every decision to
 // hand work off to a task. Falls back to the shipped default when nothing has
 // been chosen. Stored where the one and only model always was, so an install

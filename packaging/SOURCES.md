@@ -1,15 +1,15 @@
 # Windows distribution source and licenses
 
-Burnos source: https://github.com/onfire7777/Burnos/tree/v0.23.2
+Burnos source: https://github.com/onfire7777/Burnos/tree/v0.24.0
 
-The release at https://github.com/onfire7777/Burnos/releases/tag/v0.23.2
-provides `Burnos-0.23.2-corresponding-sources.zip` alongside the installer
+The release at https://github.com/onfire7777/Burnos/releases/tag/v0.24.0
+provides `Burnos-0.24.0-corresponding-sources.zip` alongside the installer
 and portable application. It contains the upstream source archives and a
 SHA-256 manifest. These sources are available without charge or registration.
 
 ## Components
 
-- Burnos 0.23.2: original source MIT; this combined Windows distribution is
+- Burnos 0.24.0: original source MIT; this combined Windows distribution is
   GPL-3.0-or-later because the sherpa-onnx 1.x runtime incorporates eSpeak NG.
 - Qt 6.11.2 Core, GUI, Widgets, Network and Multimedia: LGPL-3.0 or GPL-3.0,
   with additional third-party notices in the Qt directories.

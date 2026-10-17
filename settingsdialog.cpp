@@ -94,6 +94,15 @@ constexpr ModelChoice kModels[] = {
      "model."},
     {"deepseek/deepseek-v4.1-flash",
      "Quick and cheap. Fine for questions, weaker at driving the machine."},
+    // Not OpenRouter: the official program, on the user's own subscription.
+    {"claude:sonnet",
+     "Claude Sonnet on your Claude subscription, through the claude program you "
+     "are logged in to. No OpenRouter credit; each answer takes a few seconds more."},
+    {"claude:opus",
+     "Claude Opus on your Claude subscription. The strongest working model; slower."},
+    {"codex:default",
+     "ChatGPT's default Codex model on your ChatGPT subscription, through the codex "
+     "program you are logged in to. Type codex:<model> for another."},
 };
 
 // The first entry on the working model's list. Chosen, nothing is stored and
@@ -1157,8 +1166,18 @@ void SettingsDialog::refreshModelNote()
         return;
     }
 
+    const auto cli = [](const QString &slug) {
+        return tr("Runs on your own %1 subscription through the %2 program you are "
+                  "logged in to - no OpenRouter credit. Each answer takes a few "
+                  "seconds more.")
+            .arg(slug.startsWith(QLatin1String("claude")) ? tr("Claude") : tr("ChatGPT"),
+                 slug.section(QLatin1Char(':'), 0, 0));
+    };
+
     // THE TALKING MODEL: tools always, and eyes only when it does the work too.
-    if (!talk.isEmpty() && !catalogue->knows(talk)) {
+    if (OpenRouterClient::isCli(talk)) {
+        say(m_modelNote, kNotePlain, cli(talk));
+    } else if (!talk.isEmpty() && !catalogue->knows(talk)) {
         say(m_modelNote, kNoteWarn, unknown(talk));
     } else if (!talk.isEmpty()) {
         const BurnOS::ModelFacts facts = catalogue->facts(talk);
@@ -1191,6 +1210,10 @@ void SettingsDialog::refreshModelNote()
     // THE WORKING MODEL: tools and eyes, because every task may need both.
     if (alsoWorks)
         return;
+    if (OpenRouterClient::isCli(work)) {
+        say(m_taskModelNote, kNotePlain, cli(work));
+        return;
+    }
     if (!catalogue->knows(work)) {
         say(m_taskModelNote, kNoteWarn, unknown(work));
         return;

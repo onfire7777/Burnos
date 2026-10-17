@@ -1,6 +1,6 @@
 # Reproducing the Windows release
 
-The 0.23.2 package includes Burnos, Qt, CPU speech runtimes, and Mnemosyne
+The 0.24.0 package includes Burnos, Qt, CPU speech runtimes, and Mnemosyne
 1.4.1 with its Python runtime. It does not include user data or API keys.
 All voice models are bundled; OpenRouter still provides conversational AI. The binary distribution terms
 and corresponding-source instructions are in [packaging](../packaging/SOURCES.md).
@@ -47,7 +47,7 @@ build instructions in the release's corresponding-source ZIP.
 ## Package
 
 ```powershell
-.\scripts\package-windows.ps1 -AppDir build/win32-g++/release -MemoryDir build/frozen-memory/mneme-mcp -LicensesDir build/redistribution/licenses -ModelsDir build/voice-models -OutputDir build/release-0.23.2
+.\scripts\package-windows.ps1 -AppDir build/win32-g++/release -MemoryDir build/frozen-memory/mneme-mcp -LicensesDir build/redistribution/licenses -ModelsDir build/voice-models -OutputDir build/release-0.24.0
 ```
 
 Prepare `build/voice-models` using `BURNOS_MODEL_DIR` and the app's
@@ -61,8 +61,8 @@ a package manifest, and creates the portable ZIP, installer, and checksums.
 ## Verify before publishing
 
 ```powershell
-python scripts/verify-windows-package.py build/release-0.23.2/Burnos-v0.23.2-windows-x64 --report build/memory-test.json
-python scripts/verify-bundled-models.py build/release-0.23.2/Burnos-v0.23.2-windows-x64 --report build/model-test.json
+python scripts/verify-windows-package.py build/release-0.24.0/Burnos-v0.24.0-windows-x64 --report build/memory-test.json
+python scripts/verify-bundled-models.py build/release-0.24.0/Burnos-v0.24.0-windows-x64 --report build/model-test.json
 ```
 
 This starts the packaged memory through Burnos with an isolated profile

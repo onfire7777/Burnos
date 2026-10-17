@@ -1415,7 +1415,11 @@ void Task::start()
                        "A skill is converted with the model %4.")
                         .arg(servers.join(QStringLiteral(", ")),
                              QString::fromLatin1(kMemoryTenant),
-                             QString::fromLatin1(kMemoryUser), Settings::taskModel())));
+                             QString::fromLatin1(kMemoryUser),
+                             // the memory converts on OpenRouter, so never a CLI model
+                             OpenRouterClient::isCli(Settings::taskModel())
+                                 ? Settings::defaultOpenRouterModel()
+                                 : Settings::taskModel())));
             }
             const QString front = r.text;
             const auto begin = [this, front]() {

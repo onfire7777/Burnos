@@ -13,6 +13,7 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
+class QProcess;
 
 // THE ONE WAY BURNOS TALKS TO A MODEL: send a conversation, get one message
 // back.
@@ -80,14 +81,22 @@ public:
     // What a model that cannot see is told in place of a screenshot.
     static QString blindNote();
 
+    // A model named "claude:<name>" or "codex:<name>" is not on OpenRouter: it
+    // is the official claude or codex program, logged in with the user's own
+    // subscription, answering one turn at a time (see postCli).
+    static bool isCli(const QString &model);
+
 private:
     void post(quint64 id, Request request, Done done, bool retried);
+    void postCli(quint64 id, const Request &request, const QString &model, Done done);
     static QJsonArray dropImages(const QJsonArray &messages, bool *dropped);
 
     QNetworkAccessManager *m_net = nullptr;
     // Every request not yet answered. A null reply is a failure already decided
     // and waiting one turn of the event loop to be delivered.
     QHash<quint64, QNetworkReply *> m_live;
+    // The claude or codex program answering a request, while it runs.
+    QHash<quint64, QProcess *> m_procs;
     quint64 m_nextId = 0;
 
     // A MODEL THAT CANNOT SEE MUST NOT KILL THE TURN. OpenRouter refuses the

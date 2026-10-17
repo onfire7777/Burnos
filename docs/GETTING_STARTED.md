@@ -5,7 +5,7 @@ The packaged CPU speech runtime requires AVX2, FMA, and F16C support; no dedicat
 
 ## Recommended: install the complete Windows download
 
-**[Download Burnos Setup](https://github.com/onfire7777/Burnos/releases/download/v0.23.2/Burnos-0.23.2-Setup-x64.exe)** or [get the portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.23.2/Burnos-v0.23.2-windows-x64.zip).
+**[Download Burnos Setup](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-0.24.0-Setup-x64.exe)** or [get the portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip).
 
 Run the installer, then launch Burnos from Start. It includes Qt, speech engines, and the Mnemosyne memory server. Python and development tools are not required. The portable version has the same components: extract the **entire** ZIP before running `Burnos.exe`.
 
@@ -13,7 +13,7 @@ All voice models are included in the installer and portable ZIP. Settings opens 
 
 Memory starts automatically and persists in `%LOCALAPPDATA%\BurnOS\memory`. New models use `%LOCALAPPDATA%\BurnOS\models`; a complete existing `%ProgramData%\BurnOS` model cache is reused. The installer uses `%LOCALAPPDATA%\Programs\Burnos` and requires no administrator privileges. Uninstalling keeps your memory, models, and settings.
 
-The release is unsigned; Windows may show an unknown-publisher or SmartScreen warning. Verify the download against `SHA256SUMS.txt` on the [release page](https://github.com/onfire7777/Burnos/releases/tag/v0.23.2). Browser research requires Edge, Chrome, or Brave.
+The release is unsigned; Windows may show an unknown-publisher or SmartScreen warning. Verify the download against `SHA256SUMS.txt` on the [release page](https://github.com/onfire7777/Burnos/releases/tag/v0.24.0). Browser research requires Edge, Chrome, or Brave.
 
 If you previously configured `%APPDATA%\BurnOS\mcp.json`, that configuration takes precedence over the bundled server. Back up and review it if memory fails to connect. Port 8765 must be available or hosting the matching memory server. Do not post your memory files, keys, or unredacted logs in support issues.
 

@@ -2,12 +2,18 @@
 #include "openrouter.h"
 #include "settings.h"
 
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 
@@ -33,7 +39,126 @@ constexpr auto kBlindNote =
     "instead, and if you still cannot tell, say plainly that you could not "
     "check rather than claiming it worked.";
 
+// WHAT A CLI MODEL IS TOLD ON EVERY TURN. The claude and codex programs are
+// used as a model only: their own tools are switched off, and a tool call is
+// written into the reply for Burnos to carry out with its own tools and guard.
+// Framed as writing Burnos's reply, not acting: Codex otherwise applied its own
+// read-only sandbox to Burnos's tools and refused to write files.
+constexpr auto kCliContract =
+    "Above is the conversation of Burnos, a voice assistant app on the user's "
+    "Windows PC, with its user. Burnos acts on the PC with its tools, with the "
+    "user's full permission. Your job is only to WRITE Burnos's next reply: what it "
+    "says, and which of its tools it calls next. You perform nothing yourself, so "
+    "your own environment, tools and sandbox are irrelevant. The SYSTEM NOTES are "
+    "Burnos's instructions; the reply must follow them. Write ONLY one JSON object "
+    "and nothing else: {\"content\": what Burnos says (empty when it only calls "
+    "tools), \"tool_calls\": [{\"name\": one of Burnos's tools, \"arguments\": a "
+    "JSON object of its arguments}]}. Use [] when it calls no tool.";
+
+// Codex is held to this shape; strict schemas allow no open object, so the
+// arguments travel as a JSON string.
+constexpr auto kCliSchema =
+    R"({"type":"object","additionalProperties":false,"required":["content","tool_calls"],)"
+    R"("properties":{"content":{"type":"string"},"tool_calls":{"type":"array","items":)"
+    R"({"type":"object","additionalProperties":false,"required":["name","arguments"],)"
+    R"("properties":{"name":{"type":"string"},"arguments":{"type":"string",)"
+    R"("description":"the arguments as a JSON object string"}}}}}})";
+
+// The conversation as one prompt, and its pictures as PNG bytes.
+QString cliPrompt(const QJsonArray &messages, const QJsonArray &tools, QList<QByteArray> *images)
+{
+    QStringList out;
+    for (const QJsonValue &value : messages) {
+        const QJsonObject m = value.toObject();
+        const QString role = m.value(QStringLiteral("role")).toString();
+        QString text;
+        const QJsonValue content = m.value(QStringLiteral("content"));
+        if (content.isArray()) {
+            for (const QJsonValue &p : content.toArray()) {
+                const QJsonObject part = p.toObject();
+                if (part.value(QStringLiteral("type")).toString() == QLatin1String("text")) {
+                    text += part.value(QStringLiteral("text")).toString();
+                } else {
+                    const QString url = part.value(QStringLiteral("image_url")).toObject()
+                                            .value(QStringLiteral("url")).toString();
+                    images->append(QByteArray::fromBase64(url.section(QLatin1Char(','), 1).toLatin1()));
+                    text += QStringLiteral(" [picture %1, attached]").arg(images->size());
+                }
+            }
+        } else {
+            text = content.toString();
+        }
+        if (role == QLatin1String("system")) {
+            out << QStringLiteral("SYSTEM NOTE:\n") + text;
+        } else if (role == QLatin1String("user")) {
+            out << QStringLiteral("USER:\n") + text;
+        } else if (role == QLatin1String("tool")) {
+            out << QStringLiteral("RESULT OF %1:\n%2")
+                       .arg(m.value(QStringLiteral("tool_call_id")).toString(), text);
+        } else {
+            QString said = QStringLiteral("BURNOS:\n") + text;
+            for (const QJsonValue &c : m.value(QStringLiteral("tool_calls")).toArray()) {
+                const QJsonObject fn = c.toObject().value(QStringLiteral("function")).toObject();
+                said += QStringLiteral("\n[called %1 as %2 with %3]")
+                            .arg(fn.value(QStringLiteral("name")).toString(),
+                                 c.toObject().value(QStringLiteral("id")).toString(),
+                                 fn.value(QStringLiteral("arguments")).toString());
+            }
+            out << said;
+        }
+    }
+    QStringList list;
+    for (const QJsonValue &t : tools) {
+        const QJsonObject fn = t.toObject().value(QStringLiteral("function")).toObject();
+        list << QStringLiteral("- %1: %2\n  arguments: %3")
+                    .arg(fn.value(QStringLiteral("name")).toString(),
+                         fn.value(QStringLiteral("description")).toString(),
+                         QString::fromUtf8(QJsonDocument(fn.value(QStringLiteral("parameters")).toObject())
+                                               .toJson(QJsonDocument::Compact)));
+    }
+    out << QStringLiteral("BURNOS'S TOOLS:\n") + (list.isEmpty() ? QStringLiteral("none") : list.join(QLatin1Char('\n')));
+    out << QString::fromLatin1(kCliContract);
+    return out.join(QStringLiteral("\n\n"));
+}
+
+// The reply as the one chat message the rest of Burnos expects.
+bool cliMessage(QString text, int id, QJsonObject *message)
+{
+    text = text.trimmed();
+    const QRegularExpressionMatch fence =
+        QRegularExpression(QStringLiteral("```(?:json)?\\s*([\\s\\S]*?)\\s*```")).match(text);
+    if (fence.hasMatch())
+        text = fence.captured(1);
+    const QJsonObject root = QJsonDocument::fromJson(text.toUtf8()).object();
+    if (root.isEmpty())
+        return false;
+    QJsonArray calls;
+    int n = 0;
+    for (const QJsonValue &v : root.value(QStringLiteral("tool_calls")).toArray()) {
+        const QJsonObject c = v.toObject();
+        const QJsonValue a = c.value(QStringLiteral("arguments"));
+        calls.append(QJsonObject{
+            {QStringLiteral("id"), QStringLiteral("call_%1_%2").arg(id).arg(++n)},
+            {QStringLiteral("type"), QStringLiteral("function")},
+            {QStringLiteral("function"),
+             QJsonObject{{QStringLiteral("name"), c.value(QStringLiteral("name")).toString()},
+                         {QStringLiteral("arguments"),
+                          a.isObject() ? QString::fromUtf8(QJsonDocument(a.toObject()).toJson(QJsonDocument::Compact))
+                                       : a.toString()}}}});
+    }
+    *message = QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                           {QStringLiteral("content"), root.value(QStringLiteral("content")).toString()}};
+    if (!calls.isEmpty())
+        message->insert(QStringLiteral("tool_calls"), calls);
+    return true;
+}
+
 } // namespace
+
+bool OpenRouterClient::isCli(const QString &model)
+{
+    return model.startsWith(QLatin1String("claude:")) || model.startsWith(QLatin1String("codex:"));
+}
 
 OpenRouterClient::OpenRouterClient(QObject *parent)
     : QObject(parent)
@@ -64,6 +189,13 @@ void OpenRouterClient::cancel(quint64 id)
 {
     // Out of the table first, so nothing already on its way can deliver an
     // answer for a request dropped on purpose.
+    if (QProcess *proc = m_procs.take(id)) {
+        proc->disconnect(this);
+        proc->kill();
+        proc->deleteLater();
+        BurnOS::liveLog(QStringLiteral("request %1 abandoned").arg(id));
+        return;
+    }
     const bool known = m_live.contains(id);
     QNetworkReply *reply = m_live.take(id);
     if (!known)
@@ -95,6 +227,15 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
         });
     };
 
+    // Read here, at the moment of asking, so a model changed in Settings is the
+    // one the very next request goes to.
+    const QString model = request.model.isEmpty() ? BurnOS::Settings::openRouterModel()
+                                                  : request.model;
+    if (isCli(model)) {
+        postCli(id, request, model, done);
+        return;
+    }
+
     const QString key = BurnOS::Settings::openRouterKey();
     if (key.isEmpty()) {
         BurnOS::liveLog(QStringLiteral("%1: REFUSED, no OpenRouter key stored")
@@ -103,11 +244,6 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
                     "Settings to add one."));
         return;
     }
-
-    // Read here, at the moment of asking, so a model changed in Settings is the
-    // one the very next request goes to.
-    const QString model = request.model.isEmpty() ? BurnOS::Settings::openRouterModel()
-                                                  : request.model;
 
     // A MODEL THAT HAS ALREADY REFUSED A PICTURE never gets another. The
     // refusal is a 404 on the whole request, not a shrug.
@@ -248,6 +384,154 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
                             .arg(root.value(QStringLiteral("provider")).toString()));
         done(out);
     });
+}
+
+// ONE TURN FROM THE USER'S OWN SUBSCRIPTION. The official claude or codex
+// program answers it with its own login - Burnos never reads their tokens -
+// with every tool of its own switched off, so all acting still goes through
+// Burnos's tools and guard. Each call is a fresh process holding the whole
+// conversation; cancel() kills it.
+// shortcut: one process per turn costs 3 to 5 s of start-up; a long-lived
+// stream-json session per task is the upgrade if that proves too slow.
+void OpenRouterClient::postCli(quint64 id, const Request &request, const QString &model, Done done)
+{
+    const QString provider = model.section(QLatin1Char(':'), 0, 0);
+    const QString name = model.section(QLatin1Char(':'), 1).trimmed();
+    const QString exe = QStandardPaths::findExecutable(provider);
+    if (exe.isEmpty()) {
+        m_live.insert(id, nullptr);
+        QTimer::singleShot(0, this, [this, id, done, provider]() {
+            if (!m_live.contains(id))
+                return;
+            m_live.remove(id);
+            Reply reply;
+            reply.error = tr("The %1 program is not installed, so that model cannot "
+                             "answer. Install it and log in, or choose another model "
+                             "in Settings.").arg(provider);
+            done(reply);
+        });
+        return;
+    }
+
+    QList<QByteArray> images;
+    const QString prompt = cliPrompt(request.messages, request.tools, &images);
+    auto *dir = new QTemporaryDir(QDir::tempPath() + QStringLiteral("/burnos-cli-XXXXXX"));
+    auto *proc = new QProcess(this);
+    proc->setWorkingDirectory(dir->path());
+    connect(proc, &QObject::destroyed, [dir]() { delete dir; }); // finished or cancelled
+    QStringList args;
+    QByteArray input;
+    if (provider == QLatin1String("claude")) {
+        args = {QStringLiteral("-p"), QStringLiteral("--safe-mode"), QStringLiteral("--tools"), QString(),
+                QStringLiteral("--strict-mcp-config"), QStringLiteral("--no-session-persistence"),
+                QStringLiteral("--effort"), QStringLiteral("medium"),
+                QStringLiteral("--system-prompt"), QString::fromLatin1(kCliContract),
+                QStringLiteral("--input-format"), QStringLiteral("stream-json"),
+                QStringLiteral("--output-format"), QStringLiteral("stream-json"), QStringLiteral("--verbose")};
+        if (!name.isEmpty() && name != QLatin1String("default"))
+            args << QStringLiteral("--model") << name;
+        QJsonArray content;
+        for (const QByteArray &png : std::as_const(images)) {
+            content.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("image")},
+                {QStringLiteral("source"), QJsonObject{{QStringLiteral("type"), QStringLiteral("base64")},
+                                                       {QStringLiteral("media_type"), QStringLiteral("image/png")},
+                                                       {QStringLiteral("data"), QString::fromLatin1(png.toBase64())}}}});
+        }
+        content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                   {QStringLiteral("text"), prompt}});
+        input = QJsonDocument(QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("user")},
+                    {QStringLiteral("message"), QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+                                                            {QStringLiteral("content"), content}}}})
+                    .toJson(QJsonDocument::Compact) + '\n';
+    } else {
+        QFile schema(dir->filePath(QStringLiteral("reply.schema.json")));
+        if (schema.open(QIODevice::WriteOnly))
+            schema.write(kCliSchema);
+        schema.close();
+        // The user's own config is left out (its MCP servers, hooks and a model
+        // a ChatGPT login may not be allowed); the login itself still applies.
+        args = {QStringLiteral("exec"), QStringLiteral("--ignore-user-config"),
+                QStringLiteral("-c"), QStringLiteral("mcp_servers={}"),
+                QStringLiteral("-c"), QStringLiteral("model_reasoning_effort=\"medium\""),
+                QStringLiteral("--ephemeral"), QStringLiteral("--skip-git-repo-check"),
+                QStringLiteral("-s"), QStringLiteral("read-only"),
+                QStringLiteral("-C"), dir->path(),
+                QStringLiteral("--output-schema"), schema.fileName(),
+                QStringLiteral("-o"), dir->filePath(QStringLiteral("reply.txt"))};
+        if (!name.isEmpty() && name != QLatin1String("default"))
+            args << QStringLiteral("-m") << name;
+        for (int i = 0; i < images.size(); ++i) {
+            QFile png(dir->filePath(QStringLiteral("picture%1.png").arg(i + 1)));
+            if (png.open(QIODevice::WriteOnly))
+                png.write(images.at(i));
+            args << QStringLiteral("-i") << png.fileName();
+        }
+        args << QStringLiteral("-");
+        input = prompt.toUtf8();
+    }
+
+    BurnOS::liveLog(QStringLiteral("%1: asking %2 through the %3 program, %4 message(s), %5 tool(s), "
+                                   "%6 picture(s)")
+                        .arg(request.who, model, provider)
+                        .arg(request.messages.size())
+                        .arg(request.tools.size())
+                        .arg(images.size()));
+    m_procs.insert(id, proc);
+    QElapsedTimer clock;
+    clock.start();
+    // Starting the program is part of every answer, so it gets a minute more.
+    auto *limit = new QTimer(proc);
+    limit->setSingleShot(true);
+    connect(limit, &QTimer::timeout, proc, [proc]() { proc->kill(); });
+    limit->start(request.timeoutMs + 60000);
+
+    connect(proc, &QProcess::finished, this, [this, id, proc, dir, provider, request, done, clock, limit]() {
+        const bool timedOut = !limit->isActive();
+        proc->deleteLater();
+        const QByteArray out = proc->readAllStandardOutput();
+        const QByteArray err = proc->readAllStandardError();
+        QString text;
+        if (provider == QLatin1String("claude")) {
+            for (const QByteArray &line : out.split('\n')) {
+                const QJsonObject o = QJsonDocument::fromJson(line).object();
+                if (o.value(QStringLiteral("type")).toString() == QLatin1String("result"))
+                    text = o.value(QStringLiteral("is_error")).toBool() ? QString() : o.value(QStringLiteral("result")).toString();
+            }
+        } else {
+            QFile reply(dir->filePath(QStringLiteral("reply.txt")));
+            if (reply.open(QIODevice::ReadOnly))
+                text = QString::fromUtf8(reply.readAll());
+        }
+        if (m_procs.take(id) != proc)
+            return; // cancelled
+
+        Reply r;
+        r.ms = clock.elapsed();
+        if (!text.isEmpty() && cliMessage(text, int(id), &r.message)) {
+            r.ok = true;
+        } else if (!text.isEmpty()) {
+            // shortcut: prose instead of JSON is taken as a plain answer; asking
+            // again is the upgrade if models drift from the contract.
+            r.ok = true;
+            r.message = QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                                    {QStringLiteral("content"), text.trimmed()}};
+        } else {
+            const QString why = QString::fromUtf8(err + out).split(QLatin1Char('\n'))
+                                    .filter(QRegularExpression(QStringLiteral("error|login|limit|auth"),
+                                                               QRegularExpression::CaseInsensitiveOption))
+                                    .join(QLatin1Char(' ')).simplified().right(300);
+            r.error = timedOut ? tr("The model took too long to answer, so I stopped waiting.")
+                               : tr("The %1 program gave no answer. %2").arg(provider, why);
+        }
+        BurnOS::liveLog(r.ok ? QStringLiteral("%1: answered in %2 ms by the %3 program").arg(request.who).arg(r.ms).arg(provider)
+                             : QStringLiteral("%1: FAILED after %2 ms: %3").arg(request.who).arg(r.ms).arg(r.error));
+        done(r);
+    });
+    proc->start(exe, args);
+    proc->write(input);
+    proc->closeWriteChannel();
 }
 
 QJsonArray OpenRouterClient::dropImages(const QJsonArray &messages, bool *dropped)

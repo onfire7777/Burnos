@@ -1,11 +1,11 @@
 # Your data and your controls
 
-Burnos mixes local processing with connected services. This describes the reviewed v0.23.2 implementation, not a guarantee about every external tool you may connect.
+Burnos mixes local processing with connected services. This describes the reviewed v0.24.0 implementation, not a guarantee about every external tool you may connect.
 
 | Data or action | Where it goes |
 | --- | --- |
 | Speech recognition, speech synthesis, wake detection, speaker matching | Local speech runtimes and models |
-| Conversation and reasoning context | OpenRouter and the selected model provider |
+| Conversation and reasoning context | OpenRouter and the selected model provider; or, for a `claude:` or `codex:` model, Anthropic or OpenAI through the official CLI you are logged in to (Burnos never reads its login) |
 | Desktop screenshots and tool results | May be included in model requests |
 | Persistent memories | Configured Mnemosyne backend; the default arrangement uses local SQLite |
 | Semantic retrieval | May send text to OpenRouter's embedding endpoint |

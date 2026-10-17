@@ -768,7 +768,10 @@ MainWindow::MainWindow(QWidget *parent)
     // armed and blue. If the models are still missing it arms the moment the
     // download lands instead.
     const auto startReady = [this]() {
-        if (BurnOS::Settings::openRouterKey().isEmpty())
+        // No key is needed when both models are the user's own CLI subscriptions.
+        if (BurnOS::Settings::openRouterKey().isEmpty()
+            && !(OpenRouterClient::isCli(BurnOS::Settings::openRouterModel())
+                 && OpenRouterClient::isCli(BurnOS::Settings::taskModel())))
             openSettings();
         armLiveMode();
     };

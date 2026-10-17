@@ -85,10 +85,16 @@ public:
     // is the official claude or codex program, logged in with the user's own
     // subscription, answering one turn at a time (see postCli).
     static bool isCli(const QString &model);
+    // "chatgpt:<name>": the user's ChatGPT subscription through Sign in with
+    // ChatGPT (chatgpt.h), answered directly by OpenAI with native tools.
+    static bool isChatGpt(const QString &model);
+    // Whether a model needs the OpenRouter key at all.
+    static bool needsKey(const QString &model) { return !isCli(model) && !isChatGpt(model); }
 
 private:
     void post(quint64 id, Request request, Done done, bool retried);
     void postCli(quint64 id, const Request &request, const QString &model, Done done);
+    void postChatGpt(quint64 id, const Request &request, const QString &model, Done done, bool retried);
     static QJsonArray dropImages(const QJsonArray &messages, bool *dropped);
 
     QNetworkAccessManager *m_net = nullptr;

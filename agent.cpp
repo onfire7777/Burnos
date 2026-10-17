@@ -1417,7 +1417,7 @@ void Task::start()
                              QString::fromLatin1(kMemoryTenant),
                              QString::fromLatin1(kMemoryUser),
                              // the memory converts on OpenRouter, so never a CLI model
-                             OpenRouterClient::isCli(Settings::taskModel())
+                             !OpenRouterClient::needsKey(Settings::taskModel())
                                  ? Settings::defaultOpenRouterModel()
                                  : Settings::taskModel())));
             }

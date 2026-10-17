@@ -160,6 +160,21 @@ bool hasOpenRouterKey()
     return !store().value(QString::fromLatin1(kKeyPath)).toByteArray().isEmpty();
 }
 
+QByteArray chatGptLogin()
+{
+    return unprotect(store().value(QStringLiteral("chatgpt/login")).toByteArray());
+}
+
+void setChatGptLogin(const QByteArray &json)
+{
+    QSettings s = store();
+    if (json.isEmpty())
+        s.remove(QStringLiteral("chatgpt/login"));
+    else
+        s.setValue(QStringLiteral("chatgpt/login"), protect(json));
+    s.sync();
+}
+
 QString defaultOpenRouterModel()
 {
     return QString::fromLatin1(kDefaultModel);

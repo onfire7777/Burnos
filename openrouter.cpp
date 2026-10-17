@@ -1,5 +1,8 @@
+#include "chatgpt.h"
 #include "livelog.h"
 #include "openrouter.h"
+
+#include <QDateTime>
 #include "settings.h"
 
 #include <QDir>
@@ -155,6 +158,11 @@ bool cliMessage(QString text, int id, QJsonObject *message)
 
 } // namespace
 
+bool OpenRouterClient::isChatGpt(const QString &model)
+{
+    return model.startsWith(QLatin1String("chatgpt:"));
+}
+
 bool OpenRouterClient::isCli(const QString &model)
 {
     return model.startsWith(QLatin1String("claude:")) || model.startsWith(QLatin1String("codex:"));
@@ -233,6 +241,10 @@ void OpenRouterClient::post(quint64 id, Request request, Done done, bool retried
                                                   : request.model;
     if (isCli(model)) {
         postCli(id, request, model, done);
+        return;
+    }
+    if (isChatGpt(model)) {
+        postChatGpt(id, request, model, done, retried);
         return;
     }
 
@@ -532,6 +544,176 @@ void OpenRouterClient::postCli(quint64 id, const Request &request, const QString
     proc->start(exe, args);
     proc->write(input);
     proc->closeWriteChannel();
+}
+
+// ONE TURN ON THE USER'S CHATGPT SUBSCRIPTION, straight to OpenAI's Codex
+// backend with the Sign in with ChatGPT token. The chat messages and tools
+// Burnos keeps are turned into the Responses API's input items, and the
+// answer's output items back into one chat message with tool calls - so the
+// talker and every task loop above are unchanged.
+void OpenRouterClient::postChatGpt(quint64 id, const Request &request, const QString &model, Done done, bool retried)
+{
+    m_live.insert(id, nullptr); // a slot for cancel() while the token is fetched
+    BurnOS::ChatGpt::withAccess(m_net, this, [this, id, request, model, done, retried](
+                                                 const QString &access, const QString &account, const QString &error) {
+        if (!m_live.contains(id))
+            return; // cancelled
+        if (!error.isEmpty()) {
+            m_live.remove(id);
+            Reply r;
+            r.error = error;
+            done(r);
+            return;
+        }
+        QStringList instructions;
+        QJsonArray input;
+        for (const QJsonValue &value : request.messages) {
+            const QJsonObject m = value.toObject();
+            const QString role = m.value(QStringLiteral("role")).toString();
+            const QJsonValue content = m.value(QStringLiteral("content"));
+            if (role == QLatin1String("system")) {
+                instructions << content.toString();
+            } else if (role == QLatin1String("tool")) {
+                input.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("function_call_output")},
+                                         {QStringLiteral("call_id"), m.value(QStringLiteral("tool_call_id")).toString()},
+                                         {QStringLiteral("output"), content.toString()}});
+            } else if (role == QLatin1String("assistant")) {
+                if (!content.toString().isEmpty()) {
+                    input.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                                             {QStringLiteral("content"), QJsonArray{QJsonObject{
+                                                  {QStringLiteral("type"), QStringLiteral("output_text")},
+                                                  {QStringLiteral("text"), content.toString()}}}}});
+                }
+                for (const QJsonValue &c : m.value(QStringLiteral("tool_calls")).toArray()) {
+                    const QJsonObject fn = c.toObject().value(QStringLiteral("function")).toObject();
+                    input.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("function_call")},
+                                             {QStringLiteral("call_id"), c.toObject().value(QStringLiteral("id")).toString()},
+                                             {QStringLiteral("name"), fn.value(QStringLiteral("name")).toString()},
+                                             {QStringLiteral("arguments"), fn.value(QStringLiteral("arguments")).toString()}});
+                }
+            } else {
+                QJsonArray parts;
+                if (content.isArray()) {
+                    for (const QJsonValue &p : content.toArray()) {
+                        const QJsonObject part = p.toObject();
+                        if (part.value(QStringLiteral("type")).toString() == QLatin1String("text"))
+                            parts.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("input_text")},
+                                                     {QStringLiteral("text"), part.value(QStringLiteral("text")).toString()}});
+                        else
+                            parts.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("input_image")},
+                                                     {QStringLiteral("image_url"), part.value(QStringLiteral("image_url")).toObject()
+                                                                                       .value(QStringLiteral("url")).toString()}});
+                    }
+                } else {
+                    parts.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("input_text")},
+                                             {QStringLiteral("text"), content.toString()}});
+                }
+                input.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("user")}, {QStringLiteral("content"), parts}});
+            }
+        }
+        QJsonArray tools;
+        for (const QJsonValue &t : request.tools) {
+            const QJsonObject fn = t.toObject().value(QStringLiteral("function")).toObject();
+            tools.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("function")},
+                                     {QStringLiteral("name"), fn.value(QStringLiteral("name"))},
+                                     {QStringLiteral("description"), fn.value(QStringLiteral("description"))},
+                                     {QStringLiteral("parameters"), fn.value(QStringLiteral("parameters"))},
+                                     // strict made the model fill every optional argument
+                                     // with blanks, which turned a plain screenshot into a
+                                     // pick-a-point one
+                                     {QStringLiteral("strict"), false}});
+        }
+        QJsonObject body{{QStringLiteral("model"), model.section(QLatin1Char(':'), 1).trimmed()},
+                         {QStringLiteral("instructions"), instructions.join(QStringLiteral("\n\n"))},
+                         {QStringLiteral("input"), input},
+                         {QStringLiteral("reasoning"), QJsonObject{{QStringLiteral("effort"), QString::fromLatin1(kReasoningEffort)}}},
+                         {QStringLiteral("store"), false},
+                         {QStringLiteral("stream"), true}};
+        if (!tools.isEmpty())
+            body.insert(QStringLiteral("tools"), tools);
+
+        QNetworkRequest net{QUrl(QStringLiteral("https://chatgpt.com/backend-api/codex/responses"))};
+        net.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        net.setRawHeader("Accept", "text/event-stream");
+        net.setRawHeader("Authorization", "Bearer " + access.toUtf8());
+        net.setRawHeader("chatgpt-account-id", account.toUtf8());
+        net.setRawHeader("OpenAI-Beta", "responses=experimental");
+        net.setRawHeader("originator", "codex_cli_rs");
+        net.setRawHeader("session_id", QByteArray::number(QDateTime::currentMSecsSinceEpoch()) + QByteArray::number(id));
+        net.setTransferTimeout(request.timeoutMs + 30000);
+        BurnOS::liveLog(QStringLiteral("%1: asking %2 on the ChatGPT subscription, %3 item(s), %4 tool(s)")
+                            .arg(request.who, model).arg(input.size()).arg(tools.size()));
+        QElapsedTimer clock;
+        clock.start();
+        QNetworkReply *reply = m_net->post(net, QJsonDocument(body).toJson(QJsonDocument::Compact));
+        m_live.insert(id, reply);
+        connect(reply, &QNetworkReply::finished, this, [this, id, reply, clock, request, model, done, retried]() {
+            reply->deleteLater();
+            if (m_live.value(id) != reply)
+                return; // cancelled
+            m_live.remove(id);
+            const QByteArray raw = reply->readAll();
+            const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            // A token OpenAI no longer takes: refresh it once and ask again.
+            if (status == 401 && !retried) {
+                BurnOS::ChatGpt::withAccess(m_net, this, [this, id, request, model, done](const QString &, const QString &, const QString &) {
+                    postChatGpt(id, request, model, done, true);
+                }, true);
+                m_live.insert(id, nullptr);
+                return;
+            }
+            Reply out;
+            out.ms = clock.elapsed();
+            QJsonObject response;
+            QString failure;
+            for (const QByteArray &line : raw.split('\n')) {
+                if (!line.startsWith("data:"))
+                    continue;
+                const QJsonObject e = QJsonDocument::fromJson(line.mid(5).trimmed()).object();
+                const QString type = e.value(QStringLiteral("type")).toString();
+                if (type == QLatin1String("response.completed"))
+                    response = e.value(QStringLiteral("response")).toObject();
+                else if (type == QLatin1String("response.failed") || type == QLatin1String("error"))
+                    failure = QString::fromUtf8(QJsonDocument(e).toJson(QJsonDocument::Compact)).left(300);
+            }
+            if (response.isEmpty()) {
+                out.error = reply->error() == QNetworkReply::OperationCanceledError
+                                ? tr("The model took too long to answer, so I stopped waiting.")
+                                : tr("ChatGPT gave no answer (%1). %2").arg(status).arg(
+                                      failure.isEmpty() ? QString::fromUtf8(raw).simplified().left(300) : failure);
+                BurnOS::liveLog(QStringLiteral("%1: FAILED after %2 ms: %3").arg(request.who).arg(out.ms).arg(out.error));
+                done(out);
+                return;
+            }
+            QString text;
+            QJsonArray calls;
+            for (const QJsonValue &v : response.value(QStringLiteral("output")).toArray()) {
+                const QJsonObject item = v.toObject();
+                const QString type = item.value(QStringLiteral("type")).toString();
+                if (type == QLatin1String("message")) {
+                    for (const QJsonValue &c : item.value(QStringLiteral("content")).toArray())
+                        text += c.toObject().value(QStringLiteral("text")).toString();
+                } else if (type == QLatin1String("function_call")) {
+                    calls.append(QJsonObject{
+                        {QStringLiteral("id"), item.value(QStringLiteral("call_id")).toString()},
+                        {QStringLiteral("type"), QStringLiteral("function")},
+                        {QStringLiteral("function"), QJsonObject{{QStringLiteral("name"), item.value(QStringLiteral("name"))},
+                                                                 {QStringLiteral("arguments"), item.value(QStringLiteral("arguments"))}}}});
+                }
+            }
+            out.message = QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                                      {QStringLiteral("content"), text}};
+            if (!calls.isEmpty())
+                out.message.insert(QStringLiteral("tool_calls"), calls);
+            const QJsonObject usage = response.value(QStringLiteral("usage")).toObject();
+            out.promptTokens = usage.value(QStringLiteral("input_tokens")).toInt();
+            out.completionTokens = usage.value(QStringLiteral("output_tokens")).toInt();
+            out.ok = true;
+            BurnOS::liveLog(QStringLiteral("%1: answered in %2 ms on the ChatGPT subscription, %3 tokens in, %4 out")
+                                .arg(request.who).arg(out.ms).arg(out.promptTokens).arg(out.completionTokens));
+            done(out);
+        });
+    });
 }
 
 QJsonArray OpenRouterClient::dropImages(const QJsonArray &messages, bool *dropped)

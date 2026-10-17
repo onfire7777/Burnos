@@ -19,6 +19,11 @@ void setOpenRouterKey(const QString &key);
 // True when a non empty key is stored. Cheaper than decrypting to check.
 bool hasOpenRouterKey();
 
+// The ChatGPT sign-in (chatgpt.h): its tokens as JSON, encrypted for this
+// Windows user like the key. Empty when signed out; an empty value signs out.
+QByteArray chatGptLogin();
+void setChatGptLogin(const QByteArray &json);
+
 // The TALKING model: every answer the orb says out loud, and every decision to
 // hand work off to a task. Falls back to the shipped default when nothing has
 // been chosen. Stored where the one and only model always was, so an install

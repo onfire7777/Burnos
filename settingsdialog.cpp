@@ -1,4 +1,8 @@
+#include "chatgpt.h"
 #include "composio.h"
+
+#include <QNetworkAccessManager>
+#include <QSignalBlocker>
 #include "keywordspotter.h"
 #include "livelog.h"
 #include "openrouter.h"
@@ -100,6 +104,9 @@ constexpr ModelChoice kModels[] = {
      "are logged in to. No OpenRouter credit; each answer takes a few seconds more."},
     {"claude:opus",
      "Claude Opus on your Claude subscription. The strongest working model; slower."},
+    {"chatgpt:gpt-6-astra",
+     "ChatGPT on your subscription, signed in from Settings: answered straight by "
+     "OpenAI, as fast as OpenRouter. Type chatgpt:<model> for another."},
     {"codex:default",
      "ChatGPT's default Codex model on your ChatGPT subscription, through the codex "
      "program you are logged in to. Type codex:<model> for another."},
@@ -580,7 +587,75 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     auto *integrationsRow = new QHBoxLayout;
     integrationsRow->setContentsMargins(0, 0, 0, 0);
     integrationsRow->addWidget(m_integrations);
-    integrationsRow->addStretch(1);
+
+    // SIGN IN WITH CHATGPT, for the chatgpt: models: OpenAI's own page opens in
+    // the browser and the subscription answers from then on. The same button
+    // signs out.
+    auto *chatgpt = new QPushButton(this);
+    chatgpt->setAutoDefault(false);
+    auto *chatgptState = new QLabel(this);
+    chatgptState->setWordWrap(true);
+    auto *net = new QNetworkAccessManager(this);
+    // The button's words, and a line beside it that ASKS OpenAI: a sign-in is
+    // only shown as working once its own model list has come back, and every
+    // model on that list is offered for talking and working.
+    const auto label = [this, chatgpt, chatgptState, net]() {
+        const bool in = BurnOS::ChatGpt::signedIn();
+        chatgpt->setText(in ? tr("Sign out of ChatGPT") : tr("Sign in with ChatGPT"));
+        chatgpt->setToolTip(tr("Use the chatgpt: models on your ChatGPT subscription."));
+        if (!in) {
+            chatgptState->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(kNotePlain)));
+            chatgptState->setText(tr("Not signed in to ChatGPT."));
+            return;
+        }
+        chatgptState->setText(tr("Checking the ChatGPT sign-in..."));
+        BurnOS::ChatGpt::models(net, this, [this, chatgptState](const QList<QPair<QString, QString>> &models,
+                                                                const QString &error) {
+            if (!error.isEmpty()) {
+                chatgptState->setStyleSheet(QStringLiteral("color: %1;").arg(QLatin1String(kNoteRefuse)));
+                chatgptState->setText(error);
+                return;
+            }
+            QStringList names;
+            for (const auto &m : models) {
+                const QString slug = QStringLiteral("chatgpt:") + m.first;
+                names << m.first;
+                for (QComboBox *box : {m_model, m_taskModel}) {
+                    if (box->findText(slug) < 0) {
+                        const QSignalBlocker quiet(box);
+                        const QString chosen = box->currentText();
+                        box->addItem(slug);
+                        box->setItemData(box->count() - 1, m.second, Qt::ToolTipRole);
+                        box->setCurrentText(chosen);
+                    }
+                }
+            }
+            chatgptState->setStyleSheet(QStringLiteral("color: #7fd1a0;"));
+            chatgptState->setText(tr("Working: signed in as %1, %2 models - %3.")
+                                      .arg(BurnOS::ChatGpt::who()).arg(models.size())
+                                      .arg(names.join(QStringLiteral(", "))));
+        });
+    };
+    label();
+    connect(chatgpt, &QPushButton::clicked, this, [this, chatgpt, label]() {
+        if (BurnOS::ChatGpt::signedIn()) {
+            BurnOS::ChatGpt::signOut();
+            label();
+            refreshModelNote();
+            return;
+        }
+        chatgpt->setEnabled(false);
+        chatgpt->setText(tr("Finish signing in in your browser..."));
+        BurnOS::ChatGpt::signIn(this, [this, chatgpt, label](bool ok, const QString &message) {
+            chatgpt->setEnabled(true);
+            label();
+            refreshModelNote();
+            if (!ok)
+                m_modelNote->setText(message);
+        });
+    });
+    integrationsRow->addWidget(chatgpt);
+    integrationsRow->addWidget(chatgptState, 1);
 
     m_sensitivity = new QSlider(Qt::Horizontal, this);
     m_sensitivity->setRange(0, 100);
@@ -1174,8 +1249,18 @@ void SettingsDialog::refreshModelNote()
                  slug.section(QLatin1Char(':'), 0, 0));
     };
 
+    const auto chatgpt = []() {
+        return BurnOS::ChatGpt::signedIn()
+                   ? tr("Runs on your ChatGPT subscription (%1), signed in from here - no "
+                        "OpenRouter credit.").arg(BurnOS::ChatGpt::who())
+                   : tr("Runs on your ChatGPT subscription once you press Sign in with "
+                        "ChatGPT below.");
+    };
+
     // THE TALKING MODEL: tools always, and eyes only when it does the work too.
-    if (OpenRouterClient::isCli(talk)) {
+    if (OpenRouterClient::isChatGpt(talk)) {
+        say(m_modelNote, BurnOS::ChatGpt::signedIn() ? kNotePlain : kNoteWarn, chatgpt());
+    } else if (OpenRouterClient::isCli(talk)) {
         say(m_modelNote, kNotePlain, cli(talk));
     } else if (!talk.isEmpty() && !catalogue->knows(talk)) {
         say(m_modelNote, kNoteWarn, unknown(talk));
@@ -1210,6 +1295,10 @@ void SettingsDialog::refreshModelNote()
     // THE WORKING MODEL: tools and eyes, because every task may need both.
     if (alsoWorks)
         return;
+    if (OpenRouterClient::isChatGpt(work)) {
+        say(m_taskModelNote, BurnOS::ChatGpt::signedIn() ? kNotePlain : kNoteWarn, chatgpt());
+        return;
+    }
     if (OpenRouterClient::isCli(work)) {
         say(m_taskModelNote, kNotePlain, cli(work));
         return;

@@ -5,7 +5,7 @@ Burnos mixes local processing with connected services. This describes the review
 | Data or action | Where it goes |
 | --- | --- |
 | Speech recognition, speech synthesis, wake detection, speaker matching | Local speech runtimes and models |
-| Conversation and reasoning context | OpenRouter and the selected model provider; or, for a `claude:` or `codex:` model, Anthropic or OpenAI through the official CLI you are logged in to (Burnos never reads its login) |
+| Conversation and reasoning context | OpenRouter and the selected model provider; or, for a `claude:` or `codex:` model, Anthropic or OpenAI through the official CLI you are logged in to (Burnos never reads its login); or, for a `chatgpt:` model, OpenAI directly with your Sign in with ChatGPT login, whose tokens Burnos keeps encrypted with Windows DPAPI |
 | Desktop screenshots and tool results | May be included in model requests |
 | Persistent memories | Configured Mnemosyne backend; the default arrangement uses local SQLite |
 | Semantic retrieval | May send text to OpenRouter's embedding endpoint |

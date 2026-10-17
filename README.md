@@ -28,7 +28,7 @@ Burnos brings conversation, persistent memory, research, and desktop actions int
 | --- | --- |
 | Pick up where you left off | **Persistent memory.** Conversation history, preferences, and retrieval through the integrated Mnemosyne backend. |
 | Stay in the conversation | **Background tasks.** Separate talking and working models, with progress, steering, and cancellation. |
-| Use the plan you already pay for | **Your subscriptions.** Pick `claude:sonnet`, `claude:opus` or `codex:default` as the talking or working model, and Burnos runs it through the official Claude Code or Codex CLI you are logged in to, with no OpenRouter credit. |
+| Use the plan you already pay for | **Your subscriptions.** Press **Sign in with ChatGPT** in Settings and every model your ChatGPT plan offers appears as `chatgpt:<model>`, answered directly on your subscription. Or pick `claude:sonnet`, `claude:opus` or `codex:default`, run through the official Claude Code or Codex CLI you are logged in to. No OpenRouter credit either way. |
 | Reuse what works | **Skills.** Import Agent Skills folders, Markdown files, or `.bs` skill files. Each becomes a complete framework in memory, offered when a task fits, and asks before any step that sends, deletes, pays, posts, installs, or runs a script. |
 | Research without rearranging your desktop | **A browser of its own.** Search, read pages and PDFs, follow links, and gather context in a separate browser profile. |
 | Turn an answer into useful work | **Desktop tools.** Work with files, run commands, operate applications, and dictate into a text field. |

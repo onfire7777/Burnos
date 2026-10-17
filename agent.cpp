@@ -1430,7 +1430,7 @@ void Task::start()
             };
             // THE SKILL ROUTER: the memory names the skills that fit this task,
             // leaving out any whose MCP servers are not connected. No memory, an
-            // old one, or no answer within five seconds: the task starts as before.
+            // old one, or no answer within a second and a half: the task starts as before.
             McpServer *memory = m_agent->mcp()->memory();
             if (!memory || !memory->hasTool(QStringLiteral("skill_search"))) {
                 begin();
@@ -1448,7 +1448,9 @@ void Task::start()
                                  self->offerSkills(McpServer::textOf(result));
                              begin();
                          },
-                         5000);
+                         // The memory falls back to words after one second of waiting
+                         // on the embedder, so this only ever waits on a stuck server.
+                         1500);
         });
 }
 

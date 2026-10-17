@@ -1,7 +1,7 @@
 # Reproducing the Windows release
 
-The 0.22.2 package includes Burnos, Qt, CPU speech runtimes, and Mnemosyne
-1.2.0 with its Python runtime. It does not include user data or API keys.
+The 0.23.2 package includes Burnos, Qt, CPU speech runtimes, and Mnemosyne
+1.4.1 with its Python runtime. It does not include user data or API keys.
 All voice models are bundled; OpenRouter still provides conversational AI. The binary distribution terms
 and corresponding-source instructions are in [packaging](../packaging/SOURCES.md).
 
@@ -12,7 +12,7 @@ and corresponding-source instructions are in [packaging](../packaging/SOURCES.md
   [developer setup](GETTING_STARTED.md#developer-setup-from-source).
 - CPython 3.12.14 x64 and the pinned
   [memory build requirements](../packaging/memory-requirements.txt).
-- Mnemosyne source at `be29799f462fab1b558b604ffaa4298b390cd614`.
+- Mnemosyne source at `edddea3ee18b0bb9d83d4a5405afee6b6a2425a6`.
 - Inno Setup 6.7.3 and PowerShell 7 for packaging.
 
 ## Build the app and memory runtime
@@ -47,7 +47,7 @@ build instructions in the release's corresponding-source ZIP.
 ## Package
 
 ```powershell
-.\scripts\package-windows.ps1 -AppDir build/win32-g++/release -MemoryDir build/frozen-memory/mneme-mcp -LicensesDir build/redistribution/licenses -ModelsDir build/voice-models -OutputDir build/release-0.22.2
+.\scripts\package-windows.ps1 -AppDir build/win32-g++/release -MemoryDir build/frozen-memory/mneme-mcp -LicensesDir build/redistribution/licenses -ModelsDir build/voice-models -OutputDir build/release-0.23.2
 ```
 
 Prepare `build/voice-models` using `BURNOS_MODEL_DIR` and the app's
@@ -61,8 +61,8 @@ a package manifest, and creates the portable ZIP, installer, and checksums.
 ## Verify before publishing
 
 ```powershell
-python scripts/verify-windows-package.py build/release-0.22.2/Burnos-v0.22.2-windows-x64 --report build/memory-test.json
-python scripts/verify-bundled-models.py build/release-0.22.2/Burnos-v0.22.2-windows-x64 --report build/model-test.json
+python scripts/verify-windows-package.py build/release-0.23.2/Burnos-v0.23.2-windows-x64 --report build/memory-test.json
+python scripts/verify-bundled-models.py build/release-0.23.2/Burnos-v0.23.2-windows-x64 --report build/model-test.json
 ```
 
 This starts the packaged memory through Burnos with an isolated profile

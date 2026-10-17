@@ -46,7 +46,7 @@ def main():
         'whisper.cpp-1.9.5.tar.gz': 'https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.5.tar.gz',
         'sherpa-onnx-1.13.8.tar.gz': 'https://github.com/k2-fsa/sherpa-onnx/archive/refs/tags/v1.13.8.tar.gz',
         'onnxruntime-1.28.2.tar.gz': 'https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.28.2.tar.gz',
-        'mnemosyne-1.2.0.tar.gz': 'https://github.com/onfire7777/Mnemosyne/archive/be29799f462fab1b558b604ffaa4298b390cd614.tar.gz',
+        'mnemosyne-1.4.1.tar.gz': 'https://github.com/onfire7777/Mnemosyne/archive/edddea3ee18b0bb9d83d4a5405afee6b6a2425a6.tar.gz',
         'Python-3.12.14.tar.xz': 'https://www.python.org/ftp/python/3.12.14/Python-3.12.14.tar.xz',
     }.items():
         fetch(name, url)

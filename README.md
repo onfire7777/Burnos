@@ -10,7 +10,7 @@ A voice assistant for Windows that remembers the conversation and helps move you
 [![C++ / Qt](https://img.shields.io/badge/C%2B%2B17-Qt_6-a99bff?style=flat-square)](BurnOS.pro)
 [![Source: MIT](https://img.shields.io/badge/Source-MIT-59e3ac?style=flat-square)](LICENSE)
 
-[**Download for Windows**](https://github.com/onfire7777/Burnos/releases/download/v0.22.2/Burnos-0.22.2-Setup-x64.exe) · [Explore Burnos](https://burnos.app) · [Watch the reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Judge's guide](docs/hackathon/README.md)
+[**Download for Windows**](https://github.com/onfire7777/Burnos/releases/download/v0.23.2/Burnos-0.23.2-Setup-x64.exe) · [Explore Burnos](https://burnos.app) · [Watch the reveal](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4) · [Judge's guide](docs/hackathon/README.md)
 
 [![Burnos: your next idea, already in context. A glowing blue and violet orb beside the words Voice, Memory, Action.](docs/assets/burnos-preview.gif)](https://github.com/onfire7777/Burnos/raw/refs/heads/main/media/burnos-overview.mp4)
 
@@ -28,6 +28,7 @@ Burnos brings conversation, persistent memory, research, and desktop actions int
 | --- | --- |
 | Pick up where you left off | **Persistent memory.** Conversation history, preferences, and retrieval through the integrated Mnemosyne backend. |
 | Stay in the conversation | **Background tasks.** Separate talking and working models, with progress, steering, and cancellation. |
+| Reuse what works | **Skills.** Import Agent Skills folders, Markdown files, or `.bs` skill files. Each becomes a complete framework in memory, offered when a task fits, and asks before any step that sends, deletes, pays, posts, installs, or runs a script. |
 | Research without rearranging your desktop | **A browser of its own.** Search, read pages and PDFs, follow links, and gather context in a separate browser profile. |
 | Turn an answer into useful work | **Desktop tools.** Work with files, run commands, operate applications, and dictate into a text field. |
 | Connect your existing services | **MCP and Composio.** Extend the assistant with the tools and accounts you configure. |
@@ -61,7 +62,7 @@ This is the fictional scenario in the reveal film. Connected services require yo
 
 ### Download. Set up. Start talking.
 
-**[Download the Windows installer](https://github.com/onfire7777/Burnos/releases/download/v0.22.2/Burnos-0.22.2-Setup-x64.exe)** · [Portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.22.2/Burnos-v0.22.2-windows-x64.zip) · [Release notes and checksums](https://github.com/onfire7777/Burnos/releases/tag/v0.22.2)
+**[Download the Windows installer](https://github.com/onfire7777/Burnos/releases/download/v0.23.2/Burnos-0.23.2-Setup-x64.exe)** · [Portable ZIP](https://github.com/onfire7777/Burnos/releases/download/v0.23.2/Burnos-v0.23.2-windows-x64.zip) · [Release notes and checksums](https://github.com/onfire7777/Burnos/releases/tag/v0.23.2)
 
 1. Install Burnos on **Windows 10/11 x64** and launch it from Start.
 2. Voice models are included—no separate speech-model download is needed.

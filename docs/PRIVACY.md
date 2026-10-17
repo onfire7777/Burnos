@@ -1,6 +1,6 @@
 # Your data and your controls
 
-Burnos mixes local processing with connected services. This describes the reviewed v0.22.2 implementation, not a guarantee about every external tool you may connect.
+Burnos mixes local processing with connected services. This describes the reviewed v0.23.2 implementation, not a guarantee about every external tool you may connect.
 
 | Data or action | Where it goes |
 | --- | --- |
@@ -9,6 +9,7 @@ Burnos mixes local processing with connected services. This describes the review
 | Desktop screenshots and tool results | May be included in model requests |
 | Persistent memories | Configured Mnemosyne backend; the default arrangement uses local SQLite |
 | Semantic retrieval | May send text to OpenRouter's embedding endpoint |
+| Skills | Original files kept in the local memory store and never run on import; their text is sent to OpenRouter to convert them into frameworks |
 | Research | Websites opened by a separate browser profile |
 | Connected services | Composio and/or the MCP endpoints you configure |
 

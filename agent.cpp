@@ -321,21 +321,23 @@ const char kTaskPrompt[] =
     "open it for them.\n"
     "\n"
     "SKILLS live in the user's memory (the memory MCP server). A plain skill is "
-    "an ordinary Agent Skill, used as written; a BurnSkill is one turned into a "
+    "an ordinary Agent Skill, used as written; a BurnSkill is a book turned into a "
     "complete framework, whose parts are also in the memory, and BurnOS's own "
     "skill file ends in .burnskill (older ones in .bs). To IMPORT one - a "
     ".burnskill file, a skill folder, any Markdown file or a folder of them "
     "(each file becomes a skill), a zip, a GitHub link, or a book (PDF or EPUB, "
-    "which becomes one BurnSkill, built in the background in a few minutes) - "
+    "which becomes one BurnSkill, built in the background) - "
     "get it onto this PC "
     "first (git clone or download it into a new folder under the TEMP folder), "
-    "then call framework_import with its path, tenant_id and user_id. It is "
-    "ready and on at once (a book once it is built): tell the user in one sentence what it is for, what "
-    "it can do (its effects) and whether it carries scripts. To MAKE one a "
-    "BurnSkill - only when the user asks - call skill_make_burnskill with its "
-    "skill_id, the model named in the MCP note, tenant_id and user_id; it is "
-    "built in the background in about two minutes and takes over from the plain "
-    "skill when done, so do not wait for it unless the user asked to. To SAVE "
+    "then call framework_import with its path, the model named in the MCP note, "
+    "tenant_id and user_id. A skill is "
+    "ready and on at once, used as written - skills are never converted. A book "
+    "becomes a BurnSkill: the WHOLE book is turned into a complete framework in "
+    "the background (several minutes, longer for a long book) and its parts go "
+    "into the memory. Tell the user in one sentence what it is for, what "
+    "it can do (its effects) and whether it carries scripts. To rebuild a book's "
+    "BurnSkill, call skill_make_burnskill with its skill_id, the model, tenant_id "
+    "and user_id. To SAVE "
     "what a task did as a skill, write a SKILL.md - front matter with name and "
     "description, then the steps as plain instructions, with values that will "
     "change written as 'the file the user names' - into a new folder under TEMP "
@@ -1508,10 +1510,12 @@ void Task::start()
                         .arg(servers.join(QStringLiteral(", ")),
                              QString::fromLatin1(kMemoryTenant),
                              QString::fromLatin1(kMemoryUser),
-                             // the memory converts on OpenRouter, so never a CLI model
-                             !OpenRouterClient::needsKey(Settings::taskModel())
-                                 ? Settings::defaultOpenRouterModel()
-                                 : Settings::taskModel())));
+                             // the memory builds on OpenRouter or, for codex:, through the Codex program on
+                             // the user's ChatGPT subscription; it cannot drive the claude program
+                             Settings::taskModel().startsWith(QLatin1String("codex:"))
+                                     || OpenRouterClient::needsKey(Settings::taskModel())
+                                 ? Settings::taskModel()
+                                 : Settings::defaultOpenRouterModel())));
             }
             const QStringList waiting = m_agent->mcp()->signInNames();
             if (!waiting.isEmpty()) {

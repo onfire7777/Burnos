@@ -110,6 +110,9 @@ constexpr ModelChoice kModels[] = {
     {"codex:default",
      "ChatGPT's default Codex model on your ChatGPT subscription, through the codex "
      "program you are logged in to. Type codex:<model> for another."},
+    {"codex:gpt-6.1-sol",
+     "gpt-6.1-sol on your ChatGPT subscription, through the codex program. Builds "
+     "a book's BurnSkill on one long-lived Codex server that reads the book once."},
 };
 
 // The first entry on the working model's list. Chosen, nothing is stored and

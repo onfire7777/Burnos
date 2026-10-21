@@ -5,13 +5,19 @@ The packaged CPU speech runtime requires AVX2, FMA, and F16C support; no dedicat
 
 ## Recommended: install the complete Windows download
 
-**[Download Burnos](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip)**, extract the **entire** ZIP, and run `Burnos.exe`. It includes Qt, speech engines, and the Mnemosyne memory server. Python and development tools are not required. Releases that only change the app ship a small `Burnos-vX-update-windows-x64.zip`: close Burnos and extract it over the same folder.
+To install **v0.27.0** from GitHub:
+
+1. Download the **[complete v0.24.0 Windows package](https://github.com/onfire7777/Burnos/releases/download/v0.24.0/Burnos-v0.24.0-windows-x64.zip)** and extract the **entire** ZIP.
+2. Close Burnos if it is running. Download the **[v0.27.0 Windows update](https://github.com/onfire7777/Burnos/releases/download/v0.27.0/Burnos-v0.27.0-update-windows-x64.zip)** and extract its contents over the **same installation folder**, replacing the corresponding files. The update is not a standalone installation.
+3. Run `Burnos.exe` from that folder.
+
+The complete package includes Qt, speech engines, voice models, and the Mnemosyne memory server; the v0.27.0 update includes Mnemosyne 1.7.0. Python and development tools are not required for this packaged installation.
 
 All voice models are included in the ZIP. Settings opens for your own OpenRouter key and conversational model selection. OpenRouter conversations need Internet access; provider usage may incur charges. Right-click the orb to reopen Settings later. Optional Composio connections require their own setup.
 
 Memory starts automatically and persists in `%LOCALAPPDATA%\BurnOS\memory`. New models use `%LOCALAPPDATA%\BurnOS\models`; a complete existing `%ProgramData%\BurnOS` model cache is reused. No administrator privileges are needed. Deleting the Burnos folder keeps your memory, models, and settings.
 
-The release is unsigned; Windows may show an unknown-publisher or SmartScreen warning. Verify the download against `SHA256SUMS.txt` on the [release page](https://github.com/onfire7777/Burnos/releases/tag/v0.24.0). Browser research requires Edge, Chrome, or Brave.
+The release is unsigned; Windows may show an unknown-publisher or SmartScreen warning. Verify each download against `SHA256SUMS.txt` on its release page: [complete v0.24.0 package](https://github.com/onfire7777/Burnos/releases/tag/v0.24.0) and [v0.27.0 update](https://github.com/onfire7777/Burnos/releases/tag/v0.27.0). Browser research requires Edge, Chrome, or Brave.
 
 If you previously configured `%APPDATA%\BurnOS\mcp.json`, that configuration takes precedence over the bundled server. Back up and review it if memory fails to connect. Port 8765 must be available or hosting the matching memory server. Do not post your memory files, keys, or unredacted logs in support issues.
 
@@ -79,13 +85,13 @@ The checksum above was calculated from the upstream archive downloaded on Octobe
 
 ## 4. Add persistent memory
 
-Install Python 3.12 or newer. Clone the public [Mnemosyne repository](https://github.com/onfire7777/Mnemosyne) beside the executable and install its MCP and graph extras into an isolated environment:
+Install Python 3.12 or newer. Clone the public [Mnemosyne repository](https://github.com/onfire7777/Mnemosyne) beside the executable and use **v1.7.0**, pinned below, to match the backend shipped with Burnos v0.27.0. Install its MCP and graph extras into an isolated environment, plus `pypdf` for PDF book import:
 
 ```powershell
 git clone https://github.com/onfire7777/Mnemosyne.git "$app/mnemosyne"
-git -C "$app/mnemosyne" checkout edddea3ee18b0bb9d83d4a5405afee6b6a2425a6
+git -C "$app/mnemosyne" checkout ef0e51ca4e9505a2f983baddf9019c7a963a0b6a
 py -3.12 -m venv "$app/mnemosyne/.venv"
-& "$app/mnemosyne/.venv/Scripts/python.exe" -m pip install "$app/mnemosyne[mcp,graph]"
+& "$app/mnemosyne/.venv/Scripts/python.exe" -m pip install "$app/mnemosyne[mcp,graph]" pypdf
 ```
 
 Burnos detects `mnemosyne/.venv/Scripts/mneme-mcp.exe`, starts it on loopback, and supplies its local session secret. The default store is `%LOCALAPPDATA%\BurnOS\memory`; keep it private. Port 8765 must be free or already hosting the correctly configured server. A pre-existing MCP configuration can override automatic discovery.

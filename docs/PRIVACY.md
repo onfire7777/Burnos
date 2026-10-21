@@ -1,6 +1,6 @@
 # Your data and your controls
 
-Burnos mixes local processing with connected services. This describes the reviewed v0.24.0 implementation, not a guarantee about every external tool you may connect.
+Burnos mixes local processing with connected services. This describes Burnos v0.27.0 with Mnemosyne 1.7.0, not a guarantee about every external tool you may connect.
 
 | Data or action | Where it goes |
 | --- | --- |
@@ -9,7 +9,7 @@ Burnos mixes local processing with connected services. This describes the review
 | Desktop screenshots and tool results | May be included in model requests |
 | Persistent memories | Configured Mnemosyne backend; the default arrangement uses local SQLite |
 | Semantic retrieval | May send text to OpenRouter's embedding endpoint |
-| Skills | Original files kept in the local memory store and never run on import; their text is sent to OpenRouter to convert them into frameworks |
+| Skills | Original skill and book files are retained by the configured memory server, locally in the default setup, and are not executed on import. Plain Skill import does not require framework generation. When a BurnSkill framework is generated, source text is sent through OpenRouter to the selected model provider or through the authenticated Codex CLI, according to the generation model. Skill instructions can also be included in later model requests |
 | Research | Websites opened by a separate browser profile |
 | Connected services | Composio and/or the MCP endpoints you configure |
 

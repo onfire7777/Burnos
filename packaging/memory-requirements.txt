@@ -23,7 +23,7 @@ pydantic-core==2.50.1
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.8
 pyjwt==2.15.1
-pypdf==6.21.1
+pypdf==6.21.4
 python-multipart==0.0.32
 pywin32==312
 pywin32-ctypes==0.2.3
